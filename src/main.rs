@@ -4,6 +4,10 @@ use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, fmt, util:
 use crate::options::Options;
 
 pub mod options;
+pub mod db;
+mod  open;
+pub(crate) mod default;
+mod skl;
 fn main() {
     tracing_subscriber::registry()
     .with(fmt::layer())
