@@ -1,9 +1,11 @@
 use std::string;
+
+use log::LevelFilter;
 pub enum CompressionType {
     Snappy,
     ZSTD { level: u16 },
 }
-const max_value_threshold:i64=1 <<20;
+const max_value_threshold: i64 = 1 << 20;
 pub struct Options {
     // Required options.
     dir: String,
@@ -14,23 +16,24 @@ pub struct Options {
     num_versions_to_keep: isize,
     read_only: bool,
     // Logger            Logger
-    Compression: Option<CompressionType>,
+    log_level: log::LevelFilter,
+    compression: Option<CompressionType>,
     in_memory: bool,
     metrics_enabled: bool,
     // Sets the Stream.numGo field
-    num_goroutines: isize,
+    num_goroutines: usize,
 
     // Fine tuning options.
     memtable_size: i64,
-    base_table_size: i64,
+    base_table_size: u64,
     base_level_size: i64,
-    level_size_multiplier: i64,
+    level_size_multiplier: isize,
     table_size_multiplier: isize,
-    max_levels: isize,
+    max_levels: usize,
 
     vlog_percentile: f64,
     value_threshold: i64,
-    num_memtables: isize,
+    num_memtables: usize,
     // Changing BlockSize across DB runs will not break badger. The block size is
     // read from the block index stored at the end of the table.
     block_size: isize,
@@ -91,12 +94,13 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            dir: Default::default(),
-            value_dir: Default::default(),
+            dir: "./tmp/badger".to_string(),
+            value_dir: "./tmp/badger".to_string(),
             sync_writes: false,
             num_versions_to_keep: 1,
-            read_only: Default::default(),
-            Compression: Some(CompressionType::Snappy),
+            read_only: false,
+            log_level: log::LevelFilter::Info,
+            compression: Some(CompressionType::Snappy),
             in_memory: Default::default(),
             metrics_enabled: true,
             num_goroutines: 8,
@@ -115,7 +119,7 @@ impl Default for Options {
             index_cache_size: 0,
             num_level_zero_tables: 5,
             num_level_zero_tables_stall: 15,
-            valuelog_file_size: 1<<30-1,
+            valuelog_file_size: 1 << 30 - 1,
             valuelog_max_entries: 1000_000,
             num_compactors: 4,
             compactl0_on_close: false,
@@ -123,8 +127,8 @@ impl Default for Options {
             zstd_compression_level: 1,
             verify_value_checksum: false,
             bypass_lock_guard: Default::default(),
-            detect_conflicts: Default::default(),
-            name_space_offset: Default::default(),
+            detect_conflicts: true,
+            name_space_offset: -1,
             external_magic_version: Default::default(),
             managed_txns: Default::default(),
             max_batch_count: Default::default(),
@@ -132,4 +136,63 @@ impl Default for Options {
             max_value_threshold: Default::default(),
         }
     }
+}
+impl Options {
+    pub fn dir(mut self, dir: String) -> Self {
+        self.dir = dir;
+        self
+    }
+    pub fn value_dir(mut self, value_dir: String) -> Self {
+        self.value_dir = value_dir;
+        self
+    }
+    pub fn sync_writess(mut self,sync_writes:bool)->Self{
+        self.sync_writes=sync_writes;
+        self
+    }
+    pub fn num_versions_to_keep(mut self,num_versions_to_keep:isize)->Self{
+        self.num_versions_to_keep=num_versions_to_keep;
+        self
+    }
+    pub fn num_goroutines(mut self,routines:usize)->Self{
+        self.num_goroutines=routines;
+        self
+    }
+    pub fn read_only(mut self,read_only:bool)->Self{
+        self.read_only=read_only;
+        self
+    }
+    pub fn metrics_enabled(mut self,metrics_enabled:bool)->Self{
+        self.metrics_enabled=metrics_enabled;
+        self
+    }
+    pub fn log_level(mut self,log_level:LevelFilter)->Self{
+        self.log_level=log_level;
+        self
+    }
+    pub fn base_table_size(mut self,base_table_size:u64)->Self{
+        self.base_table_size=base_table_size;
+        self
+    }
+    pub fn level_size_multiplier(mut self,level_size_multiplier:isize)->Self{
+        self.level_size_multiplier=level_size_multiplier;
+        self
+    }
+    pub fn max_levels(mut self,max_levels:usize)->Self{
+        self.max_levels=max_levels;
+        self
+    }
+    pub fn value_threshold(mut self,value_threshold:i64)->Self{
+        self.value_threshold=value_threshold;
+        self
+    }
+    pub fn vlog_percentile(mut self,vlog_percentile:f64)->Self{
+        self.vlog_percentile=vlog_percentile;
+        self
+    }
+    pub fn num_memtables(mut self,num_memtables:usize)->Self{
+        self.num_memtables=num_memtables;
+        self
+    }
+
 }
