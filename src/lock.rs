@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail};
+use log::error;
 use std::{
     ffi::CString,
     fs::{File, OpenOptions, Permissions},
@@ -43,7 +44,7 @@ fn flock(f: &File, operation: i32) -> anyhow::Result<()> {
 impl DirLockGuard {
     pub(crate) fn acquire_lock(
         dir: &PathBuf,
-        pid_file_name: String,
+        pid_file_name: &str,
         read_only: bool,
     ) -> anyhow::Result<Self> {
         let mut abs_pid_path = dir.canonicalize().expect("cannot get absolute path");
@@ -89,4 +90,15 @@ impl DirLockGuard {
         })
     }
 }
-
+impl Drop for DirLockGuard {
+    fn drop(&mut self) {
+        if !self.read_only{
+            match std::fs::remove_file(&self.abs_pid_path) {
+                Ok(_) => {},
+                Err(e) => {
+                    error!("cannot remove file {:?} : {}",&self.abs_pid_path,e);
+                },
+            };
+        }
+    }
+}

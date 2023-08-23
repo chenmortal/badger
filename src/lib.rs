@@ -5,7 +5,6 @@ use crate::options::Options;
 
 pub mod options;
 pub mod db;
-mod  open;
 pub(crate) mod default;
 mod skl;
 pub mod errors;
