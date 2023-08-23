@@ -9,7 +9,3 @@ pub(crate) struct Node{
     height:u16,
     tower:[AtomicU32;SKL_MAX_HEIGHT]
 }
-
-fn size(){
-    let p = size_of::<Node>();;
-}
