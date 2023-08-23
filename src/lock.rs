@@ -47,8 +47,10 @@ impl DirLockGuard {
         pid_file_name: &str,
         read_only: bool,
     ) -> anyhow::Result<Self> {
-        let mut abs_pid_path = dir.canonicalize().expect("cannot get absolute path");
-        abs_pid_path.push(pid_file_name);
+        let abs_pid_path = dir
+            .canonicalize()
+            .expect("cannot get absolute path")
+            .join(pid_file_name);
         let dir_fd = open_with_libc(dir, libc::O_RDONLY)?;
         flock(
             &dir_fd,
@@ -92,13 +94,19 @@ impl DirLockGuard {
 }
 impl Drop for DirLockGuard {
     fn drop(&mut self) {
-        if !self.read_only{
+        if !self.read_only {
             match std::fs::remove_file(&self.abs_pid_path) {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => {
-                    error!("cannot remove file {:?} : {}",&self.abs_pid_path,e);
-                },
+                    error!("cannot remove file {:?} : {}", &self.abs_pid_path, e);
+                }
             };
         }
+        match flock(&self.dir_fd, libc::LOCK_UN) {
+            Ok(_) => {},
+            Err(_) => {
+                error!("cannot release lock on opt.dir or opt.value_dir");
+            },
+        };
     }
 }

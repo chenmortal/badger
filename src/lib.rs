@@ -10,6 +10,7 @@ mod skl;
 pub mod errors;
 // mod un_safe;
 mod lock;
+mod manifest;
 // fn main() {
 //     tracing_subscriber::registry()
 //     .with(fmt::layer())

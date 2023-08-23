@@ -4,6 +4,7 @@ use anyhow::{bail, Error};
 use log::LevelFilter;
 
 use crate::{default::{MAX_VALUE_THRESHOLD, DEFAULT_DIR, DEFAULT_VALUE_DIR, SKL_MAX_NODE_SIZE}, errors::DBError};
+#[derive(Debug)]
 pub enum CompressionType {
     Snappy,
     ZSTD { level: isize },

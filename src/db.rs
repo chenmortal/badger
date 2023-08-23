@@ -12,24 +12,31 @@ use crate::{
     default::{LOCK_FILE, MAX_VALUE_THRESHOLD, SKL_MAX_NODE_SIZE},
     errors::DBError,
     lock::{self, DirLockGuard},
+    manifest::open_create_manifestfile,
     options::Options,
 };
 pub struct DB {
     lock: RwLock<()>,
 }
 impl DB {
-    pub fn open(mut opt: Options) -> anyhow::Result<()> {
+    pub fn open(opt: &mut Options) -> anyhow::Result<()> {
         opt.check_set_options()?;
         let mut dir_lock_guard = None;
+        let mut value_dir_lock_guard = None;
         if !opt.in_memory {
             opt.create_dirs()?;
             if !opt.bypass_lock_guard {
                 dir_lock_guard =
                     DirLockGuard::acquire_lock(&opt.dir, LOCK_FILE, opt.read_only)?.into();
-                let abs_dir = opt.dir.canonicalize()?;    
-                dbg!(abs_dir);
+                if opt.value_dir.canonicalize()? != opt.dir.canonicalize()? {
+                    value_dir_lock_guard =
+                        DirLockGuard::acquire_lock(&opt.value_dir, LOCK_FILE, opt.read_only)?
+                            .into();
+                };
             }
         }
+        open_create_manifestfile(&opt);
+        drop(value_dir_lock_guard);
         drop(dir_lock_guard);
         Ok(())
     }
