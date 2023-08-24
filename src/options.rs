@@ -1,13 +1,25 @@
-use std::{string, path::{Path, PathBuf}};
+use std::{
+    path::{Path, PathBuf},
+    string,
+};
 
 use anyhow::{bail, Error};
 use log::LevelFilter;
 
-use crate::{default::{MAX_VALUE_THRESHOLD, DEFAULT_DIR, DEFAULT_VALUE_DIR, SKL_MAX_NODE_SIZE}, errors::DBError};
-#[derive(Debug)]
+use crate::{
+    default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD, SKL_MAX_NODE_SIZE},
+    errors::DBError,
+};
+#[derive(Debug,Clone,Copy)]
 pub enum CompressionType {
-    Snappy,
-    ZSTD { level: isize },
+    None = 0,
+    Snappy = 1,
+    ZSTD = 2,
+}
+impl Default for CompressionType {
+    fn default() -> Self {
+        CompressionType::None
+    }
 }
 // const MAX_VALUE_THRESHOLD: i64 = 1 << 20;
 pub struct Options {
@@ -20,7 +32,7 @@ pub struct Options {
     num_versions_to_keep: isize,
     pub(crate) read_only: bool,
     pub(crate) log_level: LevelFilter,
-    pub(crate) compression: Option<CompressionType>,
+    pub(crate) compression: CompressionType,
     pub(crate) in_memory: bool,
     metrics_enabled: bool,
     // Sets the Stream.numGo field
@@ -80,7 +92,7 @@ pub struct Options {
 
     // Magic version used by the application using badger to ensure that it doesn't open the DB
     // with incompatible data format.
-    external_magic_version: u16,
+    pub(crate) external_magic_version: u16,
 
     // Transaction start and commit timestamps are managed by end-user.
     // This is only useful for databases built on top of Badger (like Dgraph).
@@ -103,7 +115,7 @@ impl Default for Options {
             num_versions_to_keep: 1,
             read_only: false,
             log_level: log::LevelFilter::Info,
-            compression: Some(CompressionType::Snappy),
+            compression: Default::default(),
             in_memory: Default::default(),
             metrics_enabled: true,
             num_goroutines: 8,
@@ -237,46 +249,44 @@ impl Options {
         self.compactl0_on_close = compactl0_on_close;
         self
     }
-    pub fn set_compression(mut self,compression:Option<CompressionType>)->Self{
-        self.compression=compression;
+    pub fn set_compression(mut self, compression: CompressionType) -> Self {
+        self.compression = compression;
         self
     }
-    pub fn set_verify_value_checksum(mut self,verify_value_checksum:bool)->Self{
-        self.verify_value_checksum=verify_value_checksum;
+    pub fn set_verify_value_checksum(mut self, verify_value_checksum: bool) -> Self {
+        self.verify_value_checksum = verify_value_checksum;
         self
     }
-    pub fn set_block_cache_size(mut self,block_cache_size: u64)->Self{
-        self.block_cache_size=block_cache_size;
+    pub fn set_block_cache_size(mut self, block_cache_size: u64) -> Self {
+        self.block_cache_size = block_cache_size;
         self
     }
-    pub fn set_in_memory(mut self,in_memory:bool)->Self{
-        self.in_memory=in_memory;
+    pub fn set_in_memory(mut self, in_memory: bool) -> Self {
+        self.in_memory = in_memory;
         self
     }
     // pub fn zstd_compression_level(mut self,level:isize)->Self{
     //     self
     // }
-    pub fn set_bypass_lock_guard(mut self,bypass_lock_guard:bool)->Self{
-        self.bypass_lock_guard=bypass_lock_guard;
+    pub fn set_bypass_lock_guard(mut self, bypass_lock_guard: bool) -> Self {
+        self.bypass_lock_guard = bypass_lock_guard;
         self
     }
-    pub fn set_index_cache_size(mut self,index_cache_size:i64)->Self{
-        self.index_cache_size=index_cache_size;
+    pub fn set_index_cache_size(mut self, index_cache_size: i64) -> Self {
+        self.index_cache_size = index_cache_size;
         self
     }
-    pub fn set_name_space_offset(mut self,offset:isize)->Self{
-        self.name_space_offset=offset;
+    pub fn set_name_space_offset(mut self, offset: isize) -> Self {
+        self.name_space_offset = offset;
         self
     }
-    pub fn set_detect_conflicts(mut self,detect_conflicts:bool)->Self{
-        self.detect_conflicts=detect_conflicts;
+    pub fn set_detect_conflicts(mut self, detect_conflicts: bool) -> Self {
+        self.detect_conflicts = detect_conflicts;
         self
     }
-    pub fn set_external_magic_version(mut self,magic:u16)->Self{
-        self.external_magic_version=magic;
+    pub fn set_external_magic_version(mut self, magic: u16) -> Self {
+        self.external_magic_version = magic;
         self
     }
 }
-impl Options {
-
-}
+impl Options {}
