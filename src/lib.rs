@@ -13,6 +13,7 @@ mod lock;
 mod manifest;
 mod pb;
 mod sys; //unsafe mod
+mod byte_util;
 // fn main() {
 //     tracing_subscriber::registry()
 //     .with(fmt::layer())

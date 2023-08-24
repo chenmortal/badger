@@ -14,5 +14,5 @@ impl ManifestChange {
             compression:compression as u32,
         }
     }
-    
+
 }

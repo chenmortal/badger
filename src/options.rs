@@ -10,7 +10,7 @@ use crate::{
     default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD, SKL_MAX_NODE_SIZE},
     errors::DBError,
 };
-#[derive(Debug,Clone,Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum CompressionType {
     None = 0,
     Snappy = 1,
@@ -19,6 +19,15 @@ pub enum CompressionType {
 impl Default for CompressionType {
     fn default() -> Self {
         CompressionType::None
+    }
+}
+impl From<u32> for CompressionType {
+    fn from(value: u32) -> Self {
+        match value {
+            1 => Self::Snappy,
+            2 => Self::ZSTD,
+            _ => Self::None,
+        }
     }
 }
 // const MAX_VALUE_THRESHOLD: i64 = 1 << 20;

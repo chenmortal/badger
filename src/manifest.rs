@@ -1,19 +1,21 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::{rename, File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{BufReader, Read, Seek, SeekFrom, Write},
     path::PathBuf,
-    sync::{Mutex, Arc},
+    sync::{Arc, Mutex},
 };
 
-use anyhow::bail;
-use bytes::{BufMut, BytesMut};
+use anyhow::{anyhow, bail};
+use bytes::{BufMut, Bytes, BytesMut};
+use log::error;
 use prost::Message;
 
 use crate::{
+    byte_util::{to_u16, to_u32},
     default::{MANIFEST_FILE_NAME, MANIFEST_REWRITE_FILE_NAME},
     options::{CompressionType, Options},
-    pb::badgerpb4::{ManifestChange, ManifestChangeSet},
+    pb::badgerpb4::{manifest_change, ManifestChange, ManifestChangeSet},
     sys::sync_dir,
 };
 #[derive(Debug, Default)]
@@ -35,7 +37,7 @@ struct TableManifest {
 }
 #[derive(Debug)]
 struct ManifestFile {
-    file_path:File,
+    file_path: File,
     dir: PathBuf,
     external_magic: u16,
     manifest: Arc<Mutex<Manifest>>,
@@ -58,14 +60,13 @@ pub(crate) fn open_create_manifestfile(opt: &Options) -> anyhow::Result<()> {
                     let manifest = Manifest::default();
                     let (file_path, net_creations) =
                         help_rewrite(&opt.dir, &manifest, opt.external_magic_version)?;
-                    assert_eq!(net_creations,0) ;
-                    ManifestFile{
+                    assert_eq!(net_creations, 0);
+                    ManifestFile {
                         file_path,
                         dir: opt.dir.clone(),
                         external_magic: opt.external_magic_version,
-                        manifest:Arc::new(Mutex::new(manifest)),
+                        manifest: Arc::new(Mutex::new(manifest.clone())),
                     };
-
                 }
                 _ => bail!(e),
             }
@@ -125,6 +126,59 @@ fn help_rewrite(
     sync_dir(dir)?;
     Ok((fp, net_creations))
 }
+fn replay_manifest_file(fp: &File, ext_magic: u16) -> anyhow::Result<()> {
+    let mut reader = BufReader::new(fp);
+    let mut magic_buf = [0; 8];
+    let mut offset = 0;
+    offset += reader
+        .read(&mut magic_buf)
+        .map_err(|e| anyhow!("manifest has bad magic : {}", e))?;
+    if magic_buf[..4] != MAGIC_TEXT[..] {
+        bail!("manifest has bad magic");
+    }
+
+    let ext_version = to_u16(&magic_buf[4..6]);
+
+    let version = to_u16(&magic_buf[6..8]);
+    if version != BADGER_MAGIC_VERSION {
+        bail!(
+            "manifest has upsupported version: {} (we support {} )",
+            version,
+            BADGER_MAGIC_VERSION
+        );
+    }
+    if ext_version != ext_magic {
+        bail!("cannot open db because the external magic number doesn't match. Expected: {}, version present in manifest: {}",ext_magic,ext_version);
+    }
+    let fp_szie = fp.metadata()?.len();
+    // meta.len();
+    let mut manifest = Manifest::default();
+    loop {
+        let mut len_crc_buf=[0;8];
+        match reader.read(&mut len_crc_buf) {
+            Ok(size) => {
+                offset+=size;
+                if size!=8{
+                    break;
+                }
+            },
+            Err(e) => {
+                match e.kind() {
+                    std::io::ErrorKind::UnexpectedEof => break,
+                    _ => bail!(e),
+                }
+            },
+        };
+        let len = to_u32(&len_crc_buf[..4]);
+        if (offset + len as usize) as u64 > fp_szie{
+            bail!("buffer len too greater, might be corrupted");
+        }
+        let changebuf=[0;]
+
+        // let len_crc_buf=
+    }
+    Ok(())
+}
 impl Manifest {
     fn as_changes(&self) -> Vec<ManifestChange> {
         let mut changes = Vec::<ManifestChange>::with_capacity(self.tables.len());
@@ -139,5 +193,57 @@ impl Manifest {
 
         changes
         // ManifestChange::default();
+    }
+    fn apply_change_set(&mut self, change_set: &ManifestChangeSet) -> anyhow::Result<()> {
+        for change in change_set.changes.iter() {
+            self.apply_manifest_change(change)?;
+        }
+        Ok(())
+    }
+    fn apply_manifest_change(&mut self, change: &ManifestChange) -> anyhow::Result<()> {
+        match change.op() {
+            manifest_change::Operation::Create => {
+                if self.tables.get(&change.id).is_some() {
+                    bail!("MANIFEST invalid, table {} exists", change.id);
+                }
+                self.tables.insert(
+                    change.id,
+                    TableManifest {
+                        level: change.level as u8,
+                        keyid: change.key_id,
+                        compression: CompressionType::from(change.compression),
+                    },
+                );
+                if self.levels.len() <= change.level as usize {
+                    self.levels.push(LevelManifest::default());
+                }
+                self.levels[change.level as usize].tables.insert(change.id);
+                self.creations += 1;
+            }
+            manifest_change::Operation::Delete => {
+                if self.tables.get(&change.id).is_none() {
+                    bail!("MANIFEST removes non-existing table {}", change.id);
+                }
+                self.levels[change.level as usize].tables.remove(&change.id);
+                self.tables.remove(&change.id);
+                self.deletions += 1;
+            }
+        }
+        Ok(())
+    }
+}
+impl Clone for Manifest {
+    fn clone(&self) -> Self {
+        let change_set = ManifestChangeSet {
+            changes: self.as_changes(),
+        };
+        let mut m = Manifest::default();
+        match m.apply_change_set(&change_set) {
+            Ok(_) => {}
+            Err(e) => {
+                error!("{}", e);
+            }
+        };
+        m
     }
 }
