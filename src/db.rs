@@ -72,7 +72,13 @@ impl Options {
         if self.read_only {
             self.compactl0_on_close = false;
         }
-        let need_cache = self.compression.is_some();
+        match self.compression {
+            _ => {},
+        }
+        let need_cache = match self.compression {
+            crate::options::CompressionType::None=>{true}
+            _ => {false},
+        };
         if need_cache && self.block_cache_size == 0 {
             panic!("Block_Cache_Size should be set since compression are enabled")
         }

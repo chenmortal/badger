@@ -10,37 +10,15 @@ use std::{
     },
     path::{Path, PathBuf},
 };
+
+use crate::sys::{open_with_libc, flock};
 pub(crate) struct DirLockGuard {
     dir_fd: File,
     abs_pid_path: PathBuf,
     read_only: bool,
 }
 ///we need lock on dir , but rust std::fs cannot provide dir's fd for 'flock',so use libc;
-fn open_with_libc(dir: &PathBuf, oflag: i32) -> anyhow::Result<File> {
-    unsafe {
-        match CString::new(dir.to_string_lossy().as_bytes()) {
-            Ok(path) => {
-                let fd = libc::open(path.as_ptr(), oflag);
-                drop(path);
-                if fd != -1 {
-                    return Ok(File::from_raw_fd(fd));
-                }
-            }
-            Err(_) => {}
-        };
-    }
 
-    bail!("cannot open {:?}", dir);
-}
-fn flock(f: &File, operation: i32) -> anyhow::Result<()> {
-    unsafe {
-        let r = libc::flock(f.as_raw_fd(), operation);
-        if r == -1 {
-            bail!("another process is using it")
-        }
-    }
-    Ok(())
-}
 impl DirLockGuard {
     pub(crate) fn acquire_lock(
         dir: &PathBuf,

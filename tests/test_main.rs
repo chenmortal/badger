@@ -1,6 +1,7 @@
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 
-use badger::{db::DB, options::Options};
+use badger::{db::DB, options::{Options, CompressionType}};
+use bytes::BufMut;
 // use badger::errors::FileSysErr;
 #[test]
 fn test_f() {
@@ -38,4 +39,18 @@ fn test_open() {
             println!("{}", e);
         }
     }
+}
+#[test]
+fn test_bytes(){
+    let mut buf = bytes::BytesMut::with_capacity(8);;
+    buf.put(&b"Bdgr"[..]);
+    buf.put_u16(12 as u16);
+    buf.put_u16(4 as u16);
+    dbg!(buf.len());
+    dbg!(buf);
+}
+#[test]
+fn test_b(){
+    let k=CompressionType::Snappy as u32;
+    dbg!(k);
 }
