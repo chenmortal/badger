@@ -31,6 +31,7 @@ impl From<u32> for CompressionType {
     }
 }
 // const MAX_VALUE_THRESHOLD: i64 = 1 << 20;
+#[derive(Debug)]
 pub struct Options {
     // Required options.
     pub(crate) dir: PathBuf,
@@ -42,7 +43,7 @@ pub struct Options {
     pub(crate) read_only: bool,
     pub(crate) log_level: LevelFilter,
     pub(crate) compression: CompressionType,
-    pub(crate) in_memory: bool,
+    // pub(crate) in_memory: bool,
     metrics_enabled: bool,
     // Sets the Stream.numGo field
     num_goroutines: usize,
@@ -110,8 +111,8 @@ pub struct Options {
 
     // 4. Flags for testing purposes
     // ------------------------------
-    pub(crate) max_batch_count: i64, // max entries in batch
-    pub(crate) max_batch_size: i64,  // max batch size in bytes
+    pub(crate) max_batch_count: u64, // max entries in batch
+    pub(crate) max_batch_size: u64,  // max batch size in bytes
 
     pub(crate) max_value_threshold: f64,
 }
@@ -125,7 +126,7 @@ impl Default for Options {
             read_only: false,
             log_level: log::LevelFilter::Info,
             compression: Default::default(),
-            in_memory: Default::default(),
+            // in_memory: Default::default(),
             metrics_enabled: true,
             num_goroutines: 8,
             memtable_size: 64 << 20,
@@ -163,10 +164,12 @@ impl Default for Options {
 }
 impl Options {
     pub fn set_dir(mut self, dir: String) -> Self {
+        assert_ne!(dir,"");
         self.dir = dir.into();
         self
     }
     pub fn set_value_dir(mut self, value_dir: String) -> Self {
+        assert_ne!(value_dir,"");
         self.value_dir = value_dir.into();
         self
     }
@@ -270,10 +273,10 @@ impl Options {
         self.block_cache_size = block_cache_size;
         self
     }
-    pub fn set_in_memory(mut self, in_memory: bool) -> Self {
-        self.in_memory = in_memory;
-        self
-    }
+    // pub fn set_in_memory(mut self, in_memory: bool) -> Self {
+    //     self.in_memory = in_memory;
+    //     self
+    // }
     // pub fn zstd_compression_level(mut self,level:isize)->Self{
     //     self
     // }

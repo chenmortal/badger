@@ -14,18 +14,19 @@ use prost::Message;
 use crate::{
     byte_util::{to_u16, to_u32},
     default::{MANIFEST_FILE_NAME, MANIFEST_REWRITE_FILE_NAME},
+    errors::err_file,
     options::{CompressionType, Options},
     pb::badgerpb4::{manifest_change, ManifestChange, ManifestChangeSet},
     sys::sync_dir,
 };
-#[derive(Debug, Default)]
-struct Manifest {
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Manifest {
     levels: Vec<LevelManifest>,
     tables: HashMap<u64, TableManifest>,
     creations: isize,
     deletions: isize,
 }
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct LevelManifest {
     tables: HashSet<u64>, //Set of table id's
 }
@@ -36,45 +37,60 @@ struct TableManifest {
     compression: CompressionType,
 }
 #[derive(Debug)]
-struct ManifestFile {
-    file_path: File,
+pub(crate) struct ManifestFile {
+    file_handle: File,
     dir: PathBuf,
     external_magic: u16,
     manifest: Arc<Mutex<Manifest>>,
     // in_memory:bool
 }
-pub(crate) fn open_create_manifestfile(opt: &Options) -> anyhow::Result<()> {
+pub(crate) fn open_create_manifestfile(opt: &Options) -> anyhow::Result<(ManifestFile, Manifest)> {
     let path = opt.dir.clone().join(MANIFEST_FILE_NAME);
     match OpenOptions::new()
         .read(true)
         .write(!opt.read_only)
-        .open(path)
+        .truncate(!opt.read_only)
+        .open(&path)
     {
-        Ok(_) => {}
-        Err(e) => {
-            match e.kind() {
-                std::io::ErrorKind::NotFound => {
-                    if opt.read_only {
-                        bail!("no manifest found, required for read-only db");
-                    }
-                    let manifest = Manifest::default();
-                    let (file_path, net_creations) =
-                        help_rewrite(&opt.dir, &manifest, opt.external_magic_version)?;
-                    assert_eq!(net_creations, 0);
-                    ManifestFile {
-                        file_path,
-                        dir: opt.dir.clone(),
-                        external_magic: opt.external_magic_version,
-                        manifest: Arc::new(Mutex::new(manifest.clone())),
-                    };
-                }
-                _ => bail!(e),
+        Ok(mut file_handle) => {
+            let (manifest, trunc_offset) =
+                replay_manifest_file(&file_handle, opt.external_magic_version)?;
+            if !opt.read_only {
+                file_handle.set_len(trunc_offset)?;
             }
-            // dbg!(e);
+            file_handle.seek(SeekFrom::End(0))?;
+            let manifest_file = ManifestFile {
+                file_handle,
+                dir: opt.dir.clone(),
+                external_magic: opt.external_magic_version,
+                manifest: Arc::new(Mutex::new(manifest.clone())),
+            };
+            Ok((manifest_file, manifest))
         }
-    };
-    // open_opt.read(true).write(!opt.read_only);
-    Ok(())
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                if opt.read_only {
+                    bail!(err_file(
+                        e,
+                        &path,
+                        "no manifest found, required for read-only db"
+                    ));
+                }
+                let manifest = Manifest::default();
+                let (file_handle, net_creations) =
+                    help_rewrite(&opt.dir, &manifest, opt.external_magic_version)?;
+                assert_eq!(net_creations, 0);
+                let manifest_file = ManifestFile {
+                    file_handle,
+                    dir: opt.dir.clone(),
+                    external_magic: opt.external_magic_version,
+                    manifest: Arc::new(Mutex::new(manifest.clone())),
+                };
+                Ok((manifest_file, manifest))
+            }
+            _ => bail!(e),
+        },
+    }
 }
 const BADGER_MAGIC_VERSION: u16 = 8;
 const MAGIC_TEXT: &[u8; 4] = b"Bdgr";
@@ -104,14 +120,14 @@ fn help_rewrite(
     let net_creations = manifest.tables.len();
     let changes = manifest.as_changes();
     let set = ManifestChangeSet { changes };
-    let changebuf = set.encode_to_vec();
+    let change_set_buf = set.encode_to_vec();
 
     let mut len_crc_buf = BytesMut::with_capacity(8);
-    len_crc_buf.put_u32(changebuf.len() as u32);
-    len_crc_buf.put_u32(crc32fast::hash(&changebuf));
+    len_crc_buf.put_u32(change_set_buf.len() as u32);
+    len_crc_buf.put_u32(crc32fast::hash(&change_set_buf));
 
     buf.extend_from_slice(&len_crc_buf);
-    buf.extend_from_slice(&changebuf);
+    buf.extend_from_slice(&change_set_buf);
     fp.write_all(&buf)?;
     fp.sync_all()?;
     drop(fp);
@@ -126,13 +142,13 @@ fn help_rewrite(
     sync_dir(dir)?;
     Ok((fp, net_creations))
 }
-fn replay_manifest_file(fp: &File, ext_magic: u16) -> anyhow::Result<()> {
+fn replay_manifest_file(fp: &File, ext_magic: u16) -> anyhow::Result<(Manifest, u64)> {
     let mut reader = BufReader::new(fp);
     let mut magic_buf = [0; 8];
-    let mut offset = 0;
+    let mut offset: u64 = 0;
     offset += reader
         .read(&mut magic_buf)
-        .map_err(|e| anyhow!("manifest has bad magic : {}", e))?;
+        .map_err(|e| anyhow!("manifest has bad magic : {}", e))? as u64;
     if magic_buf[..4] != MAGIC_TEXT[..] {
         bail!("manifest has bad magic");
     }
@@ -151,33 +167,53 @@ fn replay_manifest_file(fp: &File, ext_magic: u16) -> anyhow::Result<()> {
         bail!("cannot open db because the external magic number doesn't match. Expected: {}, version present in manifest: {}",ext_magic,ext_version);
     }
     let fp_szie = fp.metadata()?.len();
-    // meta.len();
+
     let mut manifest = Manifest::default();
     loop {
-        let mut len_crc_buf=[0;8];
+        let mut read_size = 0;
+        let mut len_crc_buf = [0; 8];
         match reader.read(&mut len_crc_buf) {
             Ok(size) => {
-                offset+=size;
-                if size!=8{
+                if size != 8 {
                     break;
                 }
+                read_size += size;
+            }
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::UnexpectedEof => break,
+                _ => bail!(e),
             },
-            Err(e) => {
-                match e.kind() {
-                    std::io::ErrorKind::UnexpectedEof => break,
-                    _ => bail!(e),
+        };
+
+        let change_len = to_u32(&len_crc_buf[..4]) as usize;
+        if (offset + change_len as u64) > fp_szie {
+            bail!("buffer len too greater, Manifest file might be corrupted");
+        }
+
+        let mut change_set_buf = Vec::<u8>::with_capacity(change_len);
+        change_set_buf.resize(change_len, 0);
+        match reader.read(&mut change_set_buf) {
+            Ok(size) => {
+                if size != change_len {
+                    break;
+                }
+                read_size += size;
+            }
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::UnexpectedEof => break,
+                _ => {
+                    bail!(e)
                 }
             },
         };
-        let len = to_u32(&len_crc_buf[..4]);
-        if (offset + len as usize) as u64 > fp_szie{
-            bail!("buffer len too greater, might be corrupted");
+        if crc32fast::hash(&change_set_buf) != to_u32(&len_crc_buf[4..8]) {
+            bail!("manifest has checksum mismatch");
         }
-        let changebuf=[0;]
-
-        // let len_crc_buf=
+        offset += read_size as u64;
+        let change_set = ManifestChangeSet::decode(Bytes::from(change_set_buf))?;
+        manifest.apply_change_set(&change_set)?;
     }
-    Ok(())
+    Ok((manifest, offset))
 }
 impl Manifest {
     fn as_changes(&self) -> Vec<ManifestChange> {
@@ -232,18 +268,18 @@ impl Manifest {
         Ok(())
     }
 }
-impl Clone for Manifest {
-    fn clone(&self) -> Self {
-        let change_set = ManifestChangeSet {
-            changes: self.as_changes(),
-        };
-        let mut m = Manifest::default();
-        match m.apply_change_set(&change_set) {
-            Ok(_) => {}
-            Err(e) => {
-                error!("{}", e);
-            }
-        };
-        m
-    }
-}
+// impl Clone for Manifest {
+//     fn clone(&self) -> Self {
+//         let change_set = ManifestChangeSet {
+//             changes: self.as_changes(),
+//         };
+//         let mut m = Manifest::default();
+//         match m.apply_change_set(&change_set) {
+//             Ok(_) => {}
+//             Err(e) => {
+//                 error!("{}", e);
+//             }
+//         };
+//         m
+//     }
+// }
