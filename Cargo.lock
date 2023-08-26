@@ -82,6 +82,7 @@ name = "badger"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bumpalo",
  "bytes",
  "crc32fast",
  "libc",
