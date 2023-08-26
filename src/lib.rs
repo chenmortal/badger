@@ -1,3 +1,4 @@
+// #![feature(flag)]
 use log::info;
 use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, fmt, util::SubscriberInitExt};
 
@@ -13,6 +14,8 @@ mod lock;
 mod manifest;
 mod pb;
 mod sys; //unsafe mod
+mod byte_util;
+mod memtable;
 // fn main() {
 //     tracing_subscriber::registry()
 //     .with(fmt::layer())

@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, io::Error};
 
 use thiserror::Error;
-
+use anyhow::anyhow;
 #[derive(Debug,Error)]
 pub enum DBError{
     #[error("Invalid ValueLogFileSize, must be in range [1MB,2GB)")]
@@ -24,6 +24,9 @@ pub enum DBError{
     BannedKey,
     #[error("Value log GC can't run because threshold is set to zero")]
     ThresholdZero
+}
+pub(crate) fn err_file(err:Error,path:&PathBuf,msg:&str)->anyhow::Error{
+    anyhow!("{}. Path={:?}. Error={}",msg,path,err)
 }
 // #[derive(Debug,Error)]
 // pub enum FileSysErr {

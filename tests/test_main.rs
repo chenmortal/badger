@@ -51,6 +51,7 @@ fn test_bytes(){
 }
 #[test]
 fn test_b(){
-    let k=CompressionType::Snappy as u32;
-    dbg!(k);
+//   let len=;
+  
 }
+
