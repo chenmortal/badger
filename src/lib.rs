@@ -1,4 +1,6 @@
 // #![feature(flag)]
+// #![feature(ptr_internals,atomic_from_mut,atomic_from_ptr,strict_provenance_atomic_ptr)]
+#![feature(ptr_internals, strict_provenance_atomic_ptr, ptr_sub_ptr)]
 use log::info;
 use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, fmt, util::SubscriberInitExt};
 
