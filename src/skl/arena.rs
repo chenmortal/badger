@@ -5,12 +5,7 @@ use std::sync::Arc;
 
 use std::ptr::{self, drop_in_place, NonNull, Unique};
 use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::AtomicUsize;
 
-pub fn add(left: usize, right: usize) -> usize {
-    Arc::new(5);
-    left + right
-}
 const CHUNK_ALIGN: usize = 16;
 const PAGE_CUTOFF: usize = 4096;
 const DEFAULT_ALIGN: usize = 8;
@@ -28,14 +23,15 @@ impl<T> ArenaSlice<T> {
         unsafe { slice::from_raw_parts_mut(ptr_raw, self.len) }
     }
 }
-
+///If T contains elements such as String that contain Pointers, 
+///make sure that the memory pointed to by the Pointers is also allocated by Arena, 
+///otherwise you may end up destroying only the Pointers and not the memory pointed to by the Pointers,
+///causing a memory leak
 struct Arena {
     start: Unique<u8>,
     ptr: AtomicPtr<u8>,
     end: Unique<u8>,
-    // size: usize,
     layout: Layout,
-    // allocated_bytes: AtomicUsize,
 }
 impl Arena {
     fn new(size: usize) -> Arena {
@@ -149,10 +145,13 @@ impl Arena {
 impl Drop for Arena {
     fn drop(&mut self) {
         unsafe {
-            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
-                self.start.as_ptr(),
-                self.layout.size(),
-            ));
+            // 因为在这里指向的元素是u8 实现了 Trait Copy , 所以 drop_in_place 在这里不会有任何操作,所以直接用dealloc
+            // Because the element pointed to here is u8 that implements the Trait Copy, drop_in_place does nothing here,so use dealloc            
+            // ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
+            //     self.start.as_ptr(),
+            //     self.layout.size(),
+            // ));
+
             dealloc(self.start.as_ptr(), self.layout);
         }
     }
@@ -176,17 +175,13 @@ mod tests {
         let slice = arena.alloc_slice_copy(p);
         let slice_a = arena.alloc_slice_copy(k);
         let node = arena.alloc(Node { a: 1, b: 2, c: 3 });
+        // drop(node);
         dbg!(String::from_utf8_lossy(slice.get()));
         dbg!(String::from_utf8_lossy(slice_a.get()));
-        dbg!(node);
+        // dbg!(node);
         // let k = Layout::for_value(p).align_to(8).unwrap();
         // dbg!(k);
         // let (size, align) = dbg!((mem::size_of_val(p), mem::align_of_val(p)));
         // dbg!(Arena::round_up_to(1000, 8));
-    }
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
     }
 }
