@@ -1,77 +1,89 @@
-use crate::default::SKL_MAX_HEIGHT;
-use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64};
+use std::{
+    mem::size_of,
+    sync::{
+        atomic::{AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
-// use super::arena::Arena;
-use bumpalo::boxed::Box;
-use bumpalo::Bump;
-
- struct Node {
-    value: AtomicU64,
-    key: Option<u64>,
-    height: u16,
-    // tower:[AtomicU32;SKL_MAX_HEIGHT]
+use super::arena::{Arena, ArenaSlice};
+const SKL_MAX_HEIGHT: usize = 8;
+#[derive(Debug, Default)]
+#[repr(align(8))]
+struct Node {
+    value: Option<ArenaSlice<u8>>,
+    key: Option<ArenaSlice<u8>>,
+    height: usize,
+    tower: [Option<NodePtr>; SKL_MAX_HEIGHT],
 }
- struct SkipListInner{
-    height: AtomicI32,
-    // head: Box<'a, Node<'a>>,
-    // arena: Arena,
-}
- struct SkipList{
-    arena:Bump,
-    skip_list:SkipListInner,
-}
-impl<'a> SkipList {
-    fn new(size:usize){
-        // let bump = Bump::new();
-        // bump.set_allocation_limit(Some(size));
-        // let node=Node{
-        //     value: AtomicU64::new(0),
-        //     key: None,
-        //     height: 0,
-        // };
-        // let node_ptr = bump.alloc(node);
-        
-        // bump.alloc(va);
-        // let arena = Arena::new(size);
-        // let node = arena.alloc(Node{
-        //             value: AtomicU64::new(0),
-        //             key: None,
-        //             height: 0,
-        //         });
-        // let inner = SkipListInner{
-        //             height:AtomicI32::new(1),
-        //             head: node,
-        //         };
-        //         SkipList{
-        //             arena,
-        //             skip_list: inner,
-        //         }        
-
-
+impl Node {
+    fn new(
+        arena: &Arena,
+        key: Option<&[u8]>,
+        value: Option<&[u8]>,
+        height: usize,
+    ) -> AtomicPtr<Node> {
+        let mut node = Node::default();
+        node.key = key.and_then(|src| Some(arena.alloc_slice_copy(src)));
+        node.value = value.and_then(|src| Some(arena.alloc_slice_copy(src)));
+        node.height = height;
+        AtomicPtr::new(arena.alloc(node))
     }
 }
-struct A<'a>{
-    b:B,
-    name:&'a str
-}
-struct B{
-    mem:String,
-    name:String,
-    a:i32,
-}
-impl<'a> A<'a> {
-    pub fn new(){
-        // let b = B{
-        //             mem: String::from("aa"),
-        //             name: String::from("bb"),
-        //             a: 0,
-        //         };
-        //         let name = b.name.as_str();
-        // A{
-        //     b,
-        //     name,
-        // };
+#[derive(Debug)]
+struct NodePtr(AtomicPtr<Node>);
+impl NodePtr {
+    fn get_key(&self) -> Option<&ArenaSlice<u8>> {
+        unsafe {
+            match self.0.load(Ordering::SeqCst).as_ref() {
+                Some(s) => match s.key {
+                    Some(ref p) => Some(p),
+                    None => None,
+                },
+                None => None,
+            }
+        }
     }
+}
+impl From<AtomicPtr<Node>> for NodePtr {
+    fn from(value: AtomicPtr<Node>) -> Self {
+        Self(value)
+    }
+}
+pub(crate) const SKL_MAX_NODE_SIZE: usize = size_of::<Node>();
+struct SkipListInner {
+    height: AtomicUsize,
+    head: NodePtr,
+    arena: Arena,
+}
+impl SkipListInner {
+    fn new(arena_size: usize) -> Self {
+        let arena = Arena::new(arena_size);
+        let head = Node::new(&arena, None, None, SKL_MAX_HEIGHT).into();
+        Self {
+            height: AtomicUsize::new(1),
+            head,
+            arena,
+        }
+    }
+    fn push() {}
+}
+pub(crate) struct SkipList {
+    skip_list: Arc<SkipListInner>,
+}
+impl SkipList {
+    pub(crate) fn new(arena_size: usize) -> Self {
+        SkipList {
+            skip_list: Arc::new(SkipListInner::new(arena_size)),
+        }
+    }
+}
+
+#[test]
+fn test_node() {
+    let node = Node::default();
+    dbg!(node);
+    dbg!(size_of::<Option<ArenaSlice<u8>>>());
 }
 // impl<'a,'b:'a> SkipList<'a,'b> {
 //     fn new(arena_size: u64) -> SkipList<'a,'b> {

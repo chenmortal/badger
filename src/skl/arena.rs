@@ -1,44 +1,42 @@
 
 use core::slice;
 use std::alloc::{alloc, dealloc, Layout};
+use std::mem::size_of;
 use std::sync::Arc;
 
 use std::ptr::{self, drop_in_place, NonNull, Unique};
 use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::AtomicUsize;
 
-pub fn add(left: usize, right: usize) -> usize {
-    Arc::new(5);
-    left + right
-}
 const CHUNK_ALIGN: usize = 16;
 const PAGE_CUTOFF: usize = 4096;
 const DEFAULT_ALIGN: usize = 8;
-struct ArenaSlice<T> {
+#[derive(Debug)]
+pub(crate) struct ArenaSlice<T> {
     ptr: AtomicPtr<T>,
     len: usize,
 }
 impl<T> ArenaSlice<T> {
-    fn get(&self) -> &[T] {
+    pub(crate) fn get(&self) -> &[T] {
         let ptr_raw = self.ptr.load(std::sync::atomic::Ordering::SeqCst);
         unsafe { slice::from_raw_parts(ptr_raw, self.len) }
     }
-    fn get_mut(&self) -> &mut [T] {
+    pub(crate) fn get_mut(&self) -> &mut [T] {
         let ptr_raw = self.ptr.load(std::sync::atomic::Ordering::SeqCst);
         unsafe { slice::from_raw_parts_mut(ptr_raw, self.len) }
     }
 }
-
-struct Arena {
+///If T contains elements such as String that contain Pointers, 
+///make sure that the memory pointed to by the Pointers is also allocated by Arena, 
+///otherwise you may end up destroying only the Pointers and not the memory pointed to by the Pointers,
+///causing a memory leak
+pub(crate) struct Arena {
     start: Unique<u8>,
     ptr: AtomicPtr<u8>,
     end: Unique<u8>,
-    // size: usize,
     layout: Layout,
-    // allocated_bytes: AtomicUsize,
 }
 impl Arena {
-    fn new(size: usize) -> Arena {
+    pub(crate) fn new(size: usize) -> Arena {
         let chunk_align = CHUNK_ALIGN;
         let mut request_size = Self::round_up_to(size, chunk_align).unwrap();
         if request_size >= PAGE_CUTOFF {
@@ -65,10 +63,10 @@ impl Arena {
             layout,
         }
     }
-    fn alloc<T>(&self, value: T) -> &mut T {
+    pub(crate) fn alloc<T>(&self, value: T) -> &mut T {
         self.alloc_with(|| value)
     }
-    fn alloc_with<F, T>(&self, f: F) -> &mut T
+    pub(crate) fn alloc_with<F, T>(&self, f: F) -> &mut T
     where
         F: FnOnce() -> T,
     {
@@ -112,7 +110,7 @@ impl Arena {
         }
     }
     #[inline(always)]
-    fn alloc_slice_copy<T: Copy>(&self, src: &[T]) -> ArenaSlice<T> {
+    pub(crate) fn alloc_slice_copy<T: Copy>(&self, src: &[T]) -> ArenaSlice<T> {
         let layout = Layout::for_value(src);
         let dst = self.alloc_layout(layout).cast::<T>();
         unsafe {
@@ -125,7 +123,7 @@ impl Arena {
         }
     }
     #[inline(always)]
-    fn alloc_slice_clone<T: Clone>(&self, src: &[T]) -> ArenaSlice<T> {
+    pub(crate) fn alloc_slice_clone<T: Clone>(&self, src: &[T]) -> ArenaSlice<T> {
         let layout = Layout::for_value(src);
         let dst = self.alloc_layout(layout).cast::<T>();
         unsafe {
@@ -149,13 +147,26 @@ impl Arena {
 impl Drop for Arena {
     fn drop(&mut self) {
         unsafe {
-            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
-                self.start.as_ptr(),
-                self.layout.size(),
-            ));
+            // 因为在这里指向的元素是u8 实现了 Trait Copy , 所以 drop_in_place 在这里不会有任何操作,所以直接用dealloc
+            // Because the element pointed to here is u8 that implements the Trait Copy, drop_in_place does nothing here,so use dealloc            
+            // ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
+            //     self.start.as_ptr(),
+            //     self.layout.size(),
+            // ));
+
             dealloc(self.start.as_ptr(), self.layout);
         }
     }
+}
+struct Ar{
+    p:Option<AtomicPtr<u8>>,
+    len:usize,
+}
+#[test]
+fn test_slice_size(){
+    dbg!(size_of::<Option<AtomicPtr<u8>>>());
+    dbg!(size_of::<usize>());
+    dbg!(size_of::<Ar>());
 }
 #[cfg(test)]
 mod tests {
@@ -176,17 +187,13 @@ mod tests {
         let slice = arena.alloc_slice_copy(p);
         let slice_a = arena.alloc_slice_copy(k);
         let node = arena.alloc(Node { a: 1, b: 2, c: 3 });
+        // drop(node);
         dbg!(String::from_utf8_lossy(slice.get()));
         dbg!(String::from_utf8_lossy(slice_a.get()));
-        dbg!(node);
+        // dbg!(node);
         // let k = Layout::for_value(p).align_to(8).unwrap();
         // dbg!(k);
         // let (size, align) = dbg!((mem::size_of_val(p), mem::align_of_val(p)));
         // dbg!(Arena::round_up_to(1000, 8));
-    }
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
     }
 }
