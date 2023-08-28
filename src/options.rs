@@ -7,7 +7,7 @@ use anyhow::{bail, Error};
 use log::LevelFilter;
 
 use crate::{
-    default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD, SKL_MAX_NODE_SIZE},
+    default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD},
     errors::DBError,
 };
 #[derive(Debug, Clone, Copy)]
@@ -49,9 +49,9 @@ pub struct Options {
     num_goroutines: usize,
 
     // Fine tuning options.
-    pub(crate) memtable_size: u64,
-    base_table_size: u64,
-    base_level_size: u64,
+    pub(crate) memtable_size: usize,
+    base_table_size: usize,
+    base_level_size: usize,
     level_size_multiplier: isize,
     table_size_multiplier: isize,
     max_levels: usize,
@@ -63,13 +63,13 @@ pub struct Options {
     // read from the block index stored at the end of the table.
     block_size: usize,
     bloom_false_positive: f64,
-    pub(crate) block_cache_size: u64,
+    pub(crate) block_cache_size: usize,
     index_cache_size: i64,
 
     num_level_zero_tables: usize,
     num_level_zero_tables_stall: isize,
 
-    pub(crate) valuelog_file_size: u64,
+    pub(crate) valuelog_file_size: usize,
     valuelog_max_entries: u32,
 
     pub(crate) num_compactors: usize,
@@ -111,8 +111,8 @@ pub struct Options {
 
     // 4. Flags for testing purposes
     // ------------------------------
-    pub(crate) max_batch_count: u64, // max entries in batch
-    pub(crate) max_batch_size: u64,  // max batch size in bytes
+    pub(crate) max_batch_count: usize, // max entries in batch
+    pub(crate) max_batch_size: usize,  // max batch size in bytes
 
     pub(crate) max_value_threshold: f64,
 }
@@ -197,7 +197,7 @@ impl Options {
         self.log_level = log_level;
         self
     }
-    pub fn set_base_table_size(mut self, base_table_size: u64) -> Self {
+    pub fn set_base_table_size(mut self, base_table_size: usize) -> Self {
         self.base_table_size = base_table_size;
         self
     }
@@ -221,7 +221,7 @@ impl Options {
         self.num_memtables = num_memtables;
         self
     }
-    pub fn set_memtable_size(mut self, memtable_size: u64) -> Self {
+    pub fn set_memtable_size(mut self, memtable_size: usize) -> Self {
         self.memtable_size = memtable_size;
         self
     }
@@ -241,11 +241,11 @@ impl Options {
         self.num_level_zero_tables_stall = num_level_zero_tables_stall;
         self
     }
-    pub fn set_base_level_size(mut self, base_level_size: u64) -> Self {
+    pub fn set_base_level_size(mut self, base_level_size: usize) -> Self {
         self.base_level_size = base_level_size;
         self
     }
-    pub fn set_valuelog_file_size(mut self, valuelog_file_size: u64) -> Self {
+    pub fn set_valuelog_file_size(mut self, valuelog_file_size: usize) -> Self {
         self.valuelog_file_size = valuelog_file_size;
         self
     }
@@ -269,7 +269,7 @@ impl Options {
         self.verify_value_checksum = verify_value_checksum;
         self
     }
-    pub fn set_block_cache_size(mut self, block_cache_size: u64) -> Self {
+    pub fn set_block_cache_size(mut self, block_cache_size: usize) -> Self {
         self.block_cache_size = block_cache_size;
         self
     }

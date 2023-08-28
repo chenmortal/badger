@@ -1,6 +1,7 @@
 
 use core::slice;
 use std::alloc::{alloc, dealloc, Layout};
+use std::mem::size_of;
 use std::sync::Arc;
 
 use std::ptr::{self, drop_in_place, NonNull, Unique};
@@ -9,16 +10,17 @@ use std::sync::atomic::AtomicPtr;
 const CHUNK_ALIGN: usize = 16;
 const PAGE_CUTOFF: usize = 4096;
 const DEFAULT_ALIGN: usize = 8;
-struct ArenaSlice<T> {
+#[derive(Debug)]
+pub(crate) struct ArenaSlice<T> {
     ptr: AtomicPtr<T>,
     len: usize,
 }
 impl<T> ArenaSlice<T> {
-    fn get(&self) -> &[T] {
+    pub(crate) fn get(&self) -> &[T] {
         let ptr_raw = self.ptr.load(std::sync::atomic::Ordering::SeqCst);
         unsafe { slice::from_raw_parts(ptr_raw, self.len) }
     }
-    fn get_mut(&self) -> &mut [T] {
+    pub(crate) fn get_mut(&self) -> &mut [T] {
         let ptr_raw = self.ptr.load(std::sync::atomic::Ordering::SeqCst);
         unsafe { slice::from_raw_parts_mut(ptr_raw, self.len) }
     }
@@ -27,14 +29,14 @@ impl<T> ArenaSlice<T> {
 ///make sure that the memory pointed to by the Pointers is also allocated by Arena, 
 ///otherwise you may end up destroying only the Pointers and not the memory pointed to by the Pointers,
 ///causing a memory leak
-struct Arena {
+pub(crate) struct Arena {
     start: Unique<u8>,
     ptr: AtomicPtr<u8>,
     end: Unique<u8>,
     layout: Layout,
 }
 impl Arena {
-    fn new(size: usize) -> Arena {
+    pub(crate) fn new(size: usize) -> Arena {
         let chunk_align = CHUNK_ALIGN;
         let mut request_size = Self::round_up_to(size, chunk_align).unwrap();
         if request_size >= PAGE_CUTOFF {
@@ -61,10 +63,10 @@ impl Arena {
             layout,
         }
     }
-    fn alloc<T>(&self, value: T) -> &mut T {
+    pub(crate) fn alloc<T>(&self, value: T) -> &mut T {
         self.alloc_with(|| value)
     }
-    fn alloc_with<F, T>(&self, f: F) -> &mut T
+    pub(crate) fn alloc_with<F, T>(&self, f: F) -> &mut T
     where
         F: FnOnce() -> T,
     {
@@ -108,7 +110,7 @@ impl Arena {
         }
     }
     #[inline(always)]
-    fn alloc_slice_copy<T: Copy>(&self, src: &[T]) -> ArenaSlice<T> {
+    pub(crate) fn alloc_slice_copy<T: Copy>(&self, src: &[T]) -> ArenaSlice<T> {
         let layout = Layout::for_value(src);
         let dst = self.alloc_layout(layout).cast::<T>();
         unsafe {
@@ -121,7 +123,7 @@ impl Arena {
         }
     }
     #[inline(always)]
-    fn alloc_slice_clone<T: Clone>(&self, src: &[T]) -> ArenaSlice<T> {
+    pub(crate) fn alloc_slice_clone<T: Clone>(&self, src: &[T]) -> ArenaSlice<T> {
         let layout = Layout::for_value(src);
         let dst = self.alloc_layout(layout).cast::<T>();
         unsafe {
@@ -155,6 +157,16 @@ impl Drop for Arena {
             dealloc(self.start.as_ptr(), self.layout);
         }
     }
+}
+struct Ar{
+    p:Option<AtomicPtr<u8>>,
+    len:usize,
+}
+#[test]
+fn test_slice_size(){
+    dbg!(size_of::<Option<AtomicPtr<u8>>>());
+    dbg!(size_of::<usize>());
+    dbg!(size_of::<Ar>());
 }
 #[cfg(test)]
 mod tests {

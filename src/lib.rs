@@ -18,6 +18,7 @@ mod pb;
 mod sys; //unsafe mod
 mod byte_util;
 mod memtable;
+mod mmap;
 // fn main() {
 //     tracing_subscriber::registry()
 //     .with(fmt::layer())

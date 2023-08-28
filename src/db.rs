@@ -10,11 +10,11 @@ use anyhow::bail;
 use tokio::sync::RwLock;
 
 use crate::{
-    default::{LOCK_FILE, MAX_VALUE_THRESHOLD, SKL_MAX_NODE_SIZE},
+    default::{LOCK_FILE, MAX_VALUE_THRESHOLD},
     errors::DBError,
     lock::{self, DirLockGuard},
     manifest::open_create_manifestfile,
-    options::Options,
+    options::Options, skl::skip_list::SKL_MAX_NODE_SIZE,
 };
 #[derive(Debug, Default)]
 pub struct DB {
@@ -62,7 +62,7 @@ impl Options {
 
         log::set_max_level(self.log_level);
         self.max_batch_size = (15 * self.memtable_size ) / 100;
-        self.max_batch_count = self.max_batch_size / (SKL_MAX_NODE_SIZE as u64);
+        self.max_batch_count = self.max_batch_size / (SKL_MAX_NODE_SIZE);
         self.max_value_threshold = MAX_VALUE_THRESHOLD.min(self.max_batch_size as i64) as f64;
         if self.vlog_percentile < 0.0 || self.vlog_percentile > 1.0 {
             bail!("vlog_percentile must be within range of 0.0-1.0")
