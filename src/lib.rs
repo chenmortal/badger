@@ -19,6 +19,9 @@ mod sys; //unsafe mod
 mod byte_util;
 mod memtable;
 mod mmap;
+mod wal;
+mod oracle;
+mod water_mark;
 // fn main() {
 //     tracing_subscriber::registry()
 //     .with(fmt::layer())

@@ -1,7 +1,7 @@
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 
 use badger::{db::DB, options::{Options, CompressionType}};
-use bytes::BufMut;
+use bytes::{BufMut, BytesMut};
 // use badger::errors::FileSysErr;
 #[test]
 fn test_f() {
@@ -51,6 +51,9 @@ fn test_bytes(){
 }
 #[test]
 fn test_b(){
+    let mut p = BytesMut::new();
+    p.put_u32(8);
+    // p.get(index)
 //   let len=;
   
 }

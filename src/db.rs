@@ -5,17 +5,19 @@ use std::{
     sync::atomic::AtomicU32,
 };
 
-use anyhow::anyhow;
-use anyhow::bail;
-use tokio::sync::RwLock;
-
 use crate::{
     default::{LOCK_FILE, MAX_VALUE_THRESHOLD},
     errors::DBError,
     lock::{self, DirLockGuard},
     manifest::open_create_manifestfile,
-    options::Options, skl::skip_list::SKL_MAX_NODE_SIZE,
+    memtable::MemTable,
+    options::Options,
+    skl::skip_list::SKL_MAX_NODE_SIZE,
 };
+use anyhow::anyhow;
+use anyhow::bail;
+use tokio::sync::mpsc;
+use tokio::sync::RwLock;
 #[derive(Debug, Default)]
 pub struct DB {
     lock: RwLock<()>,
@@ -39,7 +41,9 @@ impl DB {
         }
         // }
         let (manifest_file, manifest) = open_create_manifestfile(&opt)?;
-
+        let imm = Vec::<MemTable>::with_capacity(opt.num_memtables);
+        let (sender, receiver) = mpsc::channel::<MemTable>(opt.num_memtables);
+        
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);
         Ok(())
@@ -61,7 +65,7 @@ impl Options {
         // }
 
         log::set_max_level(self.log_level);
-        self.max_batch_size = (15 * self.memtable_size ) / 100;
+        self.max_batch_size = (15 * self.memtable_size) / 100;
         self.max_batch_count = self.max_batch_size / (SKL_MAX_NODE_SIZE);
         self.max_value_threshold = MAX_VALUE_THRESHOLD.min(self.max_batch_size as i64) as f64;
         if self.vlog_percentile < 0.0 || self.vlog_percentile > 1.0 {

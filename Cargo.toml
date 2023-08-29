@@ -16,7 +16,10 @@ libc="*"
 bytes="1"
 prost="0.11"
 crc32fast="1.3"
-bumpalo = {version="3.13.0",features=["boxed","collections"]}
-generational-arena = "0.2.9"
+bincode = "1.3.3"
+serde = {version="1.0.188",features = ["derive"]}
+memmap2 = "0.7.1"
+# bumpalo = {version="3.13.0",features=["boxed","collections"]}
+# generational-arena = "0.2.9"
 [build-dependencies]
 prost-build="0.11"
