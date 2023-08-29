@@ -6,8 +6,6 @@ use std::{
     },
 };
 
-use crate::options::Options;
-
 use super::arena::{Arena, ArenaSlice};
 const SKL_MAX_HEIGHT: usize = 8;
 #[derive(Debug, Default)]

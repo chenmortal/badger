@@ -12,7 +12,6 @@ use libc::{mmap64 as mmap, off64_t as off_t};
 use anyhow::{anyhow, bail};
 use core::slice;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use memmap2::Mmap;
 use std::fs::File;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::AsRawFd;
