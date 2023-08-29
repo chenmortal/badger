@@ -14,3 +14,8 @@ struct Mark{
 struct Closer{
     waiting:Vec<JoinHandle<()>>
 }
+impl WaterMark {
+    fn process(closer:&Closer){
+        // let pending=
+    }
+}

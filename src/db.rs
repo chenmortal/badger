@@ -1,14 +1,13 @@
 use std::{
     fs::{create_dir_all, set_permissions, Permissions},
     os::unix::prelude::PermissionsExt,
-    path::{Path, PathBuf},
     sync::atomic::AtomicU32,
 };
 
 use crate::{
     default::{LOCK_FILE, MAX_VALUE_THRESHOLD},
     errors::DBError,
-    lock::{self, DirLockGuard},
+    lock::DirLockGuard,
     manifest::open_create_manifestfile,
     memtable::MemTable,
     options::Options,
@@ -43,7 +42,7 @@ impl DB {
         let (manifest_file, manifest) = open_create_manifestfile(&opt)?;
         let imm = Vec::<MemTable>::with_capacity(opt.num_memtables);
         let (sender, receiver) = mpsc::channel::<MemTable>(opt.num_memtables);
-        
+
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);
         Ok(())

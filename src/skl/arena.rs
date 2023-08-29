@@ -1,8 +1,5 @@
-
 use core::slice;
 use std::alloc::{alloc, dealloc, Layout};
-use std::mem::size_of;
-use std::sync::Arc;
 
 use std::ptr::{self, drop_in_place, NonNull, Unique};
 use std::sync::atomic::AtomicPtr;
@@ -25,8 +22,8 @@ impl<T> ArenaSlice<T> {
         unsafe { slice::from_raw_parts_mut(ptr_raw, self.len) }
     }
 }
-///If T contains elements such as String that contain Pointers, 
-///make sure that the memory pointed to by the Pointers is also allocated by Arena, 
+///If T contains elements such as String that contain Pointers,
+///make sure that the memory pointed to by the Pointers is also allocated by Arena,
 ///otherwise you may end up destroying only the Pointers and not the memory pointed to by the Pointers,
 ///causing a memory leak
 pub(crate) struct Arena {
@@ -148,7 +145,7 @@ impl Drop for Arena {
     fn drop(&mut self) {
         unsafe {
             // 因为在这里指向的元素是u8 实现了 Trait Copy , 所以 drop_in_place 在这里不会有任何操作,所以直接用dealloc
-            // Because the element pointed to here is u8 that implements the Trait Copy, drop_in_place does nothing here,so use dealloc            
+            // Because the element pointed to here is u8 that implements the Trait Copy, drop_in_place does nothing here,so use dealloc
             // ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
             //     self.start.as_ptr(),
             //     self.layout.size(),
@@ -158,26 +155,26 @@ impl Drop for Arena {
         }
     }
 }
-struct Ar{
-    p:Option<AtomicPtr<u8>>,
-    len:usize,
-}
-#[test]
-fn test_slice_size(){
-    dbg!(size_of::<Option<AtomicPtr<u8>>>());
-    dbg!(size_of::<usize>());
-    dbg!(size_of::<Ar>());
-}
+
 #[cfg(test)]
 mod tests {
-    use std::mem;
-
+    use std::mem::{self, size_of};
+    struct Ar {
+        p: Option<AtomicPtr<u8>>,
+        len: usize,
+    }
     use super::*;
     #[derive(Debug)]
     struct Node {
         a: u64,
         b: u16,
         c: u32,
+    }
+    #[test]
+    fn test_slice_size() {
+        dbg!(size_of::<Option<AtomicPtr<u8>>>());
+        dbg!(size_of::<usize>());
+        dbg!(size_of::<Ar>());
     }
     #[test]
     fn test_round() {

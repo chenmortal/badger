@@ -1,15 +1,8 @@
-use std::{
-    path::{Path, PathBuf},
-    string,
-};
+use std::path::PathBuf;
 
-use anyhow::{bail, Error};
 use log::LevelFilter;
 
-use crate::{
-    default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD},
-    errors::DBError,
-};
+use crate::default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD};
 #[derive(Debug, Clone, Copy)]
 pub enum CompressionType {
     None = 0,
@@ -107,7 +100,7 @@ pub struct Options {
     // Transaction start and commit timestamps are managed by end-user.
     // This is only useful for databases built on top of Badger (like Dgraph).
     // Not recommended for most users.
-    managed_txns: bool,
+    pub(crate) managed_txns: bool,
 
     // 4. Flags for testing purposes
     // ------------------------------
@@ -164,12 +157,12 @@ impl Default for Options {
 }
 impl Options {
     pub fn set_dir(mut self, dir: String) -> Self {
-        assert_ne!(dir,"");
+        assert_ne!(dir, "");
         self.dir = dir.into();
         self
     }
     pub fn set_value_dir(mut self, value_dir: String) -> Self {
-        assert_ne!(value_dir,"");
+        assert_ne!(value_dir, "");
         self.value_dir = value_dir.into();
         self
     }
