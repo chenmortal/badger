@@ -11,6 +11,8 @@ use libc::{mmap64 as mmap, off64_t as off_t};
 
 use anyhow::{anyhow, bail};
 use core::slice;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use memmap2::Mmap;
 use std::fs::File;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::AsRawFd;
@@ -35,8 +37,75 @@ impl DerefMut for MmapFile {
         unsafe { slice::from_raw_parts_mut(self.ptr as *mut u8, self.len) }
     }
 }
+impl Drop for MmapFile {
+    fn drop(&mut self) {
+        unsafe { libc::munmap(self.ptr, self.len as libc::size_t) };
+    }
+}
+fn page_size() -> usize {
+    static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
 
-fn open_mmap_file(
+    match PAGE_SIZE.load(Ordering::Relaxed) {
+        0 => {
+            let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+
+            PAGE_SIZE.store(page_size, Ordering::Relaxed);
+
+            page_size
+        }
+        page_size => page_size,
+    }
+}
+impl MmapFile {
+    pub(crate) fn lock(&self) -> io::Result<()> {
+        unsafe {
+            if libc::mlock(self.ptr, self.len) != 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn unlock(&self) -> io::Result<()> {
+        unsafe {
+            if libc::munlock(self.ptr, self.len) != 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+    }
+    pub fn flush(&self, offset: usize, len: usize) -> io::Result<()> {
+        let alignment = (self.ptr as usize + offset) % page_size();
+        let offset = offset as isize - alignment as isize;
+        let len = len + alignment;
+        let result =
+            unsafe { libc::msync(self.ptr.offset(offset), len as libc::size_t, libc::MS_SYNC) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    pub fn flush_async(&self, offset: usize, len: usize) -> io::Result<()> {
+        let alignment = (self.ptr as usize + offset) % page_size();
+        let offset = offset as isize - alignment as isize;
+        let len = len + alignment;
+        let result =
+            unsafe { libc::msync(self.ptr.offset(offset), len as libc::size_t, libc::MS_ASYNC) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+}
+unsafe impl Send for MmapFile {}
+unsafe impl Sync for MmapFile {}
+
+pub(crate) fn open_mmap_file(
     file_path: &PathBuf,
     read_only: bool,
     create: bool,

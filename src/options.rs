@@ -58,7 +58,7 @@ pub struct Options {
 
     pub(crate) vlog_percentile: f64,
     pub(crate) value_threshold: i64,
-    num_memtables: usize,
+    pub(crate) num_memtables: usize,
     // Changing BlockSize across DB runs will not break badger. The block size is
     // read from the block index stored at the end of the table.
     block_size: usize,

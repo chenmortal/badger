@@ -29,17 +29,7 @@ impl MemTable {
         }
     }
 }
-struct LogFile{
-    fid:u32,
-    file_path:PathBuf,
-    opt:Options,
 
-}
-impl LogFile {
-    fn open(file_path:PathBuf,open_opt:OpenOptions,fsize:u64){
-
-    }
-}
 
 impl DB {
     pub fn open_mem_tables(&self) -> Result<()> {
