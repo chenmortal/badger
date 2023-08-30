@@ -88,7 +88,7 @@ pub struct Options {
     // DetectConflicts determines whether the transactions would be checked for
     // conflicts. The transactions can be processed at a higher rate when
     // conflict detection is disabled.
-    detect_conflicts: bool,
+    pub(crate) detect_conflicts: bool,
 
     // NamespaceOffset specifies the offset from where the next 8 bytes contains the namespace.
     name_space_offset: isize,

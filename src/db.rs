@@ -9,7 +9,7 @@ use crate::{
     errors::DBError,
     lock::DirLockGuard,
     manifest::open_create_manifestfile,
-    memtable::MemTable,
+    lsm::memtable::MemTable,
     options::Options,
     skl::skip_list::SKL_MAX_NODE_SIZE,
 };
