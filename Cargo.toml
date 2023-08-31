@@ -19,6 +19,8 @@ crc32fast="1.3"
 bincode = "1.3.3"
 serde = {version="1.0.188",features = ["derive"]}
 stretto={path = "./stretto",features = ["async"]}
+aes="0.8"
+getrandom = "0.2.10"
 # memmap2 = "0.7.1"
 # bumpalo = {version="3.13.0",features=["boxed","collections"]}
 # generational-arena = "0.2.9"
