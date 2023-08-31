@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use log::LevelFilter;
 
@@ -54,10 +54,10 @@ pub struct Options {
     pub(crate) num_memtables: usize,
     // Changing BlockSize across DB runs will not break badger. The block size is
     // read from the block index stored at the end of the table.
-    block_size: usize,
+    pub(crate) block_size: usize,
     bloom_false_positive: f64,
     pub(crate) block_cache_size: usize,
-    index_cache_size: i64,
+    pub(crate) index_cache_size: i64,
 
     num_level_zero_tables: usize,
     num_level_zero_tables_stall: isize,
@@ -74,8 +74,8 @@ pub struct Options {
     verify_value_checksum: bool,
 
     // Encryption related options.
-    // EncryptionKey                 []byte        // encryption key
-    // EncryptionKeyRotationDuration time.Duration // key rotation duration
+    pub(crate) encryption_key: Vec<u8>,                    // encryption key
+    pub(crate) encryption_key_rotation_duration: Duration, // key rotation duration
 
     // BypassLockGuard will bypass the lock guard on badger. Bypassing lock
     // guard can cause data corruption if multiple badger instances are using
@@ -152,6 +152,8 @@ impl Default for Options {
             max_batch_count: Default::default(),
             max_batch_size: Default::default(),
             max_value_threshold: Default::default(),
+            encryption_key: Vec::new(),
+            encryption_key_rotation_duration: Duration::from_secs(10 * 24 * 60 * 60),
         }
     }
 }
@@ -291,6 +293,19 @@ impl Options {
     }
     pub fn set_external_magic_version(mut self, magic: u16) -> Self {
         self.external_magic_version = magic;
+        self
+    }
+
+    pub fn set_encryption_key(mut self, encryption_key: Vec<u8>) -> Self {
+        self.encryption_key = encryption_key;
+        self
+    }
+
+    pub fn set_encryption_key_rotation_duration(
+        mut self,
+        encryption_key_rotation_duration: Duration,
+    ) -> Self {
+        self.encryption_key_rotation_duration = encryption_key_rotation_duration;
         self
     }
 }

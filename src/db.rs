@@ -8,10 +8,11 @@ use crate::{
     default::{LOCK_FILE, MAX_VALUE_THRESHOLD},
     errors::DBError,
     lock::DirLockGuard,
-    manifest::open_create_manifestfile,
     lsm::memtable::MemTable,
+    manifest::open_create_manifestfile,
     options::Options,
     skl::skip_list::SKL_MAX_NODE_SIZE,
+    value::threshold::VlogThreshold, key_registry::KeyRegistryOptions,
 };
 use anyhow::anyhow;
 use anyhow::bail;
@@ -42,6 +43,35 @@ impl DB {
         let (manifest_file, manifest) = open_create_manifestfile(&opt)?;
         let imm = Vec::<MemTable>::with_capacity(opt.num_memtables);
         let (sender, receiver) = mpsc::channel::<MemTable>(opt.num_memtables);
+        let threshold = VlogThreshold::new(&opt);
+
+        if opt.block_cache_size > 0 {
+            let mut num_in_cache = opt.block_cache_size / opt.block_size;
+            if num_in_cache == 0 {
+                num_in_cache = 1;
+            }
+            // let block_cache = stretto::AsyncCacheBuilder::new(num_in_cache * 8, opt.block_cache_size as i64)
+            // .set_buffer_items(64)
+            // .set_metrics(true);;
+        }
+        if opt.index_cache_size > 0 {
+            let index_sz = (opt.memtable_size as f64 * 0.05) as usize;
+            let mut num_in_cache = opt.index_cache_size as usize / index_sz;
+            if num_in_cache == 0 {
+                num_in_cache = 1;
+            }
+            // let index_cache = stretto::AsyncCacheBuilder::new(num_in_cache * 8, opt.index_cache_size)
+                            // .set_buffer_items(64)
+                            // .set_metrics(true);;
+        }
+
+        // KeyRegistryOptions{
+        //     dir: opt.dir.clone(),
+        //     read_only: opt.read_only,
+        //     encryption_key: todo!(),
+        //     encryption_key_rotation_duration: todo!(),
+        // };
+
 
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);

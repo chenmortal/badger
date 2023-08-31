@@ -11,3 +11,5 @@ mod pb;
 mod skl;
 mod sys;
 mod txn;
+mod value;
+mod key_registry;
