@@ -3,7 +3,7 @@ use crate::{
     options::Options,
     pb::{self, badgerpb4::DataKey},
 };
-use aes::cipher::{generic_array::GenericArray, KeyInit, BlockEncrypt};
+// use aes::cipher::{generic_array::GenericArray, KeyInit, BlockEncrypt};
 use anyhow::bail;
 use std::{
     collections::HashMap,
@@ -64,34 +64,15 @@ impl KeyRegistry {
     }
     fn write(&self, key_opt: KeyRegistryOptions) {}
 }
-fn generateIV() -> GenericArray<
-    u8,
-    aes::cipher::typenum::UInt<
-        aes::cipher::typenum::UInt<
-            aes::cipher::typenum::UInt<
-                aes::cipher::typenum::UInt<
-                    aes::cipher::typenum::UInt<
-                        aes::cipher::typenum::UTerm,
-                        aes::cipher::typenum::B1,
-                    >,
-                    aes::cipher::typenum::B0,
-                >,
-                aes::cipher::typenum::B0,
-            >,
-            aes::cipher::typenum::B0,
-        >,
-        aes::cipher::typenum::B0,
-    >,
-> {
-    let mut iv = aes::Block::default();
-    getrandom::getrandom(&mut iv).unwrap();
-    iv
+fn generate_none(){
+    
 }
-fn xor_block_stream(key:&[u8]){
-    let p = aes::Aes128::new_from_slice(key).unwrap();
+// fn xor_block_stream(key:&[u8]){
+
+    // let p = aes::Aes128::new_from_slice(key).unwrap();
     // p.encrypt_block(block)
     // aes::cipher::StreamCipherCore::apply_keystream_blocks(&mut self, blocks)
     // p.encrypt_with_backend(f)
     // p.encrypt_block_b2b(in_block, out_block)
     // aes::cipher::StreamCipher::apply_keystream(&mut self, buf)
-}
+// }
