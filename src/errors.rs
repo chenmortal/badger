@@ -23,7 +23,10 @@ pub enum DBError{
     #[error("Key is using the banned prefix")]
     BannedKey,
     #[error("Value log GC can't run because threshold is set to zero")]
-    ThresholdZero
+    ThresholdZero,
+    #[error("Encryption key's length should be either 16, 24, or 32 bytes")]
+    InvalidEncryptionKey
+    // ErrInvalidEncryptionKey is returned if length of encryption keys is invalid.
 }
 pub(crate) fn err_file(err:Error,path:&PathBuf,msg:&str)->anyhow::Error{
     anyhow!("{}. Path={:?}. Error={}",msg,path,err)
