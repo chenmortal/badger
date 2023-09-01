@@ -6,10 +6,9 @@ use crate::{
 use aes_gcm::{
     aead::Aead,
     aes::{cipher::BlockEncrypt, Aes192},
-    AeadCore, KeyInit,
+    AeadCore, KeyInit, Aes128Gcm, Aes256Gcm,
 };
-// use aes_gcm_siv::{aead::generic_array::{GenericArray, typenum::{UTerm, bit::{B1, B0}, UInt}}, AeadCore, KeyInit, Aes128GcmSiv};
-// use aes::cipher::{generic_array::GenericArray, KeyInit, BlockEncrypt};
+
 use anyhow::anyhow;
 use anyhow::bail;
 use std::{
@@ -72,10 +71,23 @@ impl KeyRegistry {
     fn write(&self, key_opt: KeyRegistryOptions) {}
 }
 use aes_gcm::aead::OsRng;
-// use aes_gcm::Nonce;
-// use aes_gcm::aes::Aes192;
-use aes_gcm_siv::Nonce;
-// use aes_gcm_siv
+use aes_gcm_siv::{Nonce, Aes128GcmSiv, Aes256GcmSiv};
+enum AesAlgo {
+    Aes128,
+    Aes128Siv,
+    Aes256,
+    Aes256Siv,
+}
+impl AesAlgo {
+    fn new(key:&[u8]){
+        let p:Aes128Gcm = aes_gcm::Aes128Gcm::new_from_slice(key).unwrap();
+        let p:Aes256Gcm = aes_gcm::Aes256Gcm::new_from_slice(key).unwrap();
+        let p:Aes128GcmSiv = aes_gcm_siv::Aes128GcmSiv::new_from_slice(key).unwrap();
+        let p:Aes256GcmSiv = aes_gcm_siv::Aes256GcmSiv::new_from_slice(key).unwrap();
+    }
+    
+
+}
 #[inline]
 fn generate_nonce() -> Nonce {
     aes_gcm_siv::Aes128GcmSiv::generate_nonce(&mut OsRng)
@@ -84,24 +96,8 @@ fn generate_nonce() -> Nonce {
 #[test]
 fn test_aes() {
     let mut key = [0; 16];
-    // let mut nonce=[0;16];
-    // getrandom::getrandom(&mut nonce);
     let p = aes_gcm::Aes128Gcm::new_from_slice(&key).unwrap();
     let nonce: Nonce = aes_gcm::Aes128Gcm::generate_nonce(&mut OsRng);
     let k = p.encrypt(&nonce, b"hha".as_ref());
-    // let cipher = aes_gcm::aes::Aes128::new_from_slice(&key).unwrap();
-    // let p = Nonce::from_slice(&nonce);
-    // cipher.encrypt_block(block);
-    // aes_gcm::AesGcm::<Aes192,_>::generate_nonce(&mut OsRng);
-    // aes_gcm::aes::Aes192::new(key);
 }
 
-// fn generate_nonce(
-// ) -> Result<Nonce, anyhow::Error> {
-// let p: Nonce = aes_gcm_siv::Aes128GcmSiv::generate_nonce(&mut OsRng);
-// Aes128GcmSiv::new_from_slice(key);
-// let key=[0;16];
-// aes_gcm_siv::AesGcmSiv::<Aes128>::new_from_slice(&key);
-// Ok(p)
-
-// }
