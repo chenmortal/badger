@@ -247,11 +247,11 @@
 
 ### 总结
 
-<img src="./事务.assets/picture2.png" alt="picture2" style="zoom:33%;" />
+<img src="./txn.assets/picture2.png" alt="picture2" style="zoom:33%;" />
 
-<img src="./事务.assets/table2.png" alt="table2" style="zoom:50%;" />
+<img src="./txn.assets/table2.png" alt="table2" style="zoom:50%;" />
 
-<img src="./事务.assets/table4.png" alt="table4" style="zoom: 50%;" />
+<img src="./txn.assets/table4.png" alt="table4" style="zoom: 50%;" />
 
 
 
