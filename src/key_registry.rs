@@ -2,6 +2,7 @@ use crate::{
     errors::{self, DBError},
     options::Options,
     pb::badgerpb4::DataKey,
+    sys::sync_dir,
 };
 use aes_gcm::{
     aead::{Aead, AeadMut, AeadMutInPlace},
@@ -18,7 +19,9 @@ use prost::Message;
 use std::{
     collections::HashMap,
     f32::consts::E,
-    fs::{File, OpenOptions},
+    fs::{rename, File, OpenOptions},
+    io::Write,
+    os::unix::prelude::OpenOptionsExt,
     path::PathBuf,
     time::Duration,
 };
@@ -99,8 +102,23 @@ impl KeyRegistry {
             Self::store_data_key(&mut buf, &cipher, data_key)
                 .map_err(|e| anyhow!("Error while storing datakey in WriteKeyRegistry {}", e))?;
         }
-        let rewrite_path = key_opt.dir.join(KEY_REGISTRY_REWRITE_FILE_NAME);
 
+        let rewrite_path = key_opt.dir.join(KEY_REGISTRY_REWRITE_FILE_NAME);
+        let mut rewrite_fp = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .custom_flags(libc::O_DSYNC)
+            .open(&rewrite_path)
+            .map_err(|e| anyhow!("Error while opening tmp file in WriteKeyRegistry {}", e))?;
+
+        rewrite_fp
+            .write_all(&buf)
+            .map_err(|e| anyhow!("Error while writing buf in WriteKeyRegistry {}", e))?;
+
+        rename(rewrite_path, key_opt.dir.join(KEY_REGISTRY_FILE_NAME))
+            .map_err(|e| anyhow!("Error while renaming file in WriteKeyRegistry {}", e))?;
+        sync_dir(&key_opt.dir)?;
         Ok(())
     }
     fn store_data_key(
