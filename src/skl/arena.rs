@@ -17,7 +17,7 @@ impl<T> ArenaSlice<T> {
         let ptr_raw = self.ptr.load(std::sync::atomic::Ordering::SeqCst);
         unsafe { slice::from_raw_parts(ptr_raw, self.len) }
     }
-    pub(crate) fn get_mut(&self) -> &mut [T] {
+    pub(crate) fn get_mut(&mut self) -> &mut [T] {
         let ptr_raw = self.ptr.load(std::sync::atomic::Ordering::SeqCst);
         unsafe { slice::from_raw_parts_mut(ptr_raw, self.len) }
     }
@@ -60,10 +60,10 @@ impl Arena {
             layout,
         }
     }
-    pub(crate) fn alloc<T>(&self, value: T) -> &mut T {
+    pub(crate) fn alloc<T>(&mut self, value: T) -> &mut T {
         self.alloc_with(|| value)
     }
-    pub(crate) fn alloc_with<F, T>(&self, f: F) -> &mut T
+    pub(crate) fn alloc_with<F, T>(&mut self, f: F) -> &mut T
     where
         F: FnOnce() -> T,
     {
@@ -180,7 +180,7 @@ mod tests {
     fn test_round() {
         let p = &b"hello world"[..];
         let k = &b"rust nb"[..];
-        let arena = Arena::new(100);
+        let mut arena = Arena::new(100);
         let slice = arena.alloc_slice_copy(p);
         let slice_a = arena.alloc_slice_copy(k);
         let node = arena.alloc(Node { a: 1, b: 2, c: 3 });

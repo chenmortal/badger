@@ -18,7 +18,7 @@ struct Node {
 }
 impl Node {
     fn new(
-        arena: &Arena,
+        arena: &mut Arena,
         key: Option<&[u8]>,
         value: Option<&[u8]>,
         height: usize,
@@ -58,8 +58,8 @@ struct SkipListInner {
 }
 impl SkipListInner {
     fn new(arena_size: usize) -> Self {
-        let arena = Arena::new(arena_size);
-        let head = Node::new(&arena, None, None, SKL_MAX_HEIGHT).into();
+        let mut arena = Arena::new(arena_size);
+        let head = Node::new(&mut arena, None, None, SKL_MAX_HEIGHT).into();
         Self {
             height: AtomicUsize::new(1),
             head,
