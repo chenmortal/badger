@@ -24,7 +24,7 @@ pub enum DBError{
     BannedKey,
     #[error("Value log GC can't run because threshold is set to zero")]
     ThresholdZero,
-    #[error("Encryption key's length should be either 16, 24, or 32 bytes")]
+    #[error("Encryption key's length should be either 16 or 32 bytes")]
     InvalidEncryptionKey
     // ErrInvalidEncryptionKey is returned if length of encryption keys is invalid.
 }
