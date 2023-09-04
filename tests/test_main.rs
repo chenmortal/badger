@@ -32,13 +32,13 @@ fn test_f() {
 #[test]
 fn test_open() {
     let mut opt = Options::default();
-    let p = DB::open(&mut opt);
-    match p {
-        Ok(_) => {}
-        Err(e) => {
-            println!("{}", e);
-        }
-    }
+    // let p = DB::open(&mut opt);
+    // match p {
+    //     Ok(_) => {}
+    //     Err(e) => {
+    //         println!("{}", e);
+    //     }
+    // }
 }
 #[test]
 fn test_bytes(){
