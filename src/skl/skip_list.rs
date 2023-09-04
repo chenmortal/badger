@@ -1,7 +1,7 @@
 use std::{
     mem::size_of,
     sync::{
-        atomic::{AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicPtr, AtomicUsize, Ordering},
         Arc,
     },
 };
@@ -79,12 +79,6 @@ impl SkipList {
     }
 }
 
-#[test]
-fn test_node() {
-    let node = Node::default();
-    dbg!(node);
-    dbg!(size_of::<Option<ArenaSlice<u8>>>());
-}
 // impl<'a,'b:'a> SkipList<'a,'b> {
 //     fn new(arena_size: u64) -> SkipList<'a,'b> {
 //         let arena = Arena::new(arena_size as usize);

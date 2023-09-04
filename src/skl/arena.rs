@@ -1,7 +1,7 @@
 use core::slice;
 use std::alloc::{alloc, dealloc, Layout};
 
-use std::ptr::{self, drop_in_place, NonNull, Unique};
+use std::ptr::{self, NonNull, Unique};
 use std::sync::atomic::AtomicPtr;
 
 const CHUNK_ALIGN: usize = 16;
