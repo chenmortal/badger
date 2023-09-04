@@ -7,12 +7,10 @@ use std::{
 };
 
 use anyhow::{anyhow, bail};
-use bytes::{BufMut, Bytes, BytesMut};
-use log::error;
+use bytes::{Buf, BufMut};
 use prost::Message;
 
 use crate::{
-    byte_util::{to_u16, to_u32},
     default::{MANIFEST_FILE_NAME, MANIFEST_REWRITE_FILE_NAME},
     errors::err_file,
     options::{CompressionType, Options},
@@ -112,7 +110,7 @@ fn help_rewrite(
     // | magicText (4 bytes) | externalMagic (2 bytes) | badgerMagic (2 bytes) |
     // +---------------------+-------------------------+-----------------------+
 
-    let mut buf = BytesMut::with_capacity(8);
+    let mut buf = Vec::with_capacity(8);
     buf.put(&MAGIC_TEXT[..]);
     buf.put_u16(ext_magic);
     buf.put_u16(BADGER_MAGIC_VERSION);
@@ -122,7 +120,7 @@ fn help_rewrite(
     let set = ManifestChangeSet { changes };
     let change_set_buf = set.encode_to_vec();
 
-    let mut len_crc_buf = BytesMut::with_capacity(8);
+    let mut len_crc_buf = Vec::with_capacity(8);
     len_crc_buf.put_u32(change_set_buf.len() as u32);
     len_crc_buf.put_u32(crc32fast::hash(&change_set_buf));
 
@@ -153,9 +151,10 @@ fn replay_manifest_file(fp: &File, ext_magic: u16) -> anyhow::Result<(Manifest, 
         bail!("manifest has bad magic");
     }
 
-    let ext_version = to_u16(&magic_buf[4..6]);
-
-    let version = to_u16(&magic_buf[6..8]);
+    // let ext_version = to_u16(&magic_buf[4..6]);
+    let ext_version = magic_buf.as_ref().get_u16();
+    // let version = to_u16(&magic_buf[6..8]);
+    let version = magic_buf.as_ref().get_u16();
     if version != BADGER_MAGIC_VERSION {
         bail!(
             "manifest has upsupported version: {} (we support {} )",
@@ -172,12 +171,9 @@ fn replay_manifest_file(fp: &File, ext_magic: u16) -> anyhow::Result<(Manifest, 
     loop {
         let mut read_size = 0;
         let mut len_crc_buf = [0; 8];
-        match reader.read(&mut len_crc_buf) {
-            Ok(size) => {
-                if size != 8 {
-                    break;
-                }
-                read_size += size;
+        match reader.read_exact(len_crc_buf.as_mut()) {
+            Ok(_) => {
+                read_size += 8;
             }
             Err(e) => match e.kind() {
                 std::io::ErrorKind::UnexpectedEof => break,
@@ -185,32 +181,30 @@ fn replay_manifest_file(fp: &File, ext_magic: u16) -> anyhow::Result<(Manifest, 
             },
         };
 
-        let change_len = to_u32(&len_crc_buf[..4]) as usize;
+        let mut len_crc_buf_ref = len_crc_buf.as_ref();
+
+        let change_len = len_crc_buf_ref.get_u32() as usize;
+        let crc = len_crc_buf_ref.get_u32();
         if (offset + change_len as u64) > fp_szie {
             bail!("buffer len too greater, Manifest file might be corrupted");
         }
 
-        let mut change_set_buf = Vec::<u8>::with_capacity(change_len);
-        change_set_buf.resize(change_len, 0);
-        match reader.read(&mut change_set_buf) {
-            Ok(size) => {
-                if size != change_len {
-                    break;
-                }
-                read_size += size;
+        let mut change_set_buf = vec![0 as u8; change_len];
+        match reader.read_exact(&mut change_set_buf) {
+            Ok(_) => {
+                read_size += change_len;
             }
             Err(e) => match e.kind() {
                 std::io::ErrorKind::UnexpectedEof => break,
-                _ => {
-                    bail!(e)
-                }
+                _ => bail!(e),
             },
         };
-        if crc32fast::hash(&change_set_buf) != to_u32(&len_crc_buf[4..8]) {
+
+        if crc32fast::hash(&change_set_buf) != crc {
             bail!("manifest has checksum mismatch");
         }
         offset += read_size as u64;
-        let change_set = ManifestChangeSet::decode(Bytes::from(change_set_buf))?;
+        let change_set = ManifestChangeSet::decode(change_set_buf.as_ref())?;
         manifest.apply_change_set(&change_set)?;
     }
     Ok((manifest, offset))

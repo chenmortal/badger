@@ -25,7 +25,9 @@ pub enum DBError{
     #[error("Value log GC can't run because threshold is set to zero")]
     ThresholdZero,
     #[error("Encryption key's length should be either 16 or 32 bytes")]
-    InvalidEncryptionKey
+    InvalidEncryptionKey,
+    #[error("Encryption key mismatch")]
+    EncryptionKeyMismatch,
     // ErrInvalidEncryptionKey is returned if length of encryption keys is invalid.
 }
 pub(crate) fn err_file(err:Error,path:&PathBuf,msg:&str)->anyhow::Error{
