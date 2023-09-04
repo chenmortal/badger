@@ -7,12 +7,13 @@ use std::{
 use crate::{
     default::{LOCK_FILE, MAX_VALUE_THRESHOLD},
     errors::DBError,
+    key_registry::{self, KeyRegistry},
     lock::DirLockGuard,
     lsm::memtable::MemTable,
     manifest::open_create_manifestfile,
     options::Options,
     skl::skip_list::SKL_MAX_NODE_SIZE,
-    value::threshold::VlogThreshold, key_registry::KeyRegistryOptions,
+    value::threshold::VlogThreshold,
 };
 use anyhow::anyhow;
 use anyhow::bail;
@@ -26,7 +27,7 @@ pub struct DB {
     // imm:Vec<>
 }
 impl DB {
-    pub fn open(opt: &mut Options) -> anyhow::Result<()> {
+    pub async fn open(opt: &mut Options) -> anyhow::Result<()> {
         opt.check_set_options()?;
         let mut dir_lock_guard = None;
         let mut value_dir_lock_guard = None;
@@ -61,17 +62,11 @@ impl DB {
                 num_in_cache = 1;
             }
             // let index_cache = stretto::AsyncCacheBuilder::new(num_in_cache * 8, opt.index_cache_size)
-                            // .set_buffer_items(64)
-                            // .set_metrics(true);;
+            // .set_buffer_items(64)
+            // .set_metrics(true);;
         }
 
-        // KeyRegistryOptions{
-        //     dir: opt.dir.clone(),
-        //     read_only: opt.read_only,
-        //     encryption_key: todo!(),
-        //     encryption_key_rotation_duration: todo!(),
-        // };
-
+        let key_registry = KeyRegistry::open(opt).await?;
 
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);
