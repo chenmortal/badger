@@ -7,7 +7,7 @@ use std::{
 use crate::{
     default::{LOCK_FILE, MAX_VALUE_THRESHOLD},
     errors::DBError,
-    key_registry::{self, KeyRegistry},
+    key_registry::KeyRegistry,
     lock::DirLockGuard,
     lsm::memtable::MemTable,
     manifest::open_create_manifestfile,

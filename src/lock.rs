@@ -1,17 +1,13 @@
-use anyhow::{anyhow, bail};
+use anyhow::anyhow;
 use log::error;
 use std::{
-    ffi::CString,
     fs::{File, OpenOptions, Permissions},
     io::Write,
-    os::{
-        fd::{AsFd, AsRawFd, FromRawFd},
-        unix::prelude::PermissionsExt,
-    },
-    path::{Path, PathBuf},
+    os::unix::prelude::PermissionsExt,
+    path::PathBuf,
 };
 
-use crate::sys::{open_with_libc, flock};
+use crate::sys::{flock, open_with_libc};
 pub(crate) struct DirLockGuard {
     dir_fd: File,
     abs_pid_path: PathBuf,
@@ -81,10 +77,10 @@ impl Drop for DirLockGuard {
             };
         }
         match flock(&self.dir_fd, libc::LOCK_UN) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(_) => {
                 error!("cannot release lock on opt.dir or opt.value_dir");
-            },
+            }
         };
     }
 }

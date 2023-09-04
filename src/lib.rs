@@ -1,5 +1,4 @@
 #![feature(ptr_internals, strict_provenance_atomic_ptr, ptr_sub_ptr)]
-// mod byte_util;
 pub mod db;
 pub(crate) mod default;
 pub mod errors;

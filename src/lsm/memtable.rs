@@ -1,5 +1,5 @@
 use std::{
-    fs::{read_dir, DirEntry, OpenOptions},
+    fs::{read_dir,OpenOptions},
     path::PathBuf,
 };
 
@@ -17,7 +17,6 @@ pub(crate) struct MemTable {
     opt:Options,
     max_version:usize,
     buf:BytesMut,
-    // wal:
 }
 impl MemTable {
     fn new(skip_list:SkipList,opt:Options)->Self{
@@ -66,7 +65,7 @@ impl DB {
         let mem_file_fid = self.get_next_mem_fid();
         // self.open_mem_table(mem_file_fid, open_opt);
     }
-    #[inline]
+    // #[inline]
     // fn compute_arena_size(opt:&Options)->u64{
     // opt.memtable_size+opt.max_batch_size+opt.max_batch_count*(SKL_MAX_NODE_SIZE as u64)
     // }
