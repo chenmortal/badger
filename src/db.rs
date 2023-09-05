@@ -1,7 +1,8 @@
 use std::{
-    fs::{create_dir_all, set_permissions, Permissions},
+    fs::{create_dir_all, metadata, read_dir, set_permissions, Permissions},
     os::unix::prelude::PermissionsExt,
-    sync::atomic::AtomicU32,
+    path::PathBuf,
+    sync::{atomic::AtomicU32, Arc},
 };
 
 use crate::{
@@ -11,18 +12,23 @@ use crate::{
     lock::DirLockGuard,
     lsm::memtable::MemTable,
     manifest::open_create_manifestfile,
+    metrics::{calculate_size, set_lsm_size, set_vlog_size, update_size, Closer},
     options::Options,
     skl::skip_list::SKL_MAX_NODE_SIZE,
     value::threshold::VlogThreshold,
 };
 use anyhow::anyhow;
 use anyhow::bail;
-use tokio::sync::mpsc;
+use log::debug;
 use tokio::sync::RwLock;
+use tokio::{sync::mpsc, task::JoinHandle};
+struct JoinHandles {
+    update_size: JoinHandle<()>,
+}
 #[derive(Debug, Default)]
 pub struct DB {
     lock: RwLock<()>,
-    pub(crate) opt: Options,
+    pub(crate) opt: Arc<Options>,
     next_mem_fid: AtomicU32,
     // imm:Vec<>
 }
@@ -65,18 +71,28 @@ impl DB {
             // .set_buffer_items(64)
             // .set_metrics(true);;
         }
+        let mut db = DB::default();
 
         let key_registry = KeyRegistry::open(opt).await?;
+        db.opt = Arc::new(opt.clone());
+        calculate_size(&db.opt).await;
+        let mut update_size_closer = Closer::new();
+        let update_size_handle =
+            tokio::spawn(update_size(db.opt.clone(), update_size_closer.sem_clone()));
+            
 
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);
         Ok(())
     }
+
     #[inline]
     pub(crate) fn get_next_mem_fid(&mut self) -> u32 {
         self.next_mem_fid
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
+
+    pub(crate) fn update_size() {}
 }
 impl Options {
     pub(crate) fn check_set_options(&mut self) -> anyhow::Result<()> {
@@ -139,4 +155,10 @@ impl Options {
         }
         Ok(())
     }
+}
+
+#[test]
+fn test_total() {
+    let pathx = PathBuf::from("/Users/chenshiming/Test");
+    // dbg!(DB::total_size(&pathx));
 }
