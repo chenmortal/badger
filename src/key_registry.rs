@@ -1,5 +1,7 @@
+use crate::util::{now_since_unix, secs_to_systime};
 use crate::{errors::DBError, options::Options, pb::badgerpb4::DataKey, sys::sync_dir};
-use aes_gcm::{aead::Aead, AeadCore, Aes128Gcm, Aes256Gcm, KeyInit};
+use aes_gcm::AeadCore;
+use aes_gcm::{aead::Aead, Aes128Gcm, Aes256Gcm, KeyInit};
 
 use aes_gcm::aead::OsRng;
 use aes_gcm_siv::{Aes128GcmSiv, Aes256GcmSiv, Nonce};
@@ -8,6 +10,7 @@ use anyhow::bail;
 use bytes::{Buf, BufMut};
 use log::error;
 use prost::Message;
+use std::time::SystemTime;
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -22,10 +25,10 @@ const KEY_REGISTRY_FILE_NAME: &str = "KEYREGISTRY";
 const KEY_REGISTRY_REWRITE_FILE_NAME: &str = "REWRITE-KEYREGISTRY";
 const SANITYTEXT: &[u8] = b"Hello Badger";
 
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 pub(crate) struct KeyRegistry {
     data_keys: RwLock<HashMap<u64, DataKey>>,
-    last_created: i64, //last_created is the timestamp(seconds) of the last data key,
+    last_created: u64, //last_created is the timestamp(seconds) of the last data key,
     next_key_id: u64,
     fp: Option<File>,
     cipher: Option<AesCipher>,
@@ -96,7 +99,7 @@ impl KeyRegistry {
     // |   Nonce   |  SanityText.len() u32 | e_Sanity Text  | DataKey1(len_crc_buf(e_data_key.len,crc),e_data_key(..,e_data,..))     | DataKey2     | ...              |
     // +-------------------+---------------------+--------------------+--------------+------------------+------------------+------------------+
     async fn write(&mut self) -> anyhow::Result<()> {
-        let nonce: Nonce = generate_nonce();
+        let nonce: Nonce = AesCipher::generate_nonce();
         let mut e_sanity = SANITYTEXT.to_vec();
 
         if let Some(c) = &self.cipher {
@@ -111,6 +114,7 @@ impl KeyRegistry {
         buf.put_slice(&e_sanity);
 
         for (_, data_key) in self.data_keys.write().await.iter_mut() {
+            // let d:DataKey = data_key.;
             Self::store_data_key(&mut buf, &self.cipher, data_key)
                 .map_err(|e| anyhow!("Error while storing datakey in WriteKeyRegistry {}", e))?;
         }
@@ -189,6 +193,49 @@ impl KeyRegistry {
         }
         Ok(())
     }
+    pub(crate) async fn latest_datakey(&mut self) -> anyhow::Result<Option<DataKey>> {
+        if self.cipher.is_none() {
+            return Ok(None);
+        }
+        for _ in 0..2 {
+            let last = secs_to_systime(self.last_created);
+
+            if let Ok(diff) = SystemTime::now().duration_since(last) {
+                if diff < self.cipher_rotation_duration {
+                    let data_keys_r = self.data_keys.read().await;
+                    let r = match data_keys_r.get(&self.next_key_id) {
+                        Some(d) => Some(d.clone()),
+                        None => None,
+                    };
+                    drop(data_keys_r);
+                    return Ok(r);
+                }
+            };
+        }
+
+        let cipher = self.cipher.as_ref().unwrap();
+
+        let key = cipher.generate_key();
+        let nonce:Nonce = AesCipher::generate_nonce();
+        self.next_key_id += 1;
+        let mut data_key = DataKey {
+            key_id: self.next_key_id,
+            data: key,
+            iv: nonce.to_vec(),
+            created_at: now_since_unix().as_secs(),
+        };
+        let mut buf = Vec::new();
+        Self::store_data_key(&mut buf, &self.cipher, &mut data_key)?;
+        if let Some(f) = &mut self.fp {
+            f.write_all(&buf)?;
+        }
+
+        self.last_created = data_key.created_at;
+        let mut data_key_w = self.data_keys.write().await;
+        data_key_w.insert(self.next_key_id, data_key.clone());
+        drop(data_key_w);
+        Ok(Some(data_key))
+    }
     // async fn get_data_key(&self,id:u64)->Option<DataKey>{
     // if id==0{
     // return None;
@@ -198,7 +245,7 @@ impl KeyRegistry {
 }
 impl<'a> KeyRegistryIter<'a> {
     fn valid(&mut self) -> anyhow::Result<()> {
-        let mut nonce: Nonce = generate_nonce();
+        let mut nonce: Nonce = AesCipher::generate_nonce();
         self.reader
             .read_exact(nonce.as_mut())
             .map_err(|e| anyhow!("Error while reading IV for key registry. {}", e))?;
@@ -314,8 +361,7 @@ impl<'a> Iterator for KeyRegistryIter<'a> {
         Some(data_key)
     }
 }
-// #[derive(Debug)]
-enum AesCipher {
+pub(crate) enum AesCipher {
     Aes128(Aes128Gcm),
     Aes128Siv(Aes128GcmSiv),
     Aes256(Aes256Gcm),
@@ -324,10 +370,10 @@ enum AesCipher {
 impl Debug for AesCipher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Aes128(arg0) => f.debug_tuple("Aes128").finish(),
-            Self::Aes128Siv(arg0) => f.debug_tuple("Aes128Siv").finish(),
-            Self::Aes256(arg0) => f.debug_tuple("Aes256").finish(),
-            Self::Aes256Siv(arg0) => f.debug_tuple("Aes256Siv").finish(),
+            Self::Aes128(_) => f.debug_tuple("Aes128").finish(),
+            Self::Aes128Siv(_) => f.debug_tuple("Aes128Siv").finish(),
+            Self::Aes256(_) => f.debug_tuple("Aes256").finish(),
+            Self::Aes256Siv(_) => f.debug_tuple("Aes256Siv").finish(),
         }
     }
 }
@@ -377,100 +423,17 @@ impl AesCipher {
             AesCipher::Aes256Siv(ref cipher) => cipher.decrypt(nonce, plaintext).ok(),
         }
     }
-}
-#[inline]
-fn generate_nonce() -> Nonce {
-    aes_gcm_siv::Aes128GcmSiv::generate_nonce(&mut OsRng)
-}
-
-#[test]
-fn test_aes() {
-    let mut key = [1; 16];
-    // let p = aes_gcm::Aes256Gcm::new_from_slice(&key).unwrap();
-    let p = aes_gcm_siv::Aes128GcmSiv::new_from_slice(&key).unwrap();
-    let nonce: Nonce = aes_gcm::Aes128Gcm::generate_nonce(&mut OsRng);
-    dbg!(nonce);
-    let n: Nonce = aes_gcm::Aes256Gcm::generate_nonce(&mut OsRng);
-    let s = b"ccccccc";
-    let k = p.encrypt(&nonce, s.as_ref()).unwrap();
-    dbg!(s.to_vec().len());
-    dbg!(&k.len());
-    let r = p.decrypt(&nonce, k.as_ref()).unwrap();
-    dbg!(&r);
-    dbg!(String::from_utf8(r));
-    let mut a = b"cc".to_vec();
-    // p.encrypt_in_place(nonce, associated_data, buffer)
-    // p.encrypt_in_place(nonce, associated_data, buffer);
-    // p.encrypt_in_place_detached(nonce, associated_data, buffer)
-    // match k {
-    // Ok(_) => {}
-    // Err(e) => {
-    // dbg!(e);
-    // }
-    // }
-    // let k = p.encrypt(&nonce, b"hha".as_ref());
-}
-#[test]
-fn test_endian() {
-    // let mut p = File::open("t.txt").unwrap();
-    let mut p = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("t.txt")
-        .unwrap();
-
-    // let mut nonce: Nonce = generate_nonce();
-    // dbg!(nonce.to_vec());
-
-    // p.write_all(nonce.as_ref());
-    let k = vec![0 as u8; 8];
-    // let mut c = Cursor::new(k);;
-
-    // c.get_u32();
-    // let mut b = BytesMut::from(k.as_ref());
-    // b.fill(value);
-    // b.copy_within(0..8, 0);
-
-    // let mut b = Vec::with_capacity(8);;
-    // let k=9;
-
-    // let mut b=vec![0;k];
-
-    // b.fill_with(f)
-    // std::io::BorrowedBuf::from(value);
-    // let buf=std::io::BorrowedCursor::
-    // let v=Vec::with_capacity(8);
-    // std::io::BorrowedBuf::from(v);
-    // let r = std::io::BufReader::new(&p);;
-    // r.read_buf(buf);
-    // p.read(nonce.as_mut());
-    // p.read(b.as_mut());
-    // p.read_exact(b.as_mut());
-
-    // let k = BytesMut::from(b);
-    // p.read_to_end(buf)
-    // p.read_buf(b);
-    // let p: Vec<u8> = nonce.to_vec();
-    // dbg!(p.len());
-    dbg!(p);
-    // dbg!(b);
-    // dbg!(String::from_utf8(nonce.to_vec()));
-}
-
-#[test]
-fn text_a() {
-    // let mut k=[0 as u8;8];
-    let mut k = Vec::with_capacity(8);
-    let t = 8 as u32;
-    // k.put_slice(t)
-    k.put_u32(8);
-    k.put_u32(1);
-    let p = k.clone();
-    let mut m: &[u8] = p.as_ref();
-    dbg!(m.get_u32());
-    dbg!(m.get_u32());
-    // k.extend_from_slice(t.to_be_bytes())
-    // k.extend(iter);
-    // let k:Vec<u8>=vec![1,2,3,4];
-    // let p=32.to_ne_bytes();
+    #[inline]
+    fn generate_key(&self) -> Vec<u8> {
+        match self {
+            AesCipher::Aes128(_) => aes_gcm::Aes128Gcm::generate_key(&mut OsRng).to_vec(),
+            AesCipher::Aes128Siv(_) => aes_gcm_siv::Aes128GcmSiv::generate_key(&mut OsRng).to_vec(),
+            AesCipher::Aes256(_) => aes_gcm::Aes256Gcm::generate_key(&mut OsRng).to_vec(),
+            AesCipher::Aes256Siv(_) => aes_gcm_siv::Aes256GcmSiv::generate_key(&mut OsRng).to_vec(),
+        }
+    }
+    #[inline]
+    pub(crate) fn generate_nonce() -> Nonce {
+        aes_gcm_siv::Aes128GcmSiv::generate_nonce(&mut OsRng)
+    }
 }

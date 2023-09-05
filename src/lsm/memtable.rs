@@ -65,8 +65,8 @@ impl DB {
         let opt = &self.opt;
         let mem_file_path = self.join_file_ext(mem_file_fid);
         let skip_list = SkipList::new(opt.arena_size());
-        LogFile::new(mem_file_fid, mem_file_path, opt.clone(), self.key_registry.clone()); 
-        
+        // LogFile::new(mem_file_fid, mem_file_path, opt.clone(), self.key_registry.clone()); 
+
     }
 
     pub(crate) fn new_mem_table(&mut self) {
