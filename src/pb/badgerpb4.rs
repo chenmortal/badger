@@ -151,8 +151,8 @@ pub struct DataKey {
     pub data: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "3")]
     pub iv: ::prost::alloc::vec::Vec<u8>,
-    #[prost(int64, tag = "4")]
-    pub created_at: i64,
+    #[prost(uint64, tag = "4")]
+    pub created_at: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -30,7 +30,7 @@ pub struct DB {
     lock: RwLock<()>,
     pub(crate) opt: Arc<Options>,
     next_mem_fid: AtomicU32,
-    pub(crate) key_registry: Arc<KeyRegistry>,
+    pub(crate) key_registry: Arc<RwLock<KeyRegistry>>,
     // imm:Vec<>
 }
 impl DB {
@@ -75,7 +75,7 @@ impl DB {
         let mut db = DB::default();
 
         let key_registry = KeyRegistry::open(opt).await?;
-        db.key_registry=Arc::new(key_registry);
+        db.key_registry=Arc::new(RwLock::new( key_registry));
         db.opt = Arc::new(opt.clone());
         calculate_size(&db.opt).await;
         let mut update_size_closer = Closer::new();
