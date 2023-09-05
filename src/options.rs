@@ -24,7 +24,7 @@ impl From<u32> for CompressionType {
     }
 }
 // const MAX_VALUE_THRESHOLD: i64 = 1 << 20;
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct Options {
     // Required options.
     pub(crate) dir: PathBuf,
@@ -37,7 +37,7 @@ pub struct Options {
     pub(crate) log_level: LevelFilter,
     pub(crate) compression: CompressionType,
     // pub(crate) in_memory: bool,
-    metrics_enabled: bool,
+    pub(crate) metrics_enabled: bool,
     // Sets the Stream.numGo field
     num_goroutines: usize,
 
