@@ -11,12 +11,15 @@ use libc::{mmap64 as mmap, off64_t as off_t};
 
 use anyhow::{anyhow, bail};
 use core::slice;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use log::error;
 use std::fs::File;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{fs::OpenOptions, path::PathBuf};
 use std::{io, ptr};
+
+use crate::sys::sync_dir;
 #[derive(Debug)]
 pub(crate) struct MmapFile {
     ptr: *mut libc::c_void,
@@ -106,14 +109,11 @@ unsafe impl Sync for MmapFile {}
 
 pub(crate) fn open_mmap_file(
     file_path: &PathBuf,
+    fp_open_opt: OpenOptions,
     read_only: bool,
-    create: bool,
     max_file_size: u64,
 ) -> anyhow::Result<(MmapFile, bool)> {
-    let fd = OpenOptions::new()
-        .read(true)
-        .write(!read_only)
-        .create(!read_only && create)
+    let fd = fp_open_opt
         .open(file_path)
         .map_err(|e| anyhow!("unable to open: {:?} :{}", file_path, e))?;
     let metadata = fd
@@ -162,6 +162,16 @@ pub(crate) fn open_mmap_file(
         len: file_size as usize,
         file_handle: fd,
     };
-
+    if let Some(dir) = file_path.parent() {
+        let dir = PathBuf::from(dir);
+        tokio::spawn(async move {
+            match sync_dir(&dir) {
+                Ok(_) => {}
+                Err(e) => {
+                    error!("cannot sync dir {:?} for {}", dir, e);
+                }
+            };
+        });
+    }
     Ok((mmap_file, is_new_file))
 }

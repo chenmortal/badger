@@ -22,7 +22,7 @@ const KEY_REGISTRY_FILE_NAME: &str = "KEYREGISTRY";
 const KEY_REGISTRY_REWRITE_FILE_NAME: &str = "REWRITE-KEYREGISTRY";
 const SANITYTEXT: &[u8] = b"Hello Badger";
 
-#[derive(Debug)]
+#[derive(Debug,Default)]
 pub(crate) struct KeyRegistry {
     data_keys: RwLock<HashMap<u64, DataKey>>,
     last_created: i64, //last_created is the timestamp(seconds) of the last data key,
