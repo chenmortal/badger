@@ -51,6 +51,7 @@ impl From<AtomicPtr<Node>> for NodePtr {
     }
 }
 pub(crate) const SKL_MAX_NODE_SIZE: usize = size_of::<Node>();
+#[derive(Debug)]
 struct SkipListInner {
     height: AtomicUsize,
     head: NodePtr,
@@ -68,6 +69,7 @@ impl SkipListInner {
     }
     fn push() {}
 }
+#[derive(Debug)]
 pub(crate) struct SkipList {
     skip_list: Arc<SkipListInner>,
 }

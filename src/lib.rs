@@ -10,6 +10,7 @@ mod manifest;
 pub mod options;
 mod pb;
 mod skl;
+mod table;
 mod sys;
 mod txn;
 mod value;

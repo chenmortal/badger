@@ -26,6 +26,7 @@ impl<T> ArenaSlice<T> {
 ///make sure that the memory pointed to by the Pointers is also allocated by Arena,
 ///otherwise you may end up destroying only the Pointers and not the memory pointed to by the Pointers,
 ///causing a memory leak
+#[derive(Debug)]
 pub(crate) struct Arena {
     start: Unique<u8>,
     ptr: AtomicPtr<u8>,
