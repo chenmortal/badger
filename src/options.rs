@@ -47,7 +47,7 @@ pub struct Options {
     base_level_size: usize,
     level_size_multiplier: isize,
     table_size_multiplier: isize,
-    max_levels: usize,
+    pub(crate) max_levels: usize,
 
     pub(crate) vlog_percentile: f64,
     pub(crate) value_threshold: i64,
@@ -59,8 +59,8 @@ pub struct Options {
     pub(crate) block_cache_size: usize,
     pub(crate) index_cache_size: i64,
 
-    num_level_zero_tables: usize,
-    num_level_zero_tables_stall: isize,
+    pub(crate) num_level_zero_tables: usize,
+    pub(crate) num_level_zero_tables_stall: usize,
 
     pub(crate) valuelog_file_size: usize,
     valuelog_max_entries: u32,
@@ -232,7 +232,7 @@ impl Options {
         self.num_level_zero_tables = num_level_zero_tables;
         self
     }
-    pub fn set_num_level_zero_tables_stall(mut self, num_level_zero_tables_stall: isize) -> Self {
+    pub fn set_num_level_zero_tables_stall(mut self, num_level_zero_tables_stall: usize) -> Self {
         self.num_level_zero_tables_stall = num_level_zero_tables_stall;
         self
     }

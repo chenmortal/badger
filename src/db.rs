@@ -10,7 +10,7 @@ use crate::{
     errors::DBError,
     key_registry::KeyRegistry,
     lock::DirLockGuard,
-    lsm::memtable::MemTable,
+    lsm::memtable::{self, MemTable},
     manifest::open_create_manifestfile,
     metrics::{calculate_size, set_lsm_size, set_vlog_size, update_size, Closer},
     options::Options,
@@ -31,6 +31,7 @@ pub struct DB {
     pub(crate) opt: Arc<Options>,
     next_mem_fid: AtomicU32,
     pub(crate) key_registry: Arc<RwLock<KeyRegistry>>,
+    memtable: Option<MemTable>,
     // imm:Vec<>
 }
 impl DB {
@@ -73,15 +74,30 @@ impl DB {
             // .set_metrics(true);;
         }
         let mut db = DB::default();
+        // DB{
+        //     lock: todo!(),
+        //     opt: todo!(),
+        //     next_mem_fid: todo!(),
+        //     key_registry: todo!(),
+        //     memtable: todo!(),
+        // };
 
         let key_registry = KeyRegistry::open(opt).await?;
-        db.key_registry=Arc::new(RwLock::new( key_registry));
+        db.key_registry = Arc::new(RwLock::new(key_registry));
         db.opt = Arc::new(opt.clone());
         calculate_size(&db.opt).await;
         let mut update_size_closer = Closer::new();
         let update_size_handle =
             tokio::spawn(update_size(db.opt.clone(), update_size_closer.sem_clone()));
 
+        if !db.opt.read_only {
+            db.memtable = db
+                .new_mem_table()
+                .await
+                .map_err(|e| anyhow!("Cannot create memtable {}", e))?
+                .into();
+        }
+        
 
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);
@@ -90,6 +106,10 @@ impl DB {
 
     #[inline]
     pub(crate) fn get_next_mem_fid(&mut self) -> u32 {
+        self.next_mem_fid.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    #[inline]
+    pub(crate) fn add_next_mem_fid(&mut self) -> u32 {
         self.next_mem_fid
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }

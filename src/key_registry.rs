@@ -27,7 +27,7 @@ const SANITYTEXT: &[u8] = b"Hello Badger";
 
 #[derive(Debug, Default)]
 pub(crate) struct KeyRegistry {
-    data_keys: RwLock<HashMap<u64, DataKey>>,
+    pub(crate) data_keys: RwLock<HashMap<u64, DataKey>>,
     last_created: u64, //last_created is the timestamp(seconds) of the last data key,
     next_key_id: u64,
     fp: Option<File>,

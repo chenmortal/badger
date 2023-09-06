@@ -12,7 +12,7 @@ use libc::{mmap64 as mmap, off64_t as off_t};
 use anyhow::{anyhow, bail};
 use core::slice;
 use log::error;
-use std::fs::File;
+use std::fs::{remove_file, File};
 use std::ops::{Deref, DerefMut};
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,6 +24,7 @@ use crate::sys::sync_dir;
 pub(crate) struct MmapFile {
     ptr: *mut libc::c_void,
     len: usize,
+    pub(crate) file_path: PathBuf,
     file_handle: File,
 }
 impl Deref for MmapFile {
@@ -39,9 +40,27 @@ impl DerefMut for MmapFile {
         unsafe { slice::from_raw_parts_mut(self.ptr as *mut u8, self.len) }
     }
 }
+impl MmapFile {
+    fn truncate(&mut self) {
+        match self.file_handle.set_len(0) {
+            Ok(_) => {}
+            Err(e) => {
+                error!("while truncate mmap_file {:?} for {}", self.file_path, e);
+            }
+        }
+        // drop(x)
+    }
+}
 impl Drop for MmapFile {
     fn drop(&mut self) {
         unsafe { libc::munmap(self.ptr, self.len as libc::size_t) };
+        self.truncate();
+        match remove_file(&self.file_path) {
+            Ok(_) => {}
+            Err(e) => {
+                error!("while remove mmap_file {:?} for {}", self.file_path, e)
+            }
+        };
     }
 }
 fn page_size() -> usize {
@@ -103,6 +122,9 @@ impl MmapFile {
             Err(io::Error::last_os_error())
         }
     }
+    // pub fn delete(&self){
+
+    // }
 }
 unsafe impl Send for MmapFile {}
 unsafe impl Sync for MmapFile {}
@@ -161,32 +183,34 @@ pub(crate) fn open_mmap_file(
         ptr,
         len: file_size as usize,
         file_handle: fd,
+        file_path: file_path.clone(),
     };
     if let Some(dir) = file_path.parent() {
         let dir = PathBuf::from(dir);
-        // tokio::spawn(async move {
-        //     match sync_dir(&dir) {
-        //         Ok(_) => {}
-        //         Err(e) => {
-        //             error!("cannot sync dir {:?} for {}", dir, e);
-        //         }
-        //     };
-        // });
+        tokio::spawn(async move {
+            match sync_dir(&dir) {
+                Ok(_) => {}
+                Err(e) => {
+                    error!("cannot sync dir {:?} for {}", dir, e);
+                }
+            };
+        });
     }
     Ok((mmap_file, is_new_file))
 }
 // #[tokio::test]
 #[test]
-fn test_a(){
-    let file_path=PathBuf::from("tt.txt");
+fn test_a() {
+    let file_path = PathBuf::from("tt.txt");
     let mut fp_open_opt = OpenOptions::new();
     fp_open_opt.read(true).write(true).create(true);
-    let s="hello world";
+    let s = "hello world";
     dbg!(s.len());
-    let (mut mmap,is_new) = open_mmap_file(&file_path, fp_open_opt, false, (s.len()+10) as u64).unwrap();;
+    let (mut mmap, is_new) =
+        open_mmap_file(&file_path, fp_open_opt, false, (s.len() + 10) as u64).unwrap();
     dbg!(is_new);
     // mmap[]
-   
+
     mmap[0..s.len()].copy_from_slice(s.as_bytes());
     mmap[0..s.len()].fill(0);
 }

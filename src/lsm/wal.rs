@@ -14,39 +14,25 @@ use crate::{
     lsm::mmap::{open_mmap_file, MmapFile},
     options::Options,
     pb::badgerpb4::DataKey,
-    value::{MAX_HEADER_SIZE, VLOG_HEADER_SIZE},
+    value::{threshold::VlogThreshold, MAX_HEADER_SIZE, VLOG_HEADER_SIZE},
 };
 use aes_gcm_siv::Nonce;
 use anyhow::{anyhow, bail};
-use bytes::BufMut;
+use bytes::{Buf, BufMut};
 use tokio::sync::RwLock;
-
+#[derive(Debug)]
 pub(crate) struct LogFile {
     fid: u32,
-    file_path: PathBuf,
     opt: Arc<Options>,
     key_registry: Arc<RwLock<KeyRegistry>>,
     datakey: Option<DataKey>,
-    mmap: MmapFile,
+    pub(crate) mmap: MmapFile,
     size: AtomicU32,
     base_nonce: Vec<u8>,
     write_at: usize,
 }
 
 impl LogFile {
-    // pub(crate) fn new(
-    //     fid: u32,
-    //     file_path: PathBuf,
-    //     opt: Arc<Options>,
-    //     key_registry: Arc<KeyRegistry>,
-    // ) -> Self {
-    //     Self {
-    //         fid,
-    //         file_path,
-    //         opt,
-    //         key_registry,
-    //     }
-    // }
     pub(crate) async fn open(
         // &self,
         fid: u32,
@@ -56,12 +42,12 @@ impl LogFile {
         fsize: u64,
         opt: Arc<Options>,
         key_registry: Arc<RwLock<KeyRegistry>>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<(LogFile, bool)> {
         let (mmap, is_new) = open_mmap_file(&file_path, fp_open_opt, read_only, fsize)
             .map_err(|e| anyhow!("while opening file: {:?} for {}", &file_path, e))?;
         let mut log_file = Self {
             fid,
-            file_path,
+            // file_path,
             opt,
             key_registry,
             datakey: None,
@@ -79,18 +65,18 @@ impl LogFile {
                         .store(VLOG_HEADER_SIZE as u32, Ordering::SeqCst);
                 }
                 Err(e) => {
-                    match remove_file(&log_file.file_path) {
+                    match remove_file(&log_file.mmap.file_path) {
                         Ok(_) => {
                             bail!(
                                 "Cannot logfile.boostrap {:?} for {}",
-                                &log_file.file_path,
+                                &log_file.mmap.file_path,
                                 e
                             );
                         }
                         Err(error) => {
                             bail!(
                                 "Cannot boostrap {:?} for {} and failed to remove this mmap_file  for {}",
-                                &log_file.file_path,
+                                &log_file.mmap.file_path,
                                 e,
                                 error
                             )
@@ -103,14 +89,30 @@ impl LogFile {
             .size
             .store(log_file.mmap.len() as u32, Ordering::SeqCst);
 
-        if log_file.size.load(Ordering::SeqCst) < VLOG_HEADER_SIZE as u32{
-            return Ok(());
+        if log_file.size.load(Ordering::SeqCst) < VLOG_HEADER_SIZE as u32 {
+            return Ok((log_file, is_new));
         }
 
-        
+        let mut buf = Vec::with_capacity(VLOG_HEADER_SIZE);
+        buf.put(&log_file.mmap[0..VLOG_HEADER_SIZE]);
+        debug_assert_eq!(buf.len(), VLOG_HEADER_SIZE);
 
-        Ok(())
+        let mut buf_ref: &[u8] = buf.as_ref();
+        let key_id = buf_ref.get_u64();
+
+        let registry_r = log_file.key_registry.read().await;
+        let datakeys_r = registry_r.data_keys.read().await;
+        if let Some(dk) = datakeys_r.get(&key_id) {
+            log_file.datakey = Some(dk.clone());
+        }
+        drop(datakeys_r);
+        drop(registry_r);
+        let nonce = buf_ref.get(0..12);
+        log_file.base_nonce = nonce.unwrap().to_vec();
+
+        Ok((log_file, is_new))
     }
+    fn delete(&self) {}
     // bootstrap will initialize the log file with key id and baseIV.
     // The below figure shows the layout of log file.
     // +----------------+------------------+------------------+
@@ -155,4 +157,17 @@ impl LogFile {
         }
         self.mmap[start..end].fill(0);
     }
+}
+
+#[test]
+fn test_a() {
+    let s: Vec<u8> = vec![0, 0, 0, 0, 1, 2, 3, 4];
+    let mut m: &[u8] = s.as_ref();
+    let i = m.get_u32();
+    let mut p = vec![0, 0, 0, 0];
+    dbg!(m.len());
+    p.copy_from_slice(m);
+    dbg!(p);
+    // let a = m.get(0..4);
+    // dbg!(a);
 }

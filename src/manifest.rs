@@ -20,7 +20,7 @@ use crate::{
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Manifest {
     levels: Vec<LevelManifest>,
-    tables: HashMap<u64, TableManifest>,
+    pub(crate) tables: HashMap<u64, TableManifest>,
     creations: isize,
     deletions: isize,
 }
@@ -29,7 +29,7 @@ struct LevelManifest {
     tables: HashSet<u64>, //Set of table id's
 }
 #[derive(Debug, Default, Clone, Copy)]
-struct TableManifest {
+pub(crate) struct TableManifest {
     level: u8,
     keyid: u64,
     compression: CompressionType,
@@ -47,7 +47,6 @@ pub(crate) fn open_create_manifestfile(opt: &Options) -> anyhow::Result<(Manifes
     match OpenOptions::new()
         .read(true)
         .write(!opt.read_only)
-        .truncate(!opt.read_only)
         .open(&path)
     {
         Ok(mut file_handle) => {
