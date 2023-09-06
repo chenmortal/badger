@@ -10,7 +10,7 @@ use crate::{
     errors::err_file,
     options::Options,
     skl::skip_list::{SkipList, SKL_MAX_NODE_SIZE},
-    util::parse_file_id,
+    util::{dir_join_id_suffix, parse_file_id},
 };
 use anyhow::Result;
 use anyhow::{anyhow, bail};
@@ -52,7 +52,9 @@ impl DB {
         fp_open_opt: OpenOptions,
     ) -> anyhow::Result<(MemTable, bool)> {
         let opt = &self.opt;
-        let mem_file_path = self.join_file_ext(mem_file_fid);
+        
+        let mem_file_path = dir_join_id_suffix(&opt.dir, mem_file_fid, MEM_FILE_EXT);
+
         let skip_list = SkipList::new(opt.arena_size());
 
         let (log_file, is_new) = LogFile::open(
@@ -96,10 +98,10 @@ impl DB {
         Ok(memtable)
     }
 
-    #[inline]
-    fn join_file_ext(&self, mem_fid: u32) -> PathBuf {
-        self.opt.dir.join(format!("{:05}{}", mem_fid, MEM_FILE_EXT))
-    }
+    // #[inline]
+    // fn join_file_ext(&self, mem_fid: u32) -> PathBuf {
+    //     self.opt.dir.join(format!("{:05}{}", mem_fid, MEM_FILE_EXT))
+    // }
 }
 impl Options {
     fn arena_size(&self) -> usize {

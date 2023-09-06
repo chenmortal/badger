@@ -54,6 +54,10 @@ pub(crate) fn get_sst_id_set(dir: &PathBuf) -> HashSet<u64> {
     };
     return id_set;
 }
+#[inline]
+pub(crate) fn dir_join_id_suffix(dir:&PathBuf,id:u32,suffix: &str)->PathBuf{
+    dir.join(format!("{:06}{}", id, suffix))
+}
 #[test]
 fn test_a() {
     let mut k: HashMap<String, u32> = HashMap::new();
