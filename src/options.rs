@@ -58,7 +58,7 @@ pub struct Options {
     // Changing BlockSize across DB runs will not break badger. The block size is
     // read from the block index stored at the end of the table.
     pub(crate) block_size: usize,
-    bloom_false_positive: f64,
+    pub(crate) bloom_false_positive: f64,
     pub(crate) block_cache_size: usize,
     pub(crate) index_cache_size: i64,
 

@@ -17,3 +17,7 @@ mod value;
 mod key_registry;
 mod metrics;
 mod util;
+
+#[allow(dead_code, unused_imports)]
+#[path = "./fb/flatbuffer_generated.rs"]
+mod fb;
