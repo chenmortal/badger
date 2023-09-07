@@ -15,11 +15,12 @@ use crate::{
     metrics::{calculate_size, set_lsm_size, set_vlog_size, update_size},
     options::Options,
     skl::skip_list::SKL_MAX_NODE_SIZE,
-    value::threshold::VlogThreshold, util::Closer,
+    value::threshold::VlogThreshold, util::Closer, table::block::{self, Block}, fb::fb::TableIndex,
 };
 use anyhow::anyhow;
 use anyhow::bail;
 use log::debug;
+use stretto::AsyncCache;
 use tokio::sync::RwLock;
 use tokio::{sync::mpsc, task::JoinHandle};
 struct JoinHandles {
@@ -32,7 +33,8 @@ pub struct DB {
     pub(crate) next_mem_fid: AtomicU32,
     pub(crate) key_registry: Arc<RwLock<KeyRegistry>>,
     memtable: Option<MemTable>,
-    // imm:Vec<>
+    block_cache:Option<AsyncCache<Vec<u8>,Block>>,
+    // index_cache:Option<AsyncCache<u64,TableIndex<'a>>>,
 }
 impl DB {
     pub async fn open(opt: &mut Options) -> anyhow::Result<()> {
@@ -59,9 +61,9 @@ impl DB {
             if num_in_cache == 0 {
                 num_in_cache = 1;
             }
-            // let block_cache = stretto::AsyncCacheBuilder::new(num_in_cache * 8, opt.block_cache_size as i64)
-            // .set_buffer_items(64)
-            // .set_metrics(true);;
+            let block_cache = stretto::AsyncCacheBuilder::<Vec<u8>,block::Block>::new(num_in_cache * 8, opt.block_cache_size as i64)
+            .set_buffer_items(64)
+            .set_metrics(true).finalize(tokio::spawn)?;;
         }
         if opt.index_cache_size > 0 {
             let index_sz = (opt.memtable_size as f64 * 0.05) as usize;
@@ -69,9 +71,9 @@ impl DB {
             if num_in_cache == 0 {
                 num_in_cache = 1;
             }
-            // let index_cache = stretto::AsyncCacheBuilder::new(num_in_cache * 8, opt.index_cache_size)
-            // .set_buffer_items(64)
-            // .set_metrics(true);;
+            let index_cache = stretto::AsyncCacheBuilder::<u64,TableIndex>::new(num_in_cache * 8, opt.index_cache_size)
+            .set_buffer_items(64)
+            .set_metrics(true).finalize(tokio::spawn)?;
         }
         let mut db = DB::default();
         // DB{

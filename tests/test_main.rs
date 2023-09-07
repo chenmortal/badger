@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, io::Write, path::PathBuf};
+use std::{fs::OpenOptions, io::Write, path::PathBuf, process::Command};
 
 use badger::{db::DB, options::{Options, CompressionType}};
 use bytes::{BufMut, BytesMut};
@@ -55,6 +55,7 @@ fn test_b(){
     p.put_u32(8);
     // p.get(index)
 //   let len=;
-  
+    let p = Command::new("flatc").arg("--rust").args(["-o","src/fb/"]).arg("src/fb/flatbuffer.fbs").status();;
+    dbg!(p);
 }
 

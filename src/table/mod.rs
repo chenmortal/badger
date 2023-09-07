@@ -1,9 +1,9 @@
 use std::{time::SystemTime, sync::Arc};
 
 use tokio::sync::Mutex;
-
+pub(crate) mod block;
+pub(crate) mod index;
 use crate::{lsm::mmap::MmapFile, options::CompressionType, pb::badgerpb4::DataKey, db::DB};
-
 pub(crate) struct Table {
     lock: Mutex<()>,
     mmap: MmapFile,
@@ -53,7 +53,7 @@ pub(crate) struct TableOption {
     bloom_false_positive: f64,
 
     // BlockSize is the size of each block inside SSTable in bytes.
-    block_size: i32,
+    block_size: usize,
 
     // DataKey is the key used to decrypt the encrypted text.
     datakey: Option<DataKey>,
@@ -75,8 +75,8 @@ impl TableOption {
             table_size: opt.base_table_size as u64,
             table_capacity: Default::default(),
             chk_mode: opt.checksum_verification_mode,
-            bloom_false_positive: todo!(),
-            block_size: todo!(),
+            bloom_false_positive: opt.bloom_false_positive,
+            block_size: opt.block_size,
             datakey: todo!(),
             compression: todo!(),
         }
