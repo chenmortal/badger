@@ -108,22 +108,4 @@ fn total_size(dir: &PathBuf) -> anyhow::Result<(u64, u64)> {
     Ok((lsm_size, vlog_size))
 }
 
-pub(crate) struct Closer {
-    semaphore: Arc<Semaphore>,
-    wait: usize,
-}
-impl Closer {
-    pub(crate) fn sem_clone(&mut self) -> Arc<Semaphore> {
-        self.wait += 1;
-        self.semaphore.clone()
-    }
-    pub(crate) fn new() -> Self {
-        Self {
-            semaphore: Arc::new(Semaphore::new(0)),
-            wait: 0,
-        }
-    }
-    pub(crate) fn close_all(&self) {
-        self.semaphore.add_permits(self.wait);
-    }
-}
+

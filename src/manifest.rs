@@ -30,9 +30,9 @@ struct LevelManifest {
 }
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct TableManifest {
-    level: u8,
-    keyid: u64,
-    compression: CompressionType,
+    pub(crate) level: u8,
+    pub(crate) keyid: u64,
+    pub(crate) compression: CompressionType,
 }
 #[derive(Debug)]
 pub(crate) struct ManifestFile {
