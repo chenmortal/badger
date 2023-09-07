@@ -159,15 +159,3 @@ impl LogFile {
     }
 }
 
-#[test]
-fn test_a() {
-    let s: Vec<u8> = vec![0, 0, 0, 0, 1, 2, 3, 4];
-    let mut m: &[u8] = s.as_ref();
-    let i = m.get_u32();
-    let mut p = vec![0, 0, 0, 0];
-    dbg!(m.len());
-    p.copy_from_slice(m);
-    dbg!(p);
-    // let a = m.get(0..4);
-    // dbg!(a);
-}

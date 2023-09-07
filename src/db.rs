@@ -181,8 +181,3 @@ impl Options {
     }
 }
 
-#[test]
-fn test_total() {
-    let pathx = PathBuf::from("/Users/chenshiming/Test");
-    // dbg!(DB::total_size(&pathx));
-}

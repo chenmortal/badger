@@ -199,18 +199,18 @@ pub(crate) fn open_mmap_file(
     Ok((mmap_file, is_new_file))
 }
 // #[tokio::test]
-#[test]
-fn test_a() {
-    let file_path = PathBuf::from("tt.txt");
-    let mut fp_open_opt = OpenOptions::new();
-    fp_open_opt.read(true).write(true).create(true);
-    let s = "hello world";
-    dbg!(s.len());
-    let (mut mmap, is_new) =
-        open_mmap_file(&file_path, fp_open_opt, false, (s.len() + 10) as u64).unwrap();
-    dbg!(is_new);
-    // mmap[]
+// #[test]
+// fn test_a() {
+//     let file_path = PathBuf::from("tt.txt");
+//     let mut fp_open_opt = OpenOptions::new();
+//     fp_open_opt.read(true).write(true).create(true);
+//     let s = "hello world";
+//     dbg!(s.len());
+//     let (mut mmap, is_new) =
+//         open_mmap_file(&file_path, fp_open_opt, false, (s.len() + 10) as u64).unwrap();
+//     dbg!(is_new);
+//     // mmap[]
 
-    mmap[0..s.len()].copy_from_slice(s.as_bytes());
-    mmap[0..s.len()].fill(0);
-}
+//     mmap[0..s.len()].copy_from_slice(s.as_bytes());
+//     mmap[0..s.len()].fill(0);
+// }
