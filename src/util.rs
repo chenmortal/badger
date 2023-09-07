@@ -149,49 +149,5 @@ pub(crate) fn get_sst_id_set(dir: &PathBuf) -> HashSet<u64> {
 pub(crate) fn dir_join_id_suffix(dir: &PathBuf, id: u32, suffix: &str) -> PathBuf {
     dir.join(format!("{:06}{}", id, suffix))
 }
-#[test]
-fn test_a() {
-    let mut k: HashMap<String, u32> = HashMap::new();
-    let mut n: HashMap<Arc<String>, Arc<u32>> = HashMap::new();
-    let s = "abc".to_string();
-    let p = Arc::new(s.clone());
-    k.insert(s.clone(), 1);
-    n.insert(p, Arc::new(1));
-    dbg!(k.get(&s));
-    let l = n.get(&s);
-}
 
-#[test]
-fn test_b() {
 
-    // dbg!(SystemTime::now());
-    // dbg!(secs_to_systime(now_since_unix().as_secs()));
-}
-#[tokio::test]
-async fn test_c(){
-    let mut tick=tokio::time::interval(Duration::from_secs(3));
-    // tokio::time::interval_at(start, period)
-    // tokio::time::
-    // tokio::time::sleep(Duration::from_secs(1)).await;
-    // let start = SystemTime::now();
-    // tick.
-    // tick.poll_tick(cx);
-    // tokio::runtime::
-    // tick.reset_immediately()
-    let start = tokio::time::Instant::now();
-    // let p=tick.tick().await;
-    // let k = p.duration_since(start).as_millis();
-    for i in 0..4{
-        select! {
-            time=tick.tick()=>{
-                dbg!(time.duration_since(start).as_millis());
-                // dbg!(format!("{}-{:?}",i,time));
-            }
-            // d{
-            //     println!("a {}",i);
-            // }
-        }
-        
-    }
-
-}
