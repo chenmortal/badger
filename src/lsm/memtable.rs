@@ -1,7 +1,7 @@
 use std::{
     fs::{read_dir, OpenOptions},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, atomic::Ordering},
 };
 
 use crate::{
@@ -27,7 +27,7 @@ pub(crate) struct MemTable {
 }
 
 impl DB {
-    pub fn open_mem_tables(&self) -> Result<()> {
+    pub async fn open_mem_tables(&self) -> Result<()> {
         let opt = &self.opt;
         let dir =
             read_dir(&opt.dir).map_err(|err| err_file(err, &opt.dir, "Unable to open mem dir"))?;
@@ -38,11 +38,15 @@ impl DB {
             .filter_map(|p| parse_file_id(p, MEM_FILE_EXT))
             .collect::<Vec<_>>();
         mem_file_fids.sort();
-        for fid in mem_file_fids {
+        for fid in &mem_file_fids {
             let mut fp_open_opt = OpenOptions::new();
             fp_open_opt.read(true).write(!self.opt.read_only);
-            self.open_mem_table(fid as u32, fp_open_opt);
+            self.open_mem_table(*fid as u32, fp_open_opt).await;
         }
+        if mem_file_fids.len()!=0{
+            self.next_mem_fid.store(*mem_file_fids.last().unwrap() as u32, Ordering::SeqCst);
+        }
+        self.next_mem_fid.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -52,7 +56,7 @@ impl DB {
         fp_open_opt: OpenOptions,
     ) -> anyhow::Result<(MemTable, bool)> {
         let opt = &self.opt;
-        
+
         let mem_file_path = dir_join_id_suffix(&opt.dir, mem_file_fid, MEM_FILE_EXT);
 
         let skip_list = SkipList::new(opt.arena_size());

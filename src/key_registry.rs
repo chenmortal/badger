@@ -20,14 +20,13 @@ use std::{
     path::PathBuf,
     time::Duration,
 };
-use tokio::sync::RwLock;
 const KEY_REGISTRY_FILE_NAME: &str = "KEYREGISTRY";
 const KEY_REGISTRY_REWRITE_FILE_NAME: &str = "REWRITE-KEYREGISTRY";
 const SANITYTEXT: &[u8] = b"Hello Badger";
 
 #[derive(Debug, Default)]
 pub(crate) struct KeyRegistry {
-    pub(crate) data_keys: RwLock<HashMap<u64, DataKey>>,
+    data_keys: HashMap<u64, DataKey>,
     last_created: u64, //last_created is the timestamp(seconds) of the last data key,
     next_key_id: u64,
     fp: Option<File>,
@@ -113,7 +112,7 @@ impl KeyRegistry {
         buf.put_u32(e_sanity.len() as u32);
         buf.put_slice(&e_sanity);
 
-        for (_, data_key) in self.data_keys.write().await.iter_mut() {
+        for (_, data_key) in self.data_keys.iter_mut() {
             // let d:DataKey = data_key.;
             Self::store_data_key(&mut buf, &self.cipher, data_key)
                 .map_err(|e| anyhow!("Error while storing datakey in WriteKeyRegistry {}", e))?;
@@ -187,8 +186,8 @@ impl KeyRegistry {
                 self.last_created = data_key.created_at;
             }
             self.data_keys
-                .write()
-                .await
+                // .write()
+                // .await
                 .insert(data_key.key_id, data_key);
         }
         Ok(())
@@ -202,12 +201,12 @@ impl KeyRegistry {
 
             if let Ok(diff) = SystemTime::now().duration_since(last) {
                 if diff < self.cipher_rotation_duration {
-                    let data_keys_r = self.data_keys.read().await;
-                    let r = match data_keys_r.get(&self.next_key_id) {
+                    // let data_keys_r = self.data_keys.read().await;
+                    let r = match self.data_keys.get(&self.next_key_id) {
                         Some(d) => Some(d.clone()),
                         None => None,
                     };
-                    drop(data_keys_r);
+                    // drop(data_keys_r);
                     return Ok(r);
                 }
             };
@@ -216,7 +215,7 @@ impl KeyRegistry {
         let cipher = self.cipher.as_ref().unwrap();
 
         let key = cipher.generate_key();
-        let nonce:Nonce = AesCipher::generate_nonce();
+        let nonce: Nonce = AesCipher::generate_nonce();
         self.next_key_id += 1;
         let mut data_key = DataKey {
             key_id: self.next_key_id,
@@ -231,17 +230,21 @@ impl KeyRegistry {
         }
 
         self.last_created = data_key.created_at;
-        let mut data_key_w = self.data_keys.write().await;
-        data_key_w.insert(self.next_key_id, data_key.clone());
-        drop(data_key_w);
+        // let mut data_key_w = self.data_keys.write().await;
+        self.data_keys.insert(self.next_key_id, data_key.clone());
+        // drop(data_key_w);
         Ok(Some(data_key))
     }
-    // async fn get_data_key(&self,id:u64)->Option<DataKey>{
-    // if id==0{
-    // return None;
-    // }
-    //  self.data_keys.read().await.get(&id).;
-    // }
+
+   pub(crate) async fn get_data_key(&self, id: u64) -> anyhow::Result<Option<DataKey>> {
+        if id == 0 {
+            return Ok(None);
+        }
+        match self.data_keys.get(&id) {
+            Some(s) => {Ok(Some(s.clone()))},
+            None => {bail!("{} Error for the KEY ID {}",DBError::InvalidDataKeyID,id)},
+        }
+    }
 }
 impl<'a> KeyRegistryIter<'a> {
     fn valid(&mut self) -> anyhow::Result<()> {

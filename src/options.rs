@@ -2,7 +2,10 @@ use std::{path::PathBuf, time::Duration};
 
 use log::LevelFilter;
 
-use crate::default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD};
+use crate::{
+    default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD},
+    table::ChecksumVerificationMode,
+};
 #[derive(Debug, Clone, Copy)]
 pub enum CompressionType {
     None = 0,
@@ -24,7 +27,7 @@ impl From<u32> for CompressionType {
     }
 }
 // const MAX_VALUE_THRESHOLD: i64 = 1 << 20;
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct Options {
     // Required options.
     pub(crate) dir: PathBuf,
@@ -43,7 +46,7 @@ pub struct Options {
 
     // Fine tuning options.
     pub(crate) memtable_size: usize,
-    base_table_size: usize,
+    pub(crate) base_table_size: usize,
     base_level_size: usize,
     level_size_multiplier: isize,
     table_size_multiplier: isize,
@@ -74,7 +77,7 @@ pub struct Options {
     verify_value_checksum: bool,
 
     // Encryption related options.
-    pub(crate) encryption_key: Vec<u8>,                    // encryption key
+    pub(crate) encryption_key: Vec<u8>, // encryption key
     pub(crate) encryption_key_rotation_duration: Duration, // key rotation duration
 
     // BypassLockGuard will bypass the lock guard on badger. Bypassing lock
@@ -83,7 +86,7 @@ pub struct Options {
     pub(crate) bypass_lock_guard: bool,
 
     // ChecksumVerificationMode decides when db should verify checksums for SSTable blocks.
-    // ChecksumVerificationMode options.ChecksumVerificationMode
+    pub(crate) checksum_verification_mode: ChecksumVerificationMode,
 
     // DetectConflicts determines whether the transactions would be checked for
     // conflicts. The transactions can be processed at a higher rate when
@@ -154,6 +157,7 @@ impl Default for Options {
             max_value_threshold: Default::default(),
             encryption_key: Vec::new(),
             encryption_key_rotation_duration: Duration::from_secs(10 * 24 * 60 * 60),
+            checksum_verification_mode: Default::default(),
         }
     }
 }
@@ -306,6 +310,16 @@ impl Options {
         encryption_key_rotation_duration: Duration,
     ) -> Self {
         self.encryption_key_rotation_duration = encryption_key_rotation_duration;
+        self
+    }
+    // ChecksumVerificationMode indicates when the db should verify checksums for SSTable blocks.
+    //
+    // The default value of VerifyValueChecksum is options.NoVerification.
+    pub fn set_checksum_verification_mode(
+        mut self,
+        checksum_verification_mode: ChecksumVerificationMode,
+    ) ->Self{
+        self.checksum_verification_mode = checksum_verification_mode;
         self
     }
 }

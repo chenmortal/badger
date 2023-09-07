@@ -12,10 +12,10 @@ use crate::{
     lock::DirLockGuard,
     lsm::memtable::{self, MemTable},
     manifest::open_create_manifestfile,
-    metrics::{calculate_size, set_lsm_size, set_vlog_size, update_size, Closer},
+    metrics::{calculate_size, set_lsm_size, set_vlog_size, update_size},
     options::Options,
     skl::skip_list::SKL_MAX_NODE_SIZE,
-    value::threshold::VlogThreshold,
+    value::threshold::VlogThreshold, util::Closer,
 };
 use anyhow::anyhow;
 use anyhow::bail;
@@ -29,7 +29,7 @@ struct JoinHandles {
 pub struct DB {
     lock: RwLock<()>,
     pub(crate) opt: Arc<Options>,
-    next_mem_fid: AtomicU32,
+    pub(crate) next_mem_fid: AtomicU32,
     pub(crate) key_registry: Arc<RwLock<KeyRegistry>>,
     memtable: Option<MemTable>,
     // imm:Vec<>

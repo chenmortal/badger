@@ -101,11 +101,11 @@ impl LogFile {
         let key_id = buf_ref.get_u64();
 
         let registry_r = log_file.key_registry.read().await;
-        let datakeys_r = registry_r.data_keys.read().await;
-        if let Some(dk) = datakeys_r.get(&key_id) {
-            log_file.datakey = Some(dk.clone());
+        // let datakeys_r = registry_r.data_keys.read().await;
+        if let Some(dk) = registry_r.get_data_key(key_id).await? {
+            log_file.datakey=Some(dk);
         }
-        drop(datakeys_r);
+        // drop(datakeys_r);
         drop(registry_r);
         let nonce = buf_ref.get(0..12);
         log_file.base_nonce = nonce.unwrap().to_vec();

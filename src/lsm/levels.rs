@@ -1,23 +1,26 @@
 use std::{
+    alloc::System,
     collections::HashSet,
     fs::remove_file,
     path::PathBuf,
     sync::{
-        atomic::{AtomicI64, AtomicU64},
+        atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering},
         Arc,
     },
+    time::{Duration, SystemTime},
 };
 
 use anyhow::anyhow;
 use anyhow::bail;
-use log::debug;
+use log::{debug, info};
+use tokio::{select, sync::Notify};
 
 use crate::{
     db::DB,
     default::SSTABLE_FILE_EXT,
     lsm::compaction::LevelCompactStatus,
-    manifest::{self, Manifest},
-    util::{dir_join_id_suffix, get_sst_id_set},
+    manifest::Manifest,
+    util::{dir_join_id_suffix, get_sst_id_set, Throttle},
 };
 
 use super::{compaction::CompactStatus, level_handler::LevelHandler};
@@ -30,7 +33,7 @@ pub(crate) struct LevelsController {
     compact_status: CompactStatus,
 }
 impl LevelsController {
-    pub(crate) fn new(db: Arc<DB>, manifest: &Manifest) -> anyhow::Result<()> {
+    pub(crate) async fn new(db: Arc<DB>, manifest: &Manifest) -> anyhow::Result<()> {
         debug_assert!(db.opt.num_level_zero_tables_stall > db.opt.num_level_zero_tables);
 
         let compact_status = CompactStatus::new(db.opt.max_levels);
@@ -49,7 +52,78 @@ impl LevelsController {
         }
 
         revert_to_manifest(&opt.dir, manifest, get_sst_id_set(&opt.dir))?;
-        
+
+        let num_opened = Arc::new(AtomicU32::new(0));
+        let mut throttle = Throttle::new(3);
+
+        let send_stop = Arc::new(Notify::new());
+
+        //
+        let rev_stop = send_stop.clone();
+        let num_opened_clone = num_opened.clone();
+        let tables_len = manifest.tables.len();
+        tokio::spawn(async move {
+            let start = tokio::time::Instant::now();
+            let mut tick = tokio::time::interval(Duration::from_secs(3));
+            loop {
+                select! {
+                    i=tick.tick()=>{
+                        info!("{} tables out of {} opened in {}",
+                        num_opened_clone.load(Ordering::SeqCst),
+                        tables_len,
+                        i.duration_since(start).as_millis());
+                    },
+                    _stop=rev_stop.notified()=>{
+                        break;
+                    }
+                };
+            }
+        });
+
+        // num_opened.fetch_add(1, Ordering::SeqCst);
+        let mut max_file_id = 0;
+        for (file_id, table_manifest) in manifest.tables.iter() {
+            let path = dir_join_id_suffix(&opt.dir, *file_id as u32, SSTABLE_FILE_EXT);
+            let permit = match throttle.acquire().await {
+                Ok(p) => p,
+                Err(e) => {
+                    bail!(e);
+                }
+            };
+            max_file_id = max_file_id.max(*file_id);
+            let db_clone = db.clone();
+            let tm = *table_manifest;
+            let p = async move {
+                let registry_r = db_clone.key_registry.read().await;
+                let data_key = match registry_r.get_data_key(tm.keyid).await {
+                    Ok(dk) => dk,
+                    Err(e) => {
+                        bail!(e)
+                    }
+                };
+                drop(registry_r);
+                
+                Ok(())
+                // Ok(())
+            };
+            // tokio::spawn(async move{
+            //     // async fn run(){
+            //         let registry_r = db_clone.key_registry.read().await;
+            //     // // db_clone.key_registry.
+            //     match registry_r.get_data_key(tm.keyid).await {
+            //         Ok(dk) => {},
+            //         Err(e) => {
+            //             return e;
+            //         },
+            //     };
+            //     // }
+
+            //     // registry_r.data_keys.get(&tm.keyid);
+
+            //     // permit.done_with_error(None).await;
+            // });
+        }
+        send_stop.notify_one();
         Ok(())
     }
 }
