@@ -33,8 +33,8 @@ pub struct DB {
     pub(crate) next_mem_fid: AtomicU32,
     pub(crate) key_registry: Arc<RwLock<KeyRegistry>>,
     memtable: Option<MemTable>,
-    block_cache:Option<AsyncCache<Vec<u8>,Block>>,
-    // index_cache:Option<AsyncCache<u64,TableIndex<'a>>>,
+    pub(crate) block_cache:Option<AsyncCache<Vec<u8>,Block>>,
+    pub(crate) index_cache:Option<AsyncCache<u64,Vec<u8>>>,
 }
 impl DB {
     pub async fn open(opt: &mut Options) -> anyhow::Result<()> {
@@ -71,7 +71,7 @@ impl DB {
             if num_in_cache == 0 {
                 num_in_cache = 1;
             }
-            let index_cache = stretto::AsyncCacheBuilder::<u64,TableIndex>::new(num_in_cache * 8, opt.index_cache_size)
+            let index_cache = stretto::AsyncCacheBuilder::<u64,Vec<u8>>::new(num_in_cache * 8, opt.index_cache_size)
             .set_buffer_items(64)
             .set_metrics(true).finalize(tokio::spawn)?;
         }

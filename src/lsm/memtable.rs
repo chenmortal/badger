@@ -35,7 +35,7 @@ impl DB {
         let mut mem_file_fids = dir
             .filter_map(|ele| ele.ok())
             .map(|e| e.path())
-            .filter_map(|p| parse_file_id(p, MEM_FILE_EXT))
+            .filter_map(|p| parse_file_id(&p, MEM_FILE_EXT))
             .collect::<Vec<_>>();
         mem_file_fids.sort();
         for fid in &mem_file_fids {

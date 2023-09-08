@@ -114,7 +114,7 @@ pub(crate) fn secs_to_systime(secs: u64) -> SystemTime {
 }
 
 #[inline]
-pub(crate) fn parse_file_id(path: PathBuf, suffix: &str) -> Option<u64> {
+pub(crate) fn parse_file_id(path: &PathBuf, suffix: &str) -> Option<u64> {
     if let Some(name) = path.file_name() {
         if let Some(name) = name.to_str() {
             if name.ends_with(suffix) {
@@ -136,7 +136,7 @@ pub(crate) fn get_sst_id_set(dir: &PathBuf) -> HashSet<u64> {
             if let Ok(entry) = ele {
                 let path = entry.path();
                 if path.is_file() {
-                    if let Some(id) = parse_file_id(path, SSTABLE_FILE_EXT) {
+                    if let Some(id) = parse_file_id(&path, SSTABLE_FILE_EXT) {
                         id_set.insert(id);
                     };
                 }

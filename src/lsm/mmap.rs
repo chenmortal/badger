@@ -16,6 +16,7 @@ use std::fs::{remove_file, File};
 use std::ops::{Deref, DerefMut};
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::SystemTime;
 use std::{fs::OpenOptions, path::PathBuf};
 use std::{io, ptr};
 
@@ -121,6 +122,22 @@ impl MmapFile {
         } else {
             Err(io::Error::last_os_error())
         }
+    }
+    pub(crate) fn get_file_size(&self) -> anyhow::Result<usize> {
+        let p = self.file_handle.metadata()?;
+        Ok(p.len() as usize)
+    }
+    pub(crate) fn get_modified_time(&self) -> anyhow::Result<SystemTime> {
+        let meta = self.file_handle.metadata()?;
+        let m = meta.modified()?;
+        Ok(m)
+    }
+    pub(crate) fn read_slice(&self, offset: usize, len: usize) -> Result<&[u8], io::Error> {
+        let p = self.as_ref();
+        if p[offset..].len() < len {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+        };
+        Ok(&p[offset..offset + len])
     }
     // pub fn delete(&self){
 
