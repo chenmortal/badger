@@ -16,7 +16,6 @@ use crate::{
     pb::badgerpb4::DataKey,
     value::{threshold::VlogThreshold, MAX_HEADER_SIZE, VLOG_HEADER_SIZE},
 };
-use aes_gcm_siv::Nonce;
 use anyhow::{anyhow, bail};
 use bytes::{Buf, BufMut};
 use tokio::sync::RwLock;

@@ -1,7 +1,7 @@
 use std::{
     alloc::System,
     collections::HashSet,
-    fs::remove_file,
+    fs::{remove_file, OpenOptions},
     path::PathBuf,
     sync::{
         atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering},
@@ -18,8 +18,9 @@ use tokio::{select, sync::Notify};
 use crate::{
     db::DB,
     default::SSTABLE_FILE_EXT,
-    lsm::compaction::LevelCompactStatus,
+    lsm::{compaction::LevelCompactStatus, mmap::open_mmap_file},
     manifest::Manifest,
+    table::TableOption,
     util::{dir_join_id_suffix, get_sst_id_set, Throttle},
 };
 
@@ -94,6 +95,8 @@ impl LevelsController {
             let db_clone = db.clone();
             let tm = *table_manifest;
             let p = async move {
+                let opt = &db_clone.opt;
+                let read_only = opt.read_only;
                 let registry_r = db_clone.key_registry.read().await;
                 let data_key = match registry_r.get_data_key(tm.keyid).await {
                     Ok(dk) => dk,
@@ -102,7 +105,13 @@ impl LevelsController {
                     }
                 };
                 drop(registry_r);
+                let table_opt = TableOption::new(&db_clone).await;
+                let mut fp_open_opt = OpenOptions::new();
+                fp_open_opt.read(true).write(!read_only);
+                let (mmap_f, is_new) = open_mmap_file(&path, fp_open_opt, read_only, 0)
+                    .map_err(|e| anyhow!("Opening file: {:?} for {}", path, e))?;
                 
+
                 Ok(())
                 // Ok(())
             };

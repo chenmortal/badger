@@ -6,7 +6,7 @@ use crate::{
     default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD},
     table::ChecksumVerificationMode,
 };
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy,PartialEq, PartialOrd)]
 pub enum CompressionType {
     None = 0,
     Snappy = 1,
@@ -71,7 +71,7 @@ pub struct Options {
     pub(crate) num_compactors: usize,
     pub(crate) compactl0_on_close: bool,
     lmax_compaction: bool,
-    // zstd_compression_level: isize,
+    pub(crate) zstd_compression_level: isize,
 
     // When set, checksum will be validated for each entry read from the value log file.
     verify_value_checksum: bool,
@@ -145,7 +145,7 @@ impl Default for Options {
             num_compactors: 4,
             compactl0_on_close: false,
             lmax_compaction: Default::default(),
-            // zstd_compression_level: 1,
+            zstd_compression_level: 1,
             verify_value_checksum: false,
             bypass_lock_guard: Default::default(),
             detect_conflicts: true,
