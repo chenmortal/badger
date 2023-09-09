@@ -105,12 +105,14 @@ impl LevelsController {
                     }
                 };
                 drop(registry_r);
-                let table_opt = TableOption::new(&db_clone).await;
+                let mut table_opt = TableOption::new(&db_clone).await;
+                table_opt.datakey=data_key;
+                table_opt.compression=tm.compression;
                 let mut fp_open_opt = OpenOptions::new();
                 fp_open_opt.read(true).write(!read_only);
                 let (mmap_f, is_new) = open_mmap_file(&path, fp_open_opt, read_only, 0)
                     .map_err(|e| anyhow!("Opening file: {:?} for {}", path, e))?;
-                
+
 
                 Ok(())
                 // Ok(())
