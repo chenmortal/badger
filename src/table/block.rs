@@ -1,7 +1,7 @@
 use std::sync::Arc;
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub(crate) struct Block(Arc<BlockInner>);
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 struct BlockInner{
     offset:i32,
     data:Vec<u8>,

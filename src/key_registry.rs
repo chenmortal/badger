@@ -23,7 +23,7 @@ use std::{
 const KEY_REGISTRY_FILE_NAME: &str = "KEYREGISTRY";
 const KEY_REGISTRY_REWRITE_FILE_NAME: &str = "REWRITE-KEYREGISTRY";
 const SANITYTEXT: &[u8] = b"Hello Badger";
-
+pub const NONCE_SIZE: usize = 12;
 #[derive(Debug, Default)]
 pub(crate) struct KeyRegistry {
     data_keys: HashMap<u64, DataKey>,
@@ -49,7 +49,7 @@ impl KeyRegistry {
             bail!("{:?} During OpenKeyRegistry", DBError::InvalidEncryptionKey);
         }
         let cipher = if opt.encryption_key.len() > 0 {
-            AesCipher::new(&opt.encryption_key, false).ok()
+            AesCipher::new(&opt.encryption_key, true).ok()
         } else {
             None
         };
@@ -236,13 +236,15 @@ impl KeyRegistry {
         Ok(Some(data_key))
     }
 
-   pub(crate) async fn get_data_key(&self, id: u64) -> anyhow::Result<Option<DataKey>> {
+    pub(crate) async fn get_data_key(&self, id: u64) -> anyhow::Result<Option<DataKey>> {
         if id == 0 {
             return Ok(None);
         }
         match self.data_keys.get(&id) {
-            Some(s) => {Ok(Some(s.clone()))},
-            None => {bail!("{} Error for the KEY ID {}",DBError::InvalidDataKeyID,id)},
+            Some(s) => Ok(Some(s.clone())),
+            None => {
+                bail!("{} Error for the KEY ID {}", DBError::InvalidDataKeyID, id)
+            }
         }
     }
 }
@@ -349,8 +351,8 @@ impl<'a> Iterator for KeyRegistryIter<'a> {
             }
         };
         if let Some(c) = self.cipher {
-            let nonce: &Nonce = Nonce::from_slice(&data_key.iv);
-            match c.decrypt(nonce, &data_key.data) {
+            // let nonce: &Nonce = Nonce::from_slice(&data_key.iv);
+            match c.decrypt_with_slice(&data_key.iv, &data_key.data) {
                 Some(data) => {
                     data_key.data = data;
                 }
@@ -383,7 +385,7 @@ impl Debug for AesCipher {
 
 impl AesCipher {
     #[inline]
-    fn new(key: &[u8], is_siv: bool) -> anyhow::Result<Self> {
+    pub(crate) fn new(key: &[u8], is_siv: bool) -> anyhow::Result<Self> {
         let cipher = match key.len() {
             16 => {
                 if is_siv {
@@ -409,7 +411,7 @@ impl AesCipher {
         Ok(cipher)
     }
     #[inline]
-    fn encrypt(&self, nonce: &Nonce, plaintext: &[u8]) -> Option<Vec<u8>> {
+   pub(crate) fn encrypt(&self, nonce: &Nonce, plaintext: &[u8]) -> Option<Vec<u8>> {
         match self {
             AesCipher::Aes128(ref cipher) => cipher.encrypt(nonce, plaintext).ok(),
             AesCipher::Aes128Siv(ref cipher) => cipher.encrypt(nonce, plaintext).ok(),
@@ -418,13 +420,21 @@ impl AesCipher {
         }
     }
     #[inline]
-    fn decrypt(&self, nonce: &Nonce, plaintext: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn encrypt_with_slice(&self,nonce: &[u8],plaintext: &[u8])->Option<Vec<u8>>{
+        self.encrypt(Nonce::from_slice(nonce), plaintext)
+    }
+    #[inline]
+    pub(crate) fn decrypt(&self, nonce: &Nonce, plaintext: &[u8]) -> Option<Vec<u8>> {
         match self {
             AesCipher::Aes128(ref cipher) => cipher.decrypt(nonce, plaintext).ok(),
             AesCipher::Aes128Siv(ref cipher) => cipher.decrypt(nonce, plaintext).ok(),
             AesCipher::Aes256(ref cipher) => cipher.decrypt(nonce, plaintext).ok(),
             AesCipher::Aes256Siv(ref cipher) => cipher.decrypt(nonce, plaintext).ok(),
         }
+    }
+    #[inline]
+    pub(crate) fn decrypt_with_slice(&self,nonce: &[u8],plaintext: &[u8])->Option<Vec<u8>>{
+        self.decrypt(Nonce::from_slice(nonce),plaintext)
     }
     #[inline]
     fn generate_key(&self) -> Vec<u8> {
@@ -438,5 +448,28 @@ impl AesCipher {
     #[inline]
     pub(crate) fn generate_nonce() -> Nonce {
         aes_gcm_siv::Aes128GcmSiv::generate_nonce(&mut OsRng)
+    }
+}
+mod tests {
+    use aes_gcm::{aead::OsRng, AeadCore};
+
+    use super::AesCipher;
+
+    #[test]
+    fn test_a() {
+        let key = vec![1 as u8; 16];
+        let key_a = vec![2 as u8; 32];
+        let p = AesCipher::new(&key, false).unwrap();
+
+        let data = "abc";
+        let nonce = AesCipher::generate_nonce();
+        let m = aes_gcm::Aes256Gcm::generate_nonce(&mut OsRng);
+        dbg!(m.as_slice().len());
+        for _ in 0..100_000{
+            let e_data = p.encrypt(&nonce, data.as_bytes()).unwrap();
+            let k = p.decrypt(&nonce, &e_data).unwrap();
+        }
+        
+        // dbg!(String::from_utf8(k));
     }
 }

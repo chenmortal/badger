@@ -145,10 +145,13 @@ pub mod checksum {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DataKey {
+    /// this is table's id
     #[prost(uint64, tag = "1")]
     pub key_id: u64,
+    /// this is other encryption key
     #[prost(bytes = "vec", tag = "2")]
     pub data: ::prost::alloc::vec::Vec<u8>,
+    /// just for decrypt or  encrypt self.data with options.encryptionkey
     #[prost(bytes = "vec", tag = "3")]
     pub iv: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "4")]

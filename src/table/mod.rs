@@ -1,15 +1,23 @@
+pub(crate) mod block;
+pub(crate) mod index;
+pub(crate) mod iter;
+
+use std::ops::Deref;
 use std::{sync::Arc, time::SystemTime};
 
 use anyhow::anyhow;
 use anyhow::bail;
-use bytes::Buf;
+use bytes::{Buf, BufMut};
+use flatbuffers::InvalidFlatbuffer;
 use prost::Message;
+use snap::raw::Decoder;
 use stretto::AsyncCache;
 use tokio::sync::Mutex;
-pub(crate) mod block;
-pub(crate) mod index;
+
 use self::block::Block;
-use crate::fb::fb::TableIndex;
+use crate::fb::fb::{BlockOffset, TableIndex};
+use crate::key_registry::AesCipher;
+use crate::key_registry::NONCE_SIZE;
 use crate::pb;
 use crate::pb::badgerpb4::Checksum;
 use crate::{
@@ -23,16 +31,49 @@ pub(crate) struct TableInner {
     table_size: usize,
     smallest: Vec<u8>,
     biggest: Vec<u8>,
-
-    id: u64,
+    index_buf: TableIndexBuf,
+    cheap_index: CheapIndex,
+    id: u32,
     checksum: Vec<u8>,
     created_at: SystemTime,
     index_start: usize,
     index_len: usize,
     has_bloom_filter: bool,
+    cipher: Option<AesCipher>,
     opt: TableOption,
 }
 pub(crate) struct Table(Arc<TableInner>);
+#[derive(Debug)]
+pub(crate) struct CheapIndex {
+    max_version: u64,
+    key_count: u32,
+    uncompressed_size: u32,
+    on_disk_size: u32,
+    bloom_filter_len: usize,
+    offset_len: u32,
+}
+impl CheapIndex {
+    fn new(table_index_buf: &TableIndexBuf) -> Self {
+        let index = table_index_buf.to_table_index();
+        let bloom_filter_len = match index.bloom_filter() {
+            Some(s) => s.len(),
+            None => 0,
+        };
+        let offset_len = match index.offsets() {
+            Some(s) => s.len() as u32,
+            None => 0,
+        };
+        Self {
+            max_version: index.max_version(),
+            key_count: index.key_count(),
+            uncompressed_size: index.uncompressed_size(),
+            on_disk_size: index.on_disk_size(),
+            bloom_filter_len,
+            offset_len,
+        }
+        // let p = index.max_version();
+    }
+}
 // ChecksumVerificationMode tells when should DB verify checksum for SSTable blocks.
 #[derive(Debug, Clone, Copy)]
 pub enum ChecksumVerificationMode {
@@ -74,10 +115,10 @@ pub(crate) struct TableOption {
     block_size: usize,
 
     // DataKey is the key used to decrypt the encrypted text.
-    datakey: Option<DataKey>,
+    pub(crate) datakey: Option<DataKey>,
 
     // Compression indicates the compression algorithm used for block compression.
-    compression: CompressionType,
+    pub(crate) compression: CompressionType,
 
     zstd_compression_level: isize,
 
@@ -116,10 +157,17 @@ impl Table {
         let id = parse_file_id(&mmap_f.file_path, SSTABLE_FILE_EXT).ok_or(anyhow!(
             "Invalid filename: {:?} for mmap_file",
             &mmap_f.file_path
-        ))?;
+        ))? as u32;
 
         let table_size = mmap_f.get_file_size()?;
         let created_at = mmap_f.get_modified_time()?;
+
+        let mut cipher = None;
+        if let Some(data_key) = opt.datakey.clone() {
+            cipher = AesCipher::new(data_key.data.as_ref(), true)?.into();
+        }
+        let (index_buf, cheap_index) = TableInner::init_index(table_size, &mmap_f, &cipher)?;
+        // AesCipher::new(, is_siv);
         let inner = TableInner {
             lock: Default::default(),
             mmap_f,
@@ -133,24 +181,32 @@ impl Table {
             index_len: Default::default(),
             has_bloom_filter: Default::default(),
             opt,
+            cipher,
+            index_buf,
+            cheap_index,
         };
         // inner.init_index();
 
         Ok(())
     }
-    fn init_biggest_smallest() {}
+    // fn init_biggest_smallest() {}
 }
 
 //    index_data+index_len(4B u32)+checksum+checksum_len(4B u32)
 //
 impl TableInner {
     fn read_mmap(offset: u64, len: u32) {}
-    fn init_index(&mut self) -> anyhow::Result<()> {
-        let mut read_pos = self.table_size;
+    fn init_biggest_smallest() {}
+    fn init_index(
+        table_size: usize,
+        mmap_f: &MmapFile,
+        cipher: &Option<AesCipher>,
+    ) -> anyhow::Result<(TableIndexBuf, CheapIndex)> {
+        let mut read_pos = table_size;
 
         //read checksum len from the last 4 bytes
         read_pos -= 4;
-        let mut buf = self.mmap_f.read_slice(read_pos as usize, 4)?;
+        let mut buf = mmap_f.read_slice(read_pos as usize, 4)?;
         let checksum_len = buf.get_u32() as i32;
         if checksum_len < 0 {
             bail!("checksum length less than zero. Data corrupted");
@@ -158,47 +214,119 @@ impl TableInner {
 
         //read checksum
         read_pos -= checksum_len as usize;
-        let mut buf = self.mmap_f.read_slice(read_pos, checksum_len as usize)?;
+        let mut buf = mmap_f.read_slice(read_pos, checksum_len as usize)?;
         let checksum = Checksum::decode(buf)?;
 
         //read index size from the footer
         read_pos -= 4;
-        let mut buf = self.mmap_f.read_slice(read_pos, 4)?;
-        self.index_len = buf.get_u32() as usize;
+        let mut buf = mmap_f.read_slice(read_pos, 4)?;
+        let index_len = buf.get_u32() as usize;
 
         //read index
-        read_pos -= self.index_len;
-        self.index_start = read_pos;
-        let data = self.mmap_f.read_slice(read_pos, self.index_len)?;
+        read_pos -= index_len;
+        // let index_start = read_pos;
+        let data = mmap_f.read_slice(read_pos, index_len)?;
 
         checksum.verify(data).map_err(|e| {
             anyhow!(
                 "failed to verify checksum for table:{:?} for {}",
-                &self.mmap_f.file_path,
+                &mmap_f.file_path,
                 e
             )
         })?;
+        let index_buf = TableIndexBuf::from_vec(try_decrypt(cipher, data)?)?;
 
-        // let mmap = self.mmap_f.as_ref();
-        // let p = &mmap[0..];
-        // mmap.as_ref()[read_pos..];
-        // let buf = self.mmap_f[read_pos..read_pos+4];
+        let cheap_index = CheapIndex::new(&index_buf);
+
+        debug_assert!(index_buf.to_table_index().offsets().is_some());
+
+        Ok((index_buf, cheap_index))
+    }
+
+    async fn get_block(&self, idx: u32, use_cache: bool) -> anyhow::Result<()> {
+        if idx >= self.cheap_index.offset_len {
+            bail!("block out of index");
+        }
+        if let Some(block_cache) = &self.opt.block_cache {
+            let key = self.get_block_cache_key(idx);
+            if let Some(blk) = block_cache.get(&key).await {
+                let p = blk.value().clone();
+                // let k = p.clone();
+            };
+        }
+        let table_index = self.index_buf.to_table_index();
+        let blk_offset = table_index.offsets().unwrap().get(idx as usize);
+
+        let blk_data_ref = self
+            .mmap_f
+            .read_slice(blk_offset.offset() as usize, blk_offset.len() as usize)
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to read from file: {:?} at offset: {}, len: {} for {}",
+                    &self.mmap_f.file_path,
+                    blk_offset.offset(),
+                    blk_offset.len(),
+                    e
+                )
+            })?;
+
+        let blk_data = try_decrypt(&self.cipher, blk_data_ref)?;
+
         Ok(())
     }
-    fn read_table_index<'b: 'a, 'a>(&self, data: &'b [u8]) -> anyhow::Result<TableIndex<'a>> {
-        if let Some(data_key) = &self.opt.datakey {}
-        let t = flatbuffers::root::<TableIndex>(data)?;
-        Ok(t)
+
+    //if cipher.is_some() than use cipher decrypt data and return de_data
+    //else return data
+    #[inline]
+    fn get_block_cache_key(&self, idx: u32) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(8);
+        buf.put_u32(self.id);
+        buf.put_u32(idx);
+        buf
+    }
+
+    #[inline]
+    fn decompress(&self, block_data: &mut Vec<u8>) -> anyhow::Result<()> {
+        match self.opt.compression {
+            CompressionType::None => return Ok(()),
+            CompressionType::Snappy => {
+                let p = Decoder::new()
+                    .decompress_vec(&block_data)
+                    .map_err(|e| anyhow!("fail to decompress for {}", e))?;
+            }
+            CompressionType::ZSTD => todo!(),
+        }
+        Ok(())
     }
 }
-struct TableIndexBuf(Arc<Vec<u8>>);
-impl From<&[u8]> for TableIndexBuf {
-    fn from(value: &[u8]) -> Self {
-        Self(Arc::new(value.to_vec()))
-    }
+fn try_decrypt(cipher: &Option<AesCipher>, data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let data = match cipher {
+        Some(c) => {
+            let nonce = &data[data.len() - NONCE_SIZE..];
+            let plaintext = &data[..data.len() - NONCE_SIZE];
+            c.decrypt_with_slice(nonce, plaintext)
+                .ok_or(anyhow!("while decrypt"))?
+        }
+        None => data.to_vec(),
+    };
+    Ok(data)
 }
+#[derive(Debug)]
+struct TableIndexBuf(Vec<u8>);
+
 impl TableIndexBuf {
-    pub(crate) fn to_table_index(&self) -> Result<TableIndex<'_>, flatbuffers::InvalidFlatbuffer> {
-        flatbuffers::root::<TableIndex>(self.0.as_ref())
+    #[inline]
+    pub(crate) fn from_vec(data: Vec<u8>) -> Result<Self, InvalidFlatbuffer> {
+        flatbuffers::root::<TableIndex>(&data)?;
+        Ok(Self(data))
+    }
+    pub(crate) fn from_slice(data: &[u8]) -> Result<Self, InvalidFlatbuffer> {
+        flatbuffers::root::<TableIndex>(data)?;
+        Ok(Self(data.to_vec()))
+    }
+
+    #[inline]
+    pub(crate) fn to_table_index(&self) -> TableIndex<'_> {
+        unsafe { flatbuffers::root_unchecked::<TableIndex>(self.0.as_ref()) }
     }
 }

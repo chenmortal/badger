@@ -57,9 +57,9 @@ message Checksum {
 }
 
 message DataKey {
-  uint64 key_id      = 1;
-  bytes  data       = 2;
-  bytes  iv         = 3;
+  uint64 key_id      = 1; //this is table's id
+  bytes  data       = 2; //this is other encryption key
+  bytes  iv         = 3; //just for decrypt or  encrypt self.data with options.encryptionkey
   uint64  created_at = 4;
 }
 
