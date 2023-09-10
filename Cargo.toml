@@ -28,7 +28,7 @@ getrandom = "0.2.10"
 flatbuffers = "23.5.26"
 xxhash-rust = {version = "0.8.7",features = ["xxh64","xxh3"]}
 snap = "1.1.0"
-zstd-safe = "6.0.6"
+zstd="0.12"
 # memmap2 = "0.7.1"
 # bumpalo = {version="3.13.0",features=["boxed","collections"]}
 # generational-arena = "0.2.9"

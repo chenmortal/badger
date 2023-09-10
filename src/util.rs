@@ -1,5 +1,7 @@
 use anyhow::bail;
 use anyhow::Error;
+use bytes::Buf;
+use bytes::BufMut;
 use tokio::select;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
@@ -58,7 +60,7 @@ impl ThrottlePermit {
     }
 }
 impl Throttle {
-   pub(crate) fn new(max: u32) -> Self {
+    pub(crate) fn new(max: u32) -> Self {
         let semaphore = Arc::new(Semaphore::new(max as usize));
         let (sender, receiver) = tokio::sync::mpsc::channel::<Error>(1);
         Self {
@@ -69,7 +71,7 @@ impl Throttle {
         }
     }
     #[inline]
-   pub(crate) async fn acquire(&mut self) -> anyhow::Result<ThrottlePermit> {
+    pub(crate) async fn acquire(&mut self) -> anyhow::Result<ThrottlePermit> {
         loop {
             select! {
                 permit =self.semaphore.clone().acquire_owned()=>{
@@ -99,21 +101,21 @@ impl Throttle {
     }
 }
 
-#[inline]
+#[inline(always)]
 pub(crate) fn now_since_unix() -> Duration {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
 }
 
-#[inline]
+#[inline(always)]
 pub(crate) fn secs_to_systime(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_secs(secs))
         .unwrap()
 }
 
-#[inline]
+#[inline(always)]
 pub(crate) fn parse_file_id(path: &PathBuf, suffix: &str) -> Option<u64> {
     if let Some(name) = path.file_name() {
         if let Some(name) = name.to_str() {
@@ -145,7 +147,7 @@ pub(crate) fn get_sst_id_set(dir: &PathBuf) -> HashSet<u64> {
     };
     return id_set;
 }
-#[inline]
+#[inline(always)]
 pub(crate) fn dir_join_id_suffix(dir: &PathBuf, id: u32, suffix: &str) -> PathBuf {
     dir.join(format!("{:06}{}", id, suffix))
 }

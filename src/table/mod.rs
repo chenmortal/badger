@@ -2,7 +2,9 @@ pub(crate) mod block;
 pub(crate) mod index;
 pub(crate) mod iter;
 
+use std::mem;
 use std::ops::Deref;
+use std::ptr::slice_from_raw_parts;
 use std::{sync::Arc, time::SystemTime};
 
 use anyhow::anyhow;
@@ -12,6 +14,7 @@ use flatbuffers::InvalidFlatbuffer;
 use prost::Message;
 use snap::raw::Decoder;
 use stretto::AsyncCache;
+use tokio::io::ReadBuf;
 use tokio::sync::Mutex;
 
 use self::block::Block;
@@ -20,6 +23,7 @@ use crate::key_registry::AesCipher;
 use crate::key_registry::NONCE_SIZE;
 use crate::pb;
 use crate::pb::badgerpb4::Checksum;
+// use crate::util::bytes_to_vec_u32;
 use crate::{
     db::DB, default::SSTABLE_FILE_EXT, lsm::mmap::MmapFile, options::CompressionType,
     pb::badgerpb4::DataKey, util::parse_file_id,
@@ -243,21 +247,22 @@ impl TableInner {
         Ok((index_buf, cheap_index))
     }
 
-    async fn get_block(&self, idx: u32, use_cache: bool) -> anyhow::Result<()> {
+    async fn get_block(&self, idx: u32, use_cache: bool) -> anyhow::Result<Block> {
         if idx >= self.cheap_index.offset_len {
             bail!("block out of index");
         }
+        let key = self.get_block_cache_key(idx);
+
         if let Some(block_cache) = &self.opt.block_cache {
-            let key = self.get_block_cache_key(idx);
             if let Some(blk) = block_cache.get(&key).await {
-                let p = blk.value().clone();
-                // let k = p.clone();
+                return Ok(blk.value().clone());
             };
         }
+
         let table_index = self.index_buf.to_table_index();
         let blk_offset = table_index.offsets().unwrap().get(idx as usize);
 
-        let blk_data_ref = self
+        let raw_data_ref = self
             .mmap_f
             .read_slice(blk_offset.offset() as usize, blk_offset.len() as usize)
             .map_err(|e| {
@@ -270,9 +275,34 @@ impl TableInner {
                 )
             })?;
 
-        let blk_data = try_decrypt(&self.cipher, blk_data_ref)?;
+        let de_raw_data = try_decrypt(&self.cipher, raw_data_ref)?;
+        let raw_data = self.decompress(de_raw_data).map_err(|e| {
+            anyhow!(
+                "Failed to decode compressed data in file: {:?} at offset: {}, len: {} for {}",
+                &self.mmap_f.file_path,
+                blk_offset.offset(),
+                blk_offset.len(),
+                e
+            )
+        })?;
 
-        Ok(())
+        let block = Block::new(blk_offset.offset(), raw_data)?;
+
+        match self.opt.chk_mode {
+            ChecksumVerificationMode::OnBlockRead
+            | ChecksumVerificationMode::OnTableAndBlockRead => {
+                block.verify()?;
+            }
+            _ => {}
+        }
+
+        if use_cache {
+            if let Some(block_cache) = &self.opt.block_cache {
+                block_cache.insert(key, block.clone(), mem::size_of::<Block>() as i64).await;
+            }
+        }
+
+        Ok(block)
     }
 
     //if cipher.is_some() than use cipher decrypt data and return de_data
@@ -286,17 +316,18 @@ impl TableInner {
     }
 
     #[inline]
-    fn decompress(&self, block_data: &mut Vec<u8>) -> anyhow::Result<()> {
-        match self.opt.compression {
-            CompressionType::None => return Ok(()),
-            CompressionType::Snappy => {
-                let p = Decoder::new()
-                    .decompress_vec(&block_data)
-                    .map_err(|e| anyhow!("fail to decompress for {}", e))?;
+    fn decompress(&self, block_data: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+        let data = match self.opt.compression {
+            CompressionType::None => block_data,
+            CompressionType::Snappy => Decoder::new()
+                .decompress_vec(&block_data)
+                .map_err(|e| anyhow!("fail to decompress for {}", e))?,
+            CompressionType::ZSTD => {
+                let data_u8: &[u8] = block_data.as_ref();
+                zstd::decode_all(data_u8).map_err(|e| anyhow!("Failed to decompress for {}", e))?
             }
-            CompressionType::ZSTD => todo!(),
-        }
-        Ok(())
+        };
+        Ok(data)
     }
 }
 fn try_decrypt(cipher: &Option<AesCipher>, data: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -310,6 +341,25 @@ fn try_decrypt(cipher: &Option<AesCipher>, data: &[u8]) -> anyhow::Result<Vec<u8
         None => data.to_vec(),
     };
     Ok(data)
+}
+#[inline(always)]
+pub(crate) fn vec_u32_to_bytes(s: Vec<u32>) -> Vec<u8> {
+    let mut r = Vec::<u8>::with_capacity(s.len() * 4);
+    for ele in s {
+        r.put_u32(ele);
+    }
+    r
+}
+
+#[inline(always)]
+pub(crate) fn bytes_to_vec_u32(src: &[u8]) -> Vec<u32> {
+    let capacity = src.len() / 4;
+    let mut s = src;
+    let mut v = Vec::<u32>::with_capacity(capacity);
+    for _ in 0..capacity {
+        v.push(s.get_u32());
+    }
+    v
 }
 #[derive(Debug)]
 struct TableIndexBuf(Vec<u8>);
