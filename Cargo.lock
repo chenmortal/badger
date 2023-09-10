@@ -179,7 +179,7 @@ dependencies = [
  "tokio",
  "tracing",
  "xxhash-rust",
- "zstd-safe",
+ "zstd",
 ]
 
 [[package]]
@@ -1378,6 +1378,15 @@ name = "zeroize"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a0956f1ba7c7909bfb66c2e9e4124ab6f6482560f6628b5aaeba39207c9aad9"
+
+[[package]]
+name = "zstd"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a27595e173641171fc74a1232b7b1c7a7cb6e18222c11e9dfb9888fa424c53c"
+dependencies = [
+ "zstd-safe",
+]
 
 [[package]]
 name = "zstd-safe"
