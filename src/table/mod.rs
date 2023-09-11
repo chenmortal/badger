@@ -1,9 +1,11 @@
 pub(crate) mod block;
+pub(crate) mod builder;
 pub(crate) mod index;
 pub(crate) mod iter;
 
 use std::mem;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::ptr::slice_from_raw_parts;
 use std::{sync::Arc, time::SystemTime};
 
@@ -15,9 +17,10 @@ use prost::Message;
 use snap::raw::Decoder;
 use stretto::AsyncCache;
 use tokio::io::ReadBuf;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use self::block::Block;
+use self::iter::TableIter;
 use crate::fb::fb::{BlockOffset, TableIndex};
 use crate::key_registry::AesCipher;
 use crate::key_registry::NONCE_SIZE;
@@ -34,10 +37,10 @@ pub(crate) struct TableInner {
     mmap_f: MmapFile,
     table_size: usize,
     smallest: Vec<u8>,
-    biggest: Vec<u8>,
+    biggest: RwLock<Vec<u8>>,
     index_buf: TableIndexBuf,
     cheap_index: CheapIndex,
-    id: u32,
+    id: u64,
     checksum: Vec<u8>,
     created_at: SystemTime,
     index_start: usize,
@@ -46,6 +49,7 @@ pub(crate) struct TableInner {
     cipher: Option<AesCipher>,
     opt: TableOption,
 }
+#[derive(Debug, Clone)]
 pub(crate) struct Table(Arc<TableInner>);
 #[derive(Debug)]
 pub(crate) struct CheapIndex {
@@ -54,7 +58,7 @@ pub(crate) struct CheapIndex {
     uncompressed_size: u32,
     on_disk_size: u32,
     bloom_filter_len: usize,
-    offset_len: u32,
+    offsets_len: u32,
 }
 impl CheapIndex {
     fn new(table_index_buf: &TableIndexBuf) -> Self {
@@ -63,7 +67,7 @@ impl CheapIndex {
             Some(s) => s.len(),
             None => 0,
         };
-        let offset_len = match index.offsets() {
+        let offsets_len = match index.offsets() {
             Some(s) => s.len() as u32,
             None => 0,
         };
@@ -73,7 +77,7 @@ impl CheapIndex {
             uncompressed_size: index.uncompressed_size(),
             on_disk_size: index.on_disk_size(),
             bloom_filter_len,
-            offset_len,
+            offsets_len,
         }
         // let p = index.max_version();
     }
@@ -154,14 +158,14 @@ impl TableOption {
 }
 
 impl Table {
-    pub(crate) fn open(mmap_f: MmapFile, opt: TableOption) -> anyhow::Result<()> {
+    pub(crate) async fn open(mmap_f: MmapFile, opt: TableOption) -> anyhow::Result<Self> {
         if opt.block_size == 0 && opt.compression != CompressionType::None {
             bail!("Block size cannot be zero");
         }
         let id = parse_file_id(&mmap_f.file_path, SSTABLE_FILE_EXT).ok_or(anyhow!(
             "Invalid filename: {:?} for mmap_file",
             &mmap_f.file_path
-        ))? as u32;
+        ))?;
 
         let table_size = mmap_f.get_file_size()?;
         let created_at = mmap_f.get_modified_time()?;
@@ -171,8 +175,8 @@ impl Table {
             cipher = AesCipher::new(data_key.data.as_ref(), true)?.into();
         }
         let (index_buf, cheap_index) = TableInner::init_index(table_size, &mmap_f, &cipher)?;
-        // AesCipher::new(, is_siv);
-        let inner = TableInner {
+
+        let mut inner = TableInner {
             lock: Default::default(),
             mmap_f,
             table_size,
@@ -189,18 +193,101 @@ impl Table {
             index_buf,
             cheap_index,
         };
-        // inner.init_index();
+        let table_index = inner.index_buf.to_table_index();
+        let block_offset = table_index.offsets().unwrap().get(0);
+        if let Some(k) = block_offset.key() {
+            inner.smallest = k.bytes().to_vec();
+        };
+        let table = Table(Arc::new(inner));
+        let mut iter = TableIter::new(table.clone(), true, false);
 
-        Ok(())
+        iter.rewind().await.map_err(|e| {
+            anyhow!(
+                "Failed to initialize biggest for table {:?} for {}",
+                &table.0.get_file_path(),
+                e
+            )
+        })?;
+        let mut biggest_w = table.0.biggest.write().await;
+        *biggest_w = iter.get_key().unwrap().to_vec();
+        drop(biggest_w);
+
+        match table.0.opt.chk_mode {
+            ChecksumVerificationMode::OnTableRead
+            | ChecksumVerificationMode::OnTableAndBlockRead => {}
+            _ => {
+                table.0.verify().await?;
+            }
+        }
+        Ok(table)
     }
-    // fn init_biggest_smallest() {}
+
+    #[inline]
+    pub(crate) fn get_id(&self) -> u64 {
+        self.0.id
+    }
+
+    #[inline]
+    pub(crate) async fn get_block(&self, idx: u32, use_cache: bool) -> anyhow::Result<Block> {
+        self.0.get_block(idx, use_cache).await
+    }
 }
 
 //    index_data+index_len(4B u32)+checksum+checksum_len(4B u32)
 //
 impl TableInner {
-    fn read_mmap(offset: u64, len: u32) {}
-    fn init_biggest_smallest() {}
+    #[inline]
+    pub(crate) fn get_offsets_len(&self) -> u32 {
+        self.cheap_index.offsets_len as u32
+    }
+    // fn read_mmap(offset: u64, len: u32) {}
+    async fn verify(&self) -> anyhow::Result<()> {
+        for i in 0..self.get_offsets_len() {
+            let block = self.get_block(i, true).await.map_err(|e| {
+                anyhow!(
+                    "checksum validation failed for table:{:?}, block:{} for {}",
+                    self.get_file_path(),
+                    i,
+                    e
+                )
+            })?;
+            // OnBlockRead or OnTableAndBlockRead, we don't need to call verify checksum
+            // on block, verification would be done while reading block itself.
+            match self.opt.chk_mode {
+                ChecksumVerificationMode::OnBlockRead
+                | ChecksumVerificationMode::OnTableAndBlockRead => {}
+                _ => {
+                    block.verify().map_err(|e| {
+                        anyhow!(
+                            "checksum validation failed for table:{:?}, block:{}, offset:{} for {}",
+                            self.get_file_path(),
+                            i,
+                            block.get_offset(),
+                            e
+                        )
+                    })?;
+                }
+            }
+        }
+        Ok(())
+        // if let Some(offsets) = table_index.offsets() {
+        //     for i in 0..offsets.len(){
+        //         self.get_block(idx, use_cache);
+        //     }
+        //     // let p = offsets.len();
+        // }
+    }
+    // async fn init_biggest_smallest(&mut self) {
+    //     let table_index = self.index_buf.to_table_index();
+    //     let block_offset = table_index.offsets().unwrap().get(0);
+    //     if let Some(k) = block_offset.key() {
+    //         self.smallest = k.bytes().to_vec();
+    //     };
+    //     Table::
+    //     let iter = TableIter::new(self.clone(), true, false);
+    //     iter.rewind().await;
+
+    // }
     fn init_index(
         table_size: usize,
         mmap_f: &MmapFile,
@@ -218,7 +305,7 @@ impl TableInner {
 
         //read checksum
         read_pos -= checksum_len as usize;
-        let mut buf = mmap_f.read_slice(read_pos, checksum_len as usize)?;
+        let buf = mmap_f.read_slice(read_pos, checksum_len as usize)?;
         let checksum = Checksum::decode(buf)?;
 
         //read index size from the footer
@@ -248,9 +335,10 @@ impl TableInner {
     }
 
     async fn get_block(&self, idx: u32, use_cache: bool) -> anyhow::Result<Block> {
-        if idx >= self.cheap_index.offset_len {
+        if idx >= self.get_offsets_len() {
             bail!("block out of index");
         }
+
         let key = self.get_block_cache_key(idx);
 
         if let Some(block_cache) = &self.opt.block_cache {
@@ -298,7 +386,9 @@ impl TableInner {
 
         if use_cache {
             if let Some(block_cache) = &self.opt.block_cache {
-                block_cache.insert(key, block.clone(), mem::size_of::<Block>() as i64).await;
+                block_cache
+                    .insert(key, block.clone(), mem::size_of::<Block>() as i64)
+                    .await;
             }
         }
 
@@ -310,11 +400,14 @@ impl TableInner {
     #[inline]
     fn get_block_cache_key(&self, idx: u32) -> Vec<u8> {
         let mut buf = Vec::with_capacity(8);
-        buf.put_u32(self.id);
+        buf.put_u32(self.id as u32);
         buf.put_u32(idx);
         buf
     }
-
+    #[inline]
+    fn get_file_path(&self) -> &PathBuf {
+        &self.mmap_f.file_path
+    }
     #[inline]
     fn decompress(&self, block_data: Vec<u8>) -> anyhow::Result<Vec<u8>> {
         let data = match self.opt.compression {
