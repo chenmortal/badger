@@ -21,15 +21,28 @@ struct BlockInner {
     checksum_len: usize,
 }
 impl Block {
+    #[inline]
     pub(crate) fn new(offset: u32, mut data: Vec<u8>) -> anyhow::Result<Self> {
         Ok(Self(Arc::new(BlockInner::new(offset, data)?)))
     }
 
     pub(crate) fn verify(&self) -> anyhow::Result<()> {
         let checksum = Checksum::decode(self.0.checksum.as_ref())
-                    .map_err(|e| anyhow!("Failed decode pb::checksum for block for {}", e))?;;
-        checksum.verify(&self.0.data)?;        
+            .map_err(|e| anyhow!("Failed decode pb::checksum for block for {}", e))?;
+        checksum.verify(&self.0.data)?;
         Ok(())
+    }
+    #[inline]
+    pub(crate) fn get_entry_offsets(&self) -> &Vec<u32> {
+        &self.0.entry_offsets
+    }
+    #[inline]
+    pub(crate) fn get_actual_data(&self) -> &[u8] {
+        &self.0.data[..self.0.entries_index_start]
+    }
+    #[inline]
+    pub(crate) fn get_offset(&self)->u32{
+        self.0.offset
     }
 }
 
@@ -74,7 +87,7 @@ impl BlockInner {
     }
 }
 #[test]
-fn test_a(){
+fn test_a() {
     dbg!(mem::size_of::<Block>());
     dbg!(mem::size_of::<BlockInner>());
 }
