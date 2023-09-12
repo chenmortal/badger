@@ -1,6 +1,5 @@
 use std::{
-    alloc::System,
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs::{remove_file, OpenOptions},
     path::PathBuf,
     sync::{
@@ -12,15 +11,19 @@ use std::{
 
 use anyhow::anyhow;
 use anyhow::bail;
-use log::{debug, info};
-use tokio::{select, sync::Notify};
+use log::{debug, error, info};
+use tokio::{
+    select,
+    sync::{Mutex, Notify},
+};
 
 use crate::{
     db::DB,
     default::SSTABLE_FILE_EXT,
     lsm::{compaction::LevelCompactStatus, mmap::open_mmap_file},
     manifest::Manifest,
-    table::TableOption,
+    pb::ERR_CHECKSUM_MISMATCH,
+    table::{Table, TableOption},
     util::{dir_join_id_suffix, get_sst_id_set, Throttle},
 };
 
@@ -29,7 +32,7 @@ use super::{compaction::CompactStatus, level_handler::LevelHandler};
 pub(crate) struct LevelsController {
     next_file_id: AtomicU64,
     l0_stalls_ms: AtomicI64,
-    levels: Vec<Arc<LevelHandler>>,
+    levels: Vec<LevelHandler>,
     db: Arc<DB>,
     compact_status: CompactStatus,
 }
@@ -48,7 +51,7 @@ impl LevelsController {
 
         let opt = &levels_control.db.opt;
         for i in 0..opt.max_levels {
-            levels_control.levels[i] = Arc::new(LevelHandler::new(db.clone(), i));
+            levels_control.levels[i] = LevelHandler::new(db.clone(), i);
             levels_control.compact_status.levels[i] = Arc::new(LevelCompactStatus::default());
         }
 
@@ -59,12 +62,13 @@ impl LevelsController {
 
         let send_stop = Arc::new(Notify::new());
 
-        //
         let rev_stop = send_stop.clone();
         let num_opened_clone = num_opened.clone();
         let tables_len = manifest.tables.len();
+        let start = tokio::time::Instant::now();
+        let start_clone = start.clone();
         tokio::spawn(async move {
-            let start = tokio::time::Instant::now();
+            // let start = tokio::time::Instant::now();
             let mut tick = tokio::time::interval(Duration::from_secs(3));
             loop {
                 select! {
@@ -72,7 +76,7 @@ impl LevelsController {
                         info!("{} tables out of {} opened in {}",
                         num_opened_clone.load(Ordering::SeqCst),
                         tables_len,
-                        i.duration_since(start).as_millis());
+                        i.duration_since(start_clone).as_millis());
                     },
                     _stop=rev_stop.notified()=>{
                         break;
@@ -80,21 +84,25 @@ impl LevelsController {
                 };
             }
         });
+        let tables = Arc::new(Mutex::new(BTreeMap::<u8, Vec<Table>>::new()));
 
-        // num_opened.fetch_add(1, Ordering::SeqCst);
         let mut max_file_id = 0;
         for (file_id, table_manifest) in manifest.tables.iter() {
+            let num_opened_clone = num_opened.clone();
+            let tables_clone = tables.clone();
             let path = dir_join_id_suffix(&opt.dir, *file_id as u32, SSTABLE_FILE_EXT);
             let permit = match throttle.acquire().await {
                 Ok(p) => p,
                 Err(e) => {
+                    close_all_tables(&tables).await;
                     bail!(e);
                 }
             };
             max_file_id = max_file_id.max(*file_id);
             let db_clone = db.clone();
             let tm = *table_manifest;
-            let p = async move {
+            let level = table_manifest.level;
+            let future = async move {
                 let opt = &db_clone.opt;
                 let read_only = opt.read_only;
                 let registry_r = db_clone.key_registry.read().await;
@@ -106,37 +114,85 @@ impl LevelsController {
                 };
                 drop(registry_r);
                 let mut table_opt = TableOption::new(&db_clone).await;
-                table_opt.datakey=data_key;
-                table_opt.compression=tm.compression;
+                table_opt.datakey = data_key;
+                table_opt.compression = tm.compression;
                 let mut fp_open_opt = OpenOptions::new();
                 fp_open_opt.read(true).write(!read_only);
-                let (mmap_f, is_new) = open_mmap_file(&path, fp_open_opt, read_only, 0)
+                let (mmap_f, _is_new) = open_mmap_file(&path, fp_open_opt, read_only, 0)
                     .map_err(|e| anyhow!("Opening file: {:?} for {}", path, e))?;
-
-
+                match Table::open(mmap_f, table_opt).await {
+                    Ok(table) => {
+                        // let level = table_manifest.level;
+                        let mut tables_m = tables_clone.lock().await;
+                        match tables_m.get_mut(&level) {
+                            Some(s) => {
+                                s.push(table);
+                            }
+                            None => {
+                                tables_m.insert(level, vec![table]);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if e.to_string().ends_with(ERR_CHECKSUM_MISMATCH) {
+                            error!("{}", e);
+                            error!("Ignoring table {:?}", path);
+                        } else {
+                            bail!("Opening table:{:?} for {}", path, e)
+                        }
+                    }
+                };
                 Ok(())
-                // Ok(())
             };
-            // tokio::spawn(async move{
-            //     // async fn run(){
-            //         let registry_r = db_clone.key_registry.read().await;
-            //     // // db_clone.key_registry.
-            //     match registry_r.get_data_key(tm.keyid).await {
-            //         Ok(dk) => {},
-            //         Err(e) => {
-            //             return e;
-            //         },
-            //     };
-            //     // }
-
-            //     // registry_r.data_keys.get(&tm.keyid);
-
-            //     // permit.done_with_error(None).await;
-            // });
+            tokio::spawn(async move {
+                permit.done_with_future(future).await;
+                num_opened_clone.fetch_add(1, Ordering::SeqCst)
+            });
+        }
+        match throttle.finish().await {
+            Ok(_) => {}
+            Err(e) => {
+                close_all_tables(&tables).await;
+                bail!(e);
+            }
         }
         send_stop.notify_one();
+
+        info!(
+            "All {} tables opened in {}",
+            num_opened.load(Ordering::SeqCst),
+            tokio::time::Instant::now()
+                .duration_since(start)
+                .as_millis()
+        );
+
+        levels_control
+            .next_file_id
+            .store(max_file_id + 1, Ordering::SeqCst);
+
+        let tables_m = tables.lock().await;
+
+        for (i, tables) in tables_m.iter() {
+            levels_control.levels[*i as usize].init_tables(tables).await;
+        }
+        drop(tables_m);
         Ok(())
     }
+    fn validate(&self){
+        for ele in self.levels.iter() {
+            
+        }
+    }
+}
+#[inline]
+async fn close_all_tables(tables: &Arc<Mutex<BTreeMap<u8, Vec<Table>>>>) {
+    let tables_m = tables.lock().await;
+    for (_, table_slice) in tables_m.iter() {
+        for table in table_slice {
+            let _ = table.sync_mmap();
+        }
+    }
+    drop(tables_m);
 }
 pub(crate) fn revert_to_manifest(
     dir: &PathBuf,

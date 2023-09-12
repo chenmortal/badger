@@ -6,7 +6,9 @@ use tokio::select;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::future::Future;
 use std::{
     collections::HashSet,
     fs::read_dir,
@@ -48,6 +50,23 @@ pub(crate) struct ThrottlePermit {
     sender: Sender<Error>,
 }
 impl ThrottlePermit {
+    #[inline]
+    pub(crate) async fn done_with_future(
+        self,
+        future: impl Future<Output = Result<(), anyhow::Error>>,
+    ) {
+        match future.await {
+            Ok(_) => {}
+            Err(error) => {
+                match self.sender.send(error).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        panic!("Throttle done send error mismatch,{}", e);
+                    }
+                };
+            }
+        }
+    }
     pub(crate) async fn done_with_error(&self, e: Option<Error>) {
         if let Some(error) = e {
             match self.sender.send(error).await {
@@ -151,5 +170,22 @@ pub(crate) fn get_sst_id_set(dir: &PathBuf) -> HashSet<u64> {
 pub(crate) fn dir_join_id_suffix(dir: &PathBuf, id: u32, suffix: &str) -> PathBuf {
     dir.join(format!("{:06}{}", id, suffix))
 }
+#[inline(always)]
+pub(crate) fn compare_key(a: &[u8], b: &[u8]) -> Ordering {
+    match a[..a.len() - 8].cmp(&b[..b.len() - 8]) {
+        Ordering::Less => return Ordering::Less,
+        Ordering::Equal => {}
+        Ordering::Greater => return Ordering::Greater,
+    };
+    a[a.len() - 8..].cmp(&b[b.len() - 8..])
+}
 
-
+#[test]
+fn test_a() {
+    let a = "ab12345678";
+    let b = "aa12345678";
+    dbg!(compare_key(a.as_bytes(), b.as_bytes()));
+    // let p = a.as_bytes();
+    // dbg!(p.len());
+    // dbg!(p);
+}

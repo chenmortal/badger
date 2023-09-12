@@ -41,27 +41,20 @@ impl DerefMut for MmapFile {
         unsafe { slice::from_raw_parts_mut(self.ptr as *mut u8, self.len) }
     }
 }
-impl MmapFile {
-    fn truncate(&mut self) {
-        match self.file_handle.set_len(0) {
-            Ok(_) => {}
-            Err(e) => {
-                error!("while truncate mmap_file {:?} for {}", self.file_path, e);
-            }
-        }
-        // drop(x)
-    }
-}
+// impl MmapFile {
+//     fn truncate(&mut self) {
+//         match self.file_handle.set_len(0) {
+//             Ok(_) => {}
+//             Err(e) => {
+//                 error!("while truncate mmap_file {:?} for {}", self.file_path, e);
+//             }
+//         }
+//         // drop(x)
+//     }
+// }
 impl Drop for MmapFile {
     fn drop(&mut self) {
-        unsafe { libc::munmap(self.ptr, self.len as libc::size_t) };
-        self.truncate();
-        match remove_file(&self.file_path) {
-            Ok(_) => {}
-            Err(e) => {
-                error!("while remove mmap_file {:?} for {}", self.file_path, e)
-            }
-        };
+        self.munmap();
     }
 }
 fn page_size() -> usize {
@@ -98,6 +91,19 @@ impl MmapFile {
             }
         }
     }
+    fn munmap(&self) -> io::Result<()> {
+        let result = unsafe { libc::munmap(self.ptr, self.len as libc::size_t) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    #[inline]
+    pub fn sync(&self) -> io::Result<()> {
+        self.flush(0, self.len)
+    }
+    #[inline]
     pub fn flush(&self, offset: usize, len: usize) -> io::Result<()> {
         let alignment = (self.ptr as usize + offset) % page_size();
         let offset = offset as isize - alignment as isize;
@@ -123,6 +129,7 @@ impl MmapFile {
             Err(io::Error::last_os_error())
         }
     }
+
     pub(crate) fn get_file_size(&self) -> anyhow::Result<usize> {
         let p = self.file_handle.metadata()?;
         Ok(p.len() as usize)
@@ -139,9 +146,24 @@ impl MmapFile {
         };
         Ok(&p[offset..offset + len])
     }
-    // pub fn delete(&self){
+    pub(crate) fn delete(&self) -> anyhow::Result<()> {
+        self.munmap()?;
+        self.file_handle
+            .set_len(0)
+            .map_err(|e| anyhow!("while truncate file:{:?}, error: {},", self.file_path, e))?;
+        remove_file(&self.file_path)
+            .map_err(|e| anyhow!("while remove file:{:?}, error:{}", self.file_path, e))?;
+        Ok(())
+    }
+    pub(crate) fn ready_to_close(&self, max_sz: u64) -> anyhow::Result<()> {
+        self.sync()
+            .map_err(|e| anyhow!("while sync file:{:?}, for {}", self.file_path, e))?;
+        self.munmap()
+            .map_err(|e| anyhow!("while munmap file:{:?}, for {}", self.file_path, e))?;
+        self.file_handle.set_len(max_sz as u64).map_err(|e| anyhow!("while truncate file:{:?}, for {}",self.file_path,e))?;
+        Ok(())
+    }
 
-    // }
 }
 unsafe impl Send for MmapFile {}
 unsafe impl Sync for MmapFile {}
@@ -215,19 +237,21 @@ pub(crate) fn open_mmap_file(
     }
     Ok((mmap_file, is_new_file))
 }
-// #[tokio::test]
+#[tokio::test]
 // #[test]
-// fn test_a() {
-//     let file_path = PathBuf::from("tt.txt");
-//     let mut fp_open_opt = OpenOptions::new();
-//     fp_open_opt.read(true).write(true).create(true);
-//     let s = "hello world";
-//     dbg!(s.len());
-//     let (mut mmap, is_new) =
-//         open_mmap_file(&file_path, fp_open_opt, false, (s.len() + 10) as u64).unwrap();
-//     dbg!(is_new);
-//     // mmap[]
+async fn test_a() {
+    let file_path = PathBuf::from("tt.txt");
+    let mut fp_open_opt = OpenOptions::new();
+    fp_open_opt.read(true).write(true).create(true);
+    let s = "hello world";
+    dbg!(s.len());
+    let (mut mmap, is_new) =
+        open_mmap_file(&file_path, fp_open_opt, false, (s.len() + 10) as u64).unwrap();
+    // mmap.munmap();
+    dbg!(is_new);
+    // mmap[]
 
-//     mmap[0..s.len()].copy_from_slice(s.as_bytes());
-//     mmap[0..s.len()].fill(0);
-// }
+    mmap[0..s.len()].copy_from_slice(s.as_bytes());
+    mmap.munmap();
+    // mmap[0..s.len()].fill(0);
+}
