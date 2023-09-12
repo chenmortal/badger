@@ -18,6 +18,7 @@ impl ManifestChange {
     }
 
 }
+pub(crate) const ERR_CHECKSUM_MISMATCH:&str="CHECKSUM_MISMATCH";
 impl Algorithm {
     pub(crate) fn calculate(&self,data:&[u8])->u64{
         match self {
@@ -31,7 +32,7 @@ impl Checksum {
     pub(crate) fn verify(&self,data:&[u8])->anyhow::Result<()>{
         let sum = self.algo().calculate(data);
         if self.sum!=sum{
-            bail!("checksum mismatch actual: {} , expected: {}",sum,self.sum);
+            bail!("checksum mismatch actual: {} , expected: {} {}",sum,self.sum,ERR_CHECKSUM_MISMATCH);
         };
         Ok(())
     }

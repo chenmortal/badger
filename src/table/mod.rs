@@ -4,9 +4,7 @@ pub(crate) mod index;
 pub(crate) mod iter;
 
 use std::mem;
-use std::ops::Deref;
 use std::path::PathBuf;
-use std::ptr::slice_from_raw_parts;
 use std::{sync::Arc, time::SystemTime};
 
 use anyhow::anyhow;
@@ -16,17 +14,14 @@ use flatbuffers::InvalidFlatbuffer;
 use prost::Message;
 use snap::raw::Decoder;
 use stretto::AsyncCache;
-use tokio::io::ReadBuf;
 use tokio::sync::{Mutex, RwLock};
 
 use self::block::Block;
 use self::iter::TableIter;
-use crate::fb::fb::{BlockOffset, TableIndex};
+use crate::fb::fb::TableIndex;
 use crate::key_registry::AesCipher;
 use crate::key_registry::NONCE_SIZE;
-use crate::pb;
 use crate::pb::badgerpb4::Checksum;
-// use crate::util::bytes_to_vec_u32;
 use crate::{
     db::DB, default::SSTABLE_FILE_EXT, lsm::mmap::MmapFile, options::CompressionType,
     pb::badgerpb4::DataKey, util::parse_file_id,
@@ -37,7 +32,7 @@ pub(crate) struct TableInner {
     mmap_f: MmapFile,
     table_size: usize,
     smallest: Vec<u8>,
-    biggest: RwLock<Vec<u8>>,
+    pub(crate) biggest: RwLock<Vec<u8>>,
     index_buf: TableIndexBuf,
     cheap_index: CheapIndex,
     id: u64,
@@ -50,7 +45,7 @@ pub(crate) struct TableInner {
     opt: TableOption,
 }
 #[derive(Debug, Clone)]
-pub(crate) struct Table(Arc<TableInner>);
+pub(crate) struct Table(pub(crate) Arc<TableInner>);
 #[derive(Debug)]
 pub(crate) struct CheapIndex {
     max_version: u64,
@@ -231,6 +226,33 @@ impl Table {
     pub(crate) async fn get_block(&self, idx: u32, use_cache: bool) -> anyhow::Result<Block> {
         self.0.get_block(idx, use_cache).await
     }
+
+    #[inline]
+    pub(crate) fn sync_mmap(&self)->Result<(), std::io::Error>{
+        self.0.mmap_f.sync()
+    }
+
+    #[inline]
+    pub(crate) fn size(&self)->usize{
+        self.0.table_size
+    }
+    #[inline]
+    pub(crate) fn stale_data_size(&self)->u32{
+        let table_index = self.0.index_buf.to_table_index();
+        table_index.stale_data_size()
+    }
+    #[inline]
+    pub(crate) fn id(&self)->u64{
+        self.0.id
+    }
+    #[inline]
+    pub(crate) fn smallest(&self)->&[u8]{
+        self.0.smallest.as_ref()
+    }
+    // #[inline]
+    // pub(crate) fn biggest(&self)->&[u8]{
+        
+    // }
 }
 
 //    index_data+index_len(4B u32)+checksum+checksum_len(4B u32)
