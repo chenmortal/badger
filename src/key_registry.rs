@@ -10,6 +10,8 @@ use anyhow::bail;
 use bytes::{Buf, BufMut};
 use log::error;
 use prost::Message;
+use std::ops::Deref;
+use std::sync::Arc;
 use std::time::SystemTime;
 use std::{
     collections::HashMap,
@@ -20,12 +22,22 @@ use std::{
     path::PathBuf,
     time::Duration,
 };
+use tokio::sync::RwLock;
 const KEY_REGISTRY_FILE_NAME: &str = "KEYREGISTRY";
 const KEY_REGISTRY_REWRITE_FILE_NAME: &str = "REWRITE-KEYREGISTRY";
 const SANITYTEXT: &[u8] = b"Hello Badger";
 pub const NONCE_SIZE: usize = 12;
+#[derive(Debug, Default,Clone)]
+pub(crate) struct KeyRegistry(Arc<RwLock<KeyRegistryInner>>);
+impl Deref for KeyRegistry {
+    type Target=Arc<RwLock<KeyRegistryInner>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 #[derive(Debug, Default)]
-pub(crate) struct KeyRegistry {
+pub(crate) struct KeyRegistryInner {
     data_keys: HashMap<u64, DataKey>,
     last_created: u64, //last_created is the timestamp(seconds) of the last data key,
     next_key_id: u64,
@@ -41,8 +53,14 @@ struct KeyRegistryIter<'a> {
     cipher: &'a Option<AesCipher>,
     len_crc_buf: Vec<u8>,
 }
-
 impl KeyRegistry {
+    pub(crate) async fn open(opt: &Options) -> anyhow::Result<Self> {
+        Ok(Self(Arc::new(RwLock::new(
+            KeyRegistryInner::open(opt).await?,
+        ))))
+    }
+}
+impl KeyRegistryInner {
     fn new(opt: &Options) -> anyhow::Result<Self> {
         let keys_len = opt.encryption_key.len();
         if keys_len > 0 && !vec![16, 32].contains(&keys_len) {
@@ -65,8 +83,8 @@ impl KeyRegistry {
             cipher_rotation_duration: opt.encryption_key_rotation_duration,
         })
     }
-    pub(crate) async fn open(opt: &Options) -> anyhow::Result<Self> {
-        let mut key_registry = KeyRegistry::new(opt)?;
+    async fn open(opt: &Options) -> anyhow::Result<Self> {
+        let mut key_registry = KeyRegistryInner::new(opt)?;
         let read_only = key_registry.read_only;
         let key_registry_path = key_registry.dir.join(KEY_REGISTRY_FILE_NAME);
         if !key_registry_path.exists() {
@@ -411,7 +429,7 @@ impl AesCipher {
         Ok(cipher)
     }
     #[inline]
-   pub(crate) fn encrypt(&self, nonce: &Nonce, plaintext: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn encrypt(&self, nonce: &Nonce, plaintext: &[u8]) -> Option<Vec<u8>> {
         match self {
             AesCipher::Aes128(ref cipher) => cipher.encrypt(nonce, plaintext).ok(),
             AesCipher::Aes128Siv(ref cipher) => cipher.encrypt(nonce, plaintext).ok(),
@@ -420,7 +438,7 @@ impl AesCipher {
         }
     }
     #[inline]
-    pub(crate) fn encrypt_with_slice(&self,nonce: &[u8],plaintext: &[u8])->Option<Vec<u8>>{
+    pub(crate) fn encrypt_with_slice(&self, nonce: &[u8], plaintext: &[u8]) -> Option<Vec<u8>> {
         self.encrypt(Nonce::from_slice(nonce), plaintext)
     }
     #[inline]
@@ -433,8 +451,8 @@ impl AesCipher {
         }
     }
     #[inline]
-    pub(crate) fn decrypt_with_slice(&self,nonce: &[u8],plaintext: &[u8])->Option<Vec<u8>>{
-        self.decrypt(Nonce::from_slice(nonce),plaintext)
+    pub(crate) fn decrypt_with_slice(&self, nonce: &[u8], plaintext: &[u8]) -> Option<Vec<u8>> {
+        self.decrypt(Nonce::from_slice(nonce), plaintext)
     }
     #[inline]
     fn generate_key(&self) -> Vec<u8> {
@@ -465,11 +483,11 @@ mod tests {
         let nonce = AesCipher::generate_nonce();
         let m = aes_gcm::Aes256Gcm::generate_nonce(&mut OsRng);
         dbg!(m.as_slice().len());
-        for _ in 0..100_000{
+        for _ in 0..100_000 {
             let e_data = p.encrypt(&nonce, data.as_bytes()).unwrap();
             let k = p.decrypt(&nonce, &e_data).unwrap();
         }
-        
+
         // dbg!(String::from_utf8(k));
     }
 }

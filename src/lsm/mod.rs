@@ -1,6 +1,6 @@
 pub(crate) mod memtable;
-mod wal;
+pub(crate) mod wal;
 pub(crate) mod mmap;
-mod levels;
+pub(crate) mod levels;
 mod level_handler;
 mod compaction;

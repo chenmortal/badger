@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 pub(crate) struct LogFile {
     fid: u32,
     opt: Arc<Options>,
-    key_registry: Arc<RwLock<KeyRegistry>>,
+    key_registry: KeyRegistry,
     datakey: Option<DataKey>,
     pub(crate) mmap: MmapFile,
     size: AtomicU32,
@@ -40,7 +40,7 @@ impl LogFile {
         fp_open_opt: OpenOptions,
         fsize: u64,
         opt: Arc<Options>,
-        key_registry: Arc<RwLock<KeyRegistry>>,
+        key_registry: KeyRegistry,
     ) -> anyhow::Result<(LogFile, bool)> {
         let (mmap, is_new) = open_mmap_file(&file_path, fp_open_opt, read_only, fsize)
             .map_err(|e| anyhow!("while opening file: {:?} for {}", &file_path, e))?;

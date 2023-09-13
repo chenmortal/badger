@@ -8,14 +8,20 @@ use std::{
 use crate::{
     default::{LOCK_FILE, MAX_VALUE_THRESHOLD},
     errors::DBError,
+    fb::fb::TableIndex,
     key_registry::KeyRegistry,
     lock::DirLockGuard,
-    lsm::memtable::{self, MemTable},
+    lsm::{
+        levels::LevelsController,
+        memtable::{self, new_mem_table, MemTable},
+    },
     manifest::open_create_manifestfile,
     metrics::{calculate_size, set_lsm_size, set_vlog_size, update_size},
     options::Options,
     skl::skip_list::SKL_MAX_NODE_SIZE,
-    value::threshold::VlogThreshold, util::Closer, table::block::{self, Block}, fb::fb::TableIndex,
+    table::block::{self, Block},
+    util::Closer,
+    value::threshold::VlogThreshold,
 };
 use anyhow::anyhow;
 use anyhow::bail;
@@ -26,15 +32,38 @@ use tokio::{sync::mpsc, task::JoinHandle};
 struct JoinHandles {
     update_size: JoinHandle<()>,
 }
+pub(crate) type BlockCache = AsyncCache<Vec<u8>, Block>;
+pub(crate) type IndexCache = AsyncCache<u64, Vec<u8>>;
+pub(crate) struct NextId(AtomicU32);
+impl NextId {
+    #[inline]
+    pub(crate) fn new() -> Self {
+        Self(AtomicU32::new(0))
+    }
+    #[inline]
+    pub(crate) fn get_next_id(&self) -> u32 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    #[inline]
+    pub(crate) fn add_next_id(&self) -> u32 {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    }
+    #[inline]
+    pub(crate) fn store(&self, val: u32) {
+        self.0.store(val, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct DB {
     lock: RwLock<()>,
     pub(crate) opt: Arc<Options>,
     pub(crate) next_mem_fid: AtomicU32,
-    pub(crate) key_registry: Arc<RwLock<KeyRegistry>>,
+    pub(crate) key_registry: KeyRegistry,
     memtable: Option<MemTable>,
-    pub(crate) block_cache:Option<AsyncCache<Vec<u8>,Block>>,
-    pub(crate) index_cache:Option<AsyncCache<u64,Vec<u8>>>,
+    pub(crate) block_cache: Option<BlockCache>,
+    pub(crate) index_cache: Option<IndexCache>,
+    pub(crate) level_controller: Option<LevelsController>,
 }
 impl DB {
     pub async fn open(opt: &mut Options) -> anyhow::Result<()> {
@@ -51,69 +80,76 @@ impl DB {
             };
         }
         // }
-        let (manifest_file, manifest) = open_create_manifestfile(&opt)?;
+        let manifest_file = open_create_manifestfile(&opt)?;
         let imm = Vec::<MemTable>::with_capacity(opt.num_memtables);
         let (sender, receiver) = mpsc::channel::<MemTable>(opt.num_memtables);
         let threshold = VlogThreshold::new(&opt);
 
+        // let mut db = DB::default();
+        let mut block_cache = None;
         if opt.block_cache_size > 0 {
             let mut num_in_cache = opt.block_cache_size / opt.block_size;
             if num_in_cache == 0 {
                 num_in_cache = 1;
             }
-            let block_cache = stretto::AsyncCacheBuilder::<Vec<u8>,block::Block>::new(num_in_cache * 8, opt.block_cache_size as i64)
+            block_cache = stretto::AsyncCacheBuilder::<Vec<u8>, block::Block>::new(
+                num_in_cache * 8,
+                opt.block_cache_size as i64,
+            )
             .set_buffer_items(64)
-            .set_metrics(true).finalize(tokio::spawn)?;;
+            .set_metrics(true)
+            .finalize(tokio::spawn)?
+            .into();
         }
+        let mut index_cache = None;
         if opt.index_cache_size > 0 {
             let index_sz = (opt.memtable_size as f64 * 0.05) as usize;
             let mut num_in_cache = opt.index_cache_size as usize / index_sz;
             if num_in_cache == 0 {
                 num_in_cache = 1;
             }
-            let index_cache = stretto::AsyncCacheBuilder::<u64,Vec<u8>>::new(num_in_cache * 8, opt.index_cache_size)
+            index_cache = stretto::AsyncCacheBuilder::<u64, Vec<u8>>::new(
+                num_in_cache * 8,
+                opt.index_cache_size,
+            )
             .set_buffer_items(64)
-            .set_metrics(true).finalize(tokio::spawn)?;
+            .set_metrics(true)
+            .finalize(tokio::spawn)?
+            .into();
+            // db.index_cache = index_cache.into();
         }
-        let mut db = DB::default();
-        // DB{
-        //     lock: todo!(),
-        //     opt: todo!(),
-        //     next_mem_fid: todo!(),
-        //     key_registry: todo!(),
-        //     memtable: todo!(),
-        // };
 
         let key_registry = KeyRegistry::open(opt).await?;
-        db.key_registry = Arc::new(RwLock::new(key_registry));
-        db.opt = Arc::new(opt.clone());
-        calculate_size(&db.opt).await;
+
+        let db_opt = Arc::new(opt.clone());
+
+        calculate_size(&db_opt).await;
         let mut update_size_closer = Closer::new();
         let update_size_handle =
-            tokio::spawn(update_size(db.opt.clone(), update_size_closer.sem_clone()));
+            tokio::spawn(update_size(db_opt.clone(), update_size_closer.sem_clone()));
 
-        if !db.opt.read_only {
-            db.memtable = db
-                .new_mem_table()
+        let next_mem_fid = NextId::new();
+        let mut memtable = None;
+        if !db_opt.read_only {
+            memtable = new_mem_table(&db_opt, &key_registry, &next_mem_fid)
                 .await
                 .map_err(|e| anyhow!("Cannot create memtable {}", e))?
                 .into();
         }
+
+        let levels_controller = LevelsController::new(
+            db_opt,
+            &manifest_file.manifest,
+            key_registry.clone(),
+            &block_cache,
+            &index_cache,
+        )
+        .await?;
         
 
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);
         Ok(())
-    }
-
-    #[inline]
-    pub(crate) fn get_next_mem_fid(&mut self) -> u32 {
-        self.next_mem_fid.load(std::sync::atomic::Ordering::SeqCst)
-    }
-    #[inline]
-    pub(crate) fn add_next_mem_fid(&mut self) -> u32 {
-        self.next_mem_fid
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
     pub(crate) fn update_size() {}
@@ -180,4 +216,3 @@ impl Options {
         Ok(())
     }
 }
-

@@ -47,9 +47,9 @@ pub struct Options {
     // Fine tuning options.
     pub(crate) memtable_size: usize,
     pub(crate) base_table_size: usize,
-    base_level_size: usize,
-    level_size_multiplier: isize,
-    table_size_multiplier: isize,
+    pub(crate) base_level_size: usize,
+    pub(crate) level_size_multiplier: usize,
+    pub(crate) table_size_multiplier: usize,
     pub(crate) max_levels: usize,
 
     pub(crate) vlog_percentile: f64,
@@ -200,7 +200,7 @@ impl Options {
         self.base_table_size = base_table_size;
         self
     }
-    pub fn set_level_size_multiplier(mut self, level_size_multiplier: isize) -> Self {
+    pub fn set_level_size_multiplier(mut self, level_size_multiplier: usize) -> Self {
         self.level_size_multiplier = level_size_multiplier;
         self
     }
