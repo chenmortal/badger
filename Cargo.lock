@@ -172,6 +172,7 @@ dependencies = [
  "log",
  "prost",
  "prost-build",
+ "rand",
  "serde",
  "snap",
  "stretto",
