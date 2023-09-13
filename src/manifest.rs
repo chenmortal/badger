@@ -3,12 +3,13 @@ use std::{
     fs::{rename, File, OpenOptions},
     io::{BufReader, Read, Seek, SeekFrom, Write},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use anyhow::{anyhow, bail};
 use bytes::{Buf, BufMut};
 use prost::Message;
+use tokio::sync::Mutex;
 
 use crate::{
     default::{MANIFEST_FILE_NAME, MANIFEST_REWRITE_FILE_NAME},
@@ -39,10 +40,10 @@ pub(crate) struct ManifestFile {
     file_handle: File,
     dir: PathBuf,
     external_magic: u16,
-    manifest: Arc<Mutex<Manifest>>,
+    pub(crate) manifest: Arc<Mutex<Manifest>>,
     // in_memory:bool
 }
-pub(crate) fn open_create_manifestfile(opt: &Options) -> anyhow::Result<(ManifestFile, Manifest)> {
+pub(crate) fn open_create_manifestfile(opt: &Options) -> anyhow::Result<ManifestFile> {
     let path = opt.dir.clone().join(MANIFEST_FILE_NAME);
     match OpenOptions::new()
         .read(true)
@@ -60,9 +61,9 @@ pub(crate) fn open_create_manifestfile(opt: &Options) -> anyhow::Result<(Manifes
                 file_handle,
                 dir: opt.dir.clone(),
                 external_magic: opt.external_magic_version,
-                manifest: Arc::new(Mutex::new(manifest.clone())),
+                manifest: Arc::new(Mutex::new(manifest)),
             };
-            Ok((manifest_file, manifest))
+            Ok(manifest_file)
         }
         Err(e) => match e.kind() {
             std::io::ErrorKind::NotFound => {
@@ -81,9 +82,9 @@ pub(crate) fn open_create_manifestfile(opt: &Options) -> anyhow::Result<(Manifes
                     file_handle,
                     dir: opt.dir.clone(),
                     external_magic: opt.external_magic_version,
-                    manifest: Arc::new(Mutex::new(manifest.clone())),
+                    manifest: Arc::new(Mutex::new(manifest)),
                 };
-                Ok((manifest_file, manifest))
+                Ok(manifest_file)
             }
             _ => bail!(e),
         },

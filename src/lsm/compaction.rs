@@ -1,7 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
 use tokio::sync::RwLock;
-
+#[derive(Debug)]
 pub(crate) struct CompactStatus{
     lock:RwLock<()>,
     pub(crate) levels:Vec<Arc<LevelCompactStatus>>,

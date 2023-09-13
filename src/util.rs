@@ -2,6 +2,7 @@ use anyhow::bail;
 use anyhow::Error;
 use bytes::Buf;
 use bytes::BufMut;
+use rand::Rng;
 use tokio::select;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
@@ -180,12 +181,35 @@ pub(crate) fn compare_key(a: &[u8], b: &[u8]) -> Ordering {
     a[a.len() - 8..].cmp(&b[b.len() - 8..])
 }
 
-#[test]
-fn test_a() {
-    let a = "ab12345678";
-    let b = "aa12345678";
-    dbg!(compare_key(a.as_bytes(), b.as_bytes()));
-    // let p = a.as_bytes();
-    // dbg!(p.len());
-    // dbg!(p);
+#[tokio::test]
+async fn test_a(){
+    let mut closer = Closer::new();
+    let sem = closer.sem_clone();
+    let mut p = rand::thread_rng();
+    // let k:u32=p.gen_range(0..10);
+    // dbg!(k);
+    let a=tokio::spawn(async move{
+        // let p = rand::thread_rng().gen_range(0..100);
+        let p=tokio::time::sleep(Duration::from_secs(rand::thread_rng().gen_range(0..10)));
+        p.is_elapsed();
+        select! {
+            a=p=>{
+                
+                dbg!(a);
+            },
+            b=sem.acquire()=>{
+                // drop(p);
+                // dbg!(b);
+            }
+            
+        }
+        println!("a");
+        // tokio::time::timeout(duration, future)
+    });
+    closer.close_all();
+    a.await;
+    // async move{
+
+    // }
+
 }

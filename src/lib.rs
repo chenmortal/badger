@@ -1,4 +1,4 @@
-#![feature(ptr_internals, strict_provenance_atomic_ptr, ptr_sub_ptr)]
+#![feature(ptr_internals, strict_provenance_atomic_ptr, ptr_sub_ptr,slice_as_chunks)]
 #[macro_use]
 extern crate lazy_static;
 pub mod db;

@@ -18,9 +18,11 @@ use tokio::sync::{Mutex, RwLock};
 
 use self::block::Block;
 use self::iter::TableIter;
+use crate::db::{BlockCache, IndexCache};
 use crate::fb::fb::TableIndex;
-use crate::key_registry::AesCipher;
+use crate::key_registry::{AesCipher, self, KeyRegistry};
 use crate::key_registry::NONCE_SIZE;
+use crate::options::Options;
 use crate::pb::badgerpb4::Checksum;
 use crate::{
     db::DB, default::SSTABLE_FILE_EXT, lsm::mmap::MmapFile, options::CompressionType,
@@ -125,16 +127,16 @@ pub(crate) struct TableOption {
 
     zstd_compression_level: isize,
 
-    block_cache: Option<AsyncCache<Vec<u8>, Block>>,
+    block_cache: Option<BlockCache>,
 
-    index_cache: Option<AsyncCache<u64, Vec<u8>>>,
+    index_cache: Option<IndexCache>,
 }
 
 impl TableOption {
-    pub(crate) async fn new(db: &Arc<DB>) -> Self {
-        let mut registry_w = db.key_registry.write().await;
+    pub(crate) async fn new(key_registry:&KeyRegistry,opt:&Arc<Options>,block_cache:&Option<BlockCache>,index_cache:&Option<IndexCache>) -> Self {
+        let mut registry_w = key_registry.write().await;
         let data_key = registry_w.latest_datakey().await.unwrap();
-        let opt = &db.opt;
+        drop(registry_w);
         Self {
             read_only: opt.read_only,
             metrics_enabled: opt.metrics_enabled,
@@ -146,8 +148,8 @@ impl TableOption {
             datakey: data_key,
             compression: opt.compression,
             zstd_compression_level: opt.zstd_compression_level,
-            block_cache: db.block_cache.clone(),
-            index_cache: db.index_cache.clone(),
+            block_cache: block_cache.clone(),
+            index_cache: index_cache.clone(),
         }
     }
 }
