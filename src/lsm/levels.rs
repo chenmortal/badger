@@ -9,7 +9,6 @@ use std::{
     time::Duration,
 };
 
-use aes_gcm::aead::rand_core::le;
 use anyhow::anyhow;
 use anyhow::bail;
 use log::{debug, error, info};
@@ -124,7 +123,7 @@ impl LevelsController {
                 }
             };
             max_file_id = max_file_id.max(*file_id);
-            // let db_clone = db.clone();
+
             let tm = *table_manifest;
             let level = table_manifest.level;
 
@@ -158,7 +157,6 @@ impl LevelsController {
                     .map_err(|e| anyhow!("Opening file: {:?} for {}", path, e))?;
                 match Table::open(mmap_f, table_opt).await {
                     Ok(table) => {
-                        // let level = table_manifest.level;
                         let mut tables_m = tables_clone.lock().await;
                         match tables_m.get_mut(&level) {
                             Some(s) => {
@@ -168,6 +166,7 @@ impl LevelsController {
                                 tables_m.insert(level, vec![table]);
                             }
                         }
+                        drop(tables_m);
                     }
                     Err(e) => {
                         if e.to_string().ends_with(ERR_CHECKSUM_MISMATCH) {
@@ -267,7 +266,7 @@ impl LevelsController {
         let num = opt.num_compactors;
     }
 
-    pub(crate) async fn run_compact(&self, id: usize, sem: Arc<Semaphore>,opt: &Arc<Options>) {
+    pub(crate) async fn run_compact(&self, id: usize, sem: Arc<Semaphore>, opt: &Arc<Options>) {
         let sleep =
             tokio::time::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..1000)));
         select! {
@@ -291,9 +290,7 @@ impl LevelsController {
             }
         }
     }
-    async fn do_compact(&self,id:usize,pri:CompactionPriority){
-        
-    }
+    async fn do_compact(&self, id: usize, priority: CompactionPriority) {}
     async fn level_targets(&self, opt: &Arc<Options>) -> Targets {
         let levels_len = self.levels.len();
         let mut targets = Targets {
@@ -301,14 +298,13 @@ impl LevelsController {
             target_size: vec![0; levels_len],
             file_size: vec![0; levels_len],
         };
-        let mut db_size = self.last_level().get_total_size().await;
+        let mut level_size = self.last_level().get_total_size().await;
         for i in (1..levels_len).rev() {
-            let target_s = db_size.max(opt.base_level_size);
-            targets.target_size[i] = target_s;
-            if targets.base_level == 0 && target_s <= opt.base_level_size {
+            targets.target_size[i] = level_size.max(opt.base_level_size);
+            if targets.base_level == 0 && level_size <= opt.base_level_size {
                 targets.base_level = i;
             }
-            db_size /= opt.level_size_multiplier;
+            level_size /= opt.level_size_multiplier;
         }
 
         let mut table_size = opt.base_table_size;

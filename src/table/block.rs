@@ -22,7 +22,7 @@ struct BlockInner {
 }
 impl Block {
     #[inline]
-    pub(crate) fn new(offset: u32, mut data: Vec<u8>) -> anyhow::Result<Self> {
+    pub(crate) fn new(offset: u32,  data: Vec<u8>) -> anyhow::Result<Self> {
         Ok(Self(Arc::new(BlockInner::new(offset, data)?)))
     }
 
