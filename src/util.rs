@@ -180,28 +180,42 @@ pub(crate) fn compare_key(a: &[u8], b: &[u8]) -> Ordering {
     };
     a[a.len() - 8..].cmp(&b[b.len() - 8..])
 }
+#[inline(always)]
+pub(crate) fn parse_key(key: &[u8]) -> Option<&[u8]> {
+    if key.len() <= 8 {
+        return None;
+    }
+    key[..key.len() - 8].into()
+}
+#[inline(always)]
+pub(crate) fn key_with_ts(key: &[u8], ts: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(key.len() + 8);
+    out.put(key);
+    out.put_u64(u64::MAX - ts);
+    out
+}
 
 #[tokio::test]
-async fn test_a(){
+async fn test_a() {
     let mut closer = Closer::new();
     let sem = closer.sem_clone();
     let mut p = rand::thread_rng();
     // let k:u32=p.gen_range(0..10);
     // dbg!(k);
-    let a=tokio::spawn(async move{
+    let a = tokio::spawn(async move {
         // let p = rand::thread_rng().gen_range(0..100);
-        let p=tokio::time::sleep(Duration::from_secs(rand::thread_rng().gen_range(0..10)));
+        let p = tokio::time::sleep(Duration::from_secs(rand::thread_rng().gen_range(0..10)));
         p.is_elapsed();
         select! {
             a=p=>{
-                
+
                 dbg!(a);
             },
             b=sem.acquire()=>{
                 // drop(p);
                 // dbg!(b);
             }
-            
+
         }
         println!("a");
         // tokio::time::timeout(duration, future)
@@ -211,5 +225,4 @@ async fn test_a(){
     // async move{
 
     // }
-
 }

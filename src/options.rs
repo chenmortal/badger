@@ -70,7 +70,7 @@ pub struct Options {
 
     pub(crate) num_compactors: usize,
     pub(crate) compactl0_on_close: bool,
-    lmax_compaction: bool,
+    pub(crate) lmax_compaction: bool,
     pub(crate) zstd_compression_level: isize,
 
     // When set, checksum will be validated for each entry read from the value log file.
