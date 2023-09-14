@@ -28,10 +28,13 @@ use crate::{
     pb::ERR_CHECKSUM_MISMATCH,
     sys::sync_dir,
     table::{Table, TableOption},
-    util::{dir_join_id_suffix, get_sst_id_set, Throttle},
+    util::{dir_join_id_suffix, get_sst_id_set, Closer, Throttle},
 };
 
-use super::{compaction::CompactStatus, level_handler::LevelHandler};
+use super::{
+    compaction::{CompactStatus, KeyRange},
+    level_handler::LevelHandler,
+};
 #[derive(Debug)]
 pub(crate) struct LevelsController {
     next_file_id: AtomicU64,
@@ -45,11 +48,25 @@ struct Targets {
     file_size: Vec<usize>,
 }
 struct CompactionPriority {
-    level: u32,
+    level: usize,
     score: f64,
     adjusted: f64,
     drop_prefixes: Vec<Vec<u8>>,
     targets: Targets,
+}
+struct CompactDef {
+    compactor_id: usize,
+    // targets: Targets,
+    priority: CompactionPriority,
+    this_level: LevelHandler,
+    next_level: LevelHandler,
+    top: Vec<Table>,
+    bottom: Vec<Table>,
+    this_range: KeyRange,
+    next_range: KeyRange,
+    splits: Vec<KeyRange>,
+    this_size: u64,
+    // drop_prefixes: Vec<Vec<u8>>,
 }
 impl LevelsController {
     pub(crate) async fn new(
@@ -66,15 +83,15 @@ impl LevelsController {
             next_file_id: Default::default(),
             l0_stalls_ms: Default::default(),
             levels: Vec::with_capacity(opt.max_levels),
-            // db: db.clone(),
             compact_status,
         };
 
-        // let opt = &levels_control.db.opt;
+        let mut compact_status_w = levels_control.compact_status.0.write().await;;
         for i in 0..opt.max_levels {
-            levels_control.levels[i] = LevelHandler::new(i);
-            levels_control.compact_status.levels[i] = Arc::new(LevelCompactStatus::default());
+            levels_control.levels.push(LevelHandler::new(i));
+            compact_status_w.levels.push(LevelCompactStatus::default());
         }
+        drop(compact_status_w);
 
         let manifest_lock = manifest.lock().await;
         let manifest = &*manifest_lock;
@@ -262,11 +279,26 @@ impl LevelsController {
         debug_assert!(self.levels.len() > 0);
         self.levels.last().unwrap()
     }
-    pub(crate) async fn start_compact(opt: &Arc<Options>) {
+    pub(crate) async fn start_compact(
+        level_controller: Arc<Self>,
+        opt: &Arc<Options>,
+        closer: &mut Closer,
+        sem: Arc<Semaphore>,
+    ) {
         let num = opt.num_compactors;
+        for task_id in 0..num {
+            let sem = closer.sem_clone();
+            let opt_clone = opt.clone();
+            let level_controller_clone = level_controller.clone();
+            tokio::spawn(async move {
+                level_controller_clone
+                    .run_compact(task_id, sem, opt_clone)
+                    .await;
+            });
+        }
     }
 
-    pub(crate) async fn run_compact(&self, id: usize, sem: Arc<Semaphore>, opt: &Arc<Options>) {
+    pub(crate) async fn run_compact(&self, task_id: usize, sem: Arc<Semaphore>, opt: Arc<Options>) {
         let sleep =
             tokio::time::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..1000)));
         select! {
@@ -276,21 +308,66 @@ impl LevelsController {
         let mut count = 0;
         let mut ticker = tokio::time::interval(Duration::from_millis(50));
 
-        let level = self.last_level().get_level().await;
-        let targets = self.level_targets(opt).await;
+        // let level = self.last_level().get_level().await;
+        // let targets = self.level_targets(&opt).await;
         // ticker.tick()
+        // fn run (priotirty:CompactionPriority){
 
+        // }
+        // let run= |priority:CompactionPriority|{
+
+        // };
+        let priority = CompactionPriority {
+            level: self.last_level().get_level().await,
+            score: 0.0,
+            adjusted: 0.0,
+            drop_prefixes: Vec::new(),
+            targets: self.level_targets(&opt).await,
+        };
+        self.do_compact(task_id, priority, &opt).await;
         loop {
             select! {
                 _=ticker.tick()=>{
                     count+=1;
+                    if opt.lmax_compaction && task_id==2 && count >=200{
 
+                    }
                 }
                 _=sem.acquire()=>{return ;}
             }
         }
     }
-    async fn do_compact(&self, id: usize, priority: CompactionPriority) {}
+    async fn do_compact(
+        &self,
+        task_id: usize,
+        mut priority: CompactionPriority,
+        opt: &Arc<Options>,
+    ) {
+        debug_assert!(priority.level < opt.max_levels);
+        if priority.targets.base_level == 0 {
+            priority.targets = self.level_targets(opt).await;
+        }
+        let this_level = self.levels[priority.level].clone();
+        let next_level = if priority.level == 0 {
+            self.levels[priority.targets.base_level].clone()
+        } else {
+            this_level.clone()
+        };
+
+        let compact_def = CompactDef {
+            compactor_id: task_id,
+            this_level,
+            next_level,
+            top: Vec::new(),
+            bottom: Vec::new(),
+            this_range: KeyRange::default(),
+            next_range: KeyRange::default(),
+            splits: Vec::new(),
+            this_size: 0,
+            priority,
+        };
+        if compact_def.priority.level == 0 {}
+    }
     async fn level_targets(&self, opt: &Arc<Options>) -> Targets {
         let levels_len = self.levels.len();
         let mut targets = Targets {
@@ -337,6 +414,61 @@ impl LevelsController {
         }
         targets
     }
+
+    async fn fill_tables_level0(&self, compact_def: &mut CompactDef) {}
+    async fn fill_tables_level0_to_levelbase(&self, compact_def: &mut CompactDef) -> bool {
+        if compact_def.next_level.get_level().await == 0 {
+            panic!("Base level can't be zero");
+        }
+
+        if compact_def.priority.adjusted > 0.0 && compact_def.priority.adjusted < 1.0 {
+            return false;
+        }
+        let this_level_r = compact_def.this_level.0.read().await;
+        // let next_level_r = compact_def.next_level.0.read().await;
+
+        if this_level_r.tables.len() == 0 {
+            return false;
+        };
+        let mut top = Vec::new();
+        if compact_def.priority.drop_prefixes.len() == 0 {
+            let mut key_range = KeyRange::default();
+            for table in this_level_r.tables.iter() {
+                let k = KeyRange::from_table(table).await;
+                if !k.is_empty() && key_range.is_overlaps_with(&k) {
+                    top.push(table.clone());
+                    key_range.extend(k);
+                } else {
+                    break;
+                };
+            }
+        } else {
+            top = this_level_r.tables.clone();
+        }
+        drop(this_level_r);
+
+        compact_def.this_range = KeyRange::from_tables(&top).await.unwrap();
+        compact_def.top = top;
+
+        let (left_index, right_index) = compact_def
+            .next_level
+            .overlapping_tables(&compact_def.this_range)
+            .await;
+
+        let next_level_r = compact_def.next_level.0.read().await;
+        compact_def.bottom = next_level_r.tables[left_index..right_index].to_vec();
+        drop(next_level_r);
+
+        compact_def.next_range = if compact_def.bottom.len() == 0 {
+            compact_def.this_range.clone()
+        } else {
+            KeyRange::from_tables(&compact_def.bottom).await.unwrap() //len!=0 so can unwrap()
+        };
+
+        // self.compact_status.
+        true
+    }
+    fn fill_tables_level0_to_level0(&self, compact_def: &CompactDef) {}
 }
 #[inline]
 async fn close_all_tables(tables: &Arc<Mutex<BTreeMap<u8, Vec<Table>>>>) {
