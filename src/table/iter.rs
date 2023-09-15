@@ -53,7 +53,7 @@ impl TableIter {
         }
         self.block_pos = 0;
         let block = self.table.get_block(self.block_pos, self.use_cache).await?;
-        let mut block_iter = BlockIter::new(self.table.get_id(), self.block_pos, block);
+        let mut block_iter = BlockIter::new(self.table.id(), self.block_pos, block);
         block_iter.seek_to_first()?;
         self.block_iter = block_iter.into();
 
@@ -66,7 +66,7 @@ impl TableIter {
         }
         self.block_pos = num_blocks - 1;
         let block = self.table.get_block(self.block_pos, self.use_cache).await?;
-        let mut block_iter = BlockIter::new(self.table.get_id(), self.block_pos, block);
+        let mut block_iter = BlockIter::new(self.table.id(), self.block_pos, block);
         block_iter.seek_to_last()?;
 
         self.block_iter = block_iter.into();

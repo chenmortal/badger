@@ -219,10 +219,10 @@ impl Table {
         Ok(table)
     }
 
-    #[inline]
-    pub(crate) fn get_id(&self) -> u64 {
-        self.0.id
-    }
+    // #[inline]
+    // pub(crate) fn get_id(&self) -> u64 {
+    //     self.0.id
+    // }
 
     #[inline]
     pub(crate) async fn get_block(&self, idx: u32, use_cache: bool) -> anyhow::Result<Block> {
@@ -250,6 +250,10 @@ impl Table {
     #[inline]
     pub(crate) fn smallest(&self)->&[u8]{
         self.0.smallest.as_ref()
+    }
+    #[inline]
+    pub(crate) fn created_at(&self)->SystemTime{
+        self.0.created_at
     }
     // #[inline]
     // pub(crate) fn biggest(&self)->&[u8]{
