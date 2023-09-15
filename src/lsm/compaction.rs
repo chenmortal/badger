@@ -7,12 +7,14 @@ use crate::{
     table::Table,
     util::{compare_key, key_with_ts, parse_key},
 };
+
+use super::levels::CompactDef;
 #[derive(Debug)]
 pub(crate) struct CompactStatus(pub(crate) RwLock<CompactStatusInner>);
 #[derive(Debug)]
 pub(crate) struct CompactStatusInner {
     pub(crate) levels: Vec<LevelCompactStatus>,
-    tables: HashSet<u64>,
+    pub(super) tables: HashSet<u64>,
 }
 impl CompactStatus {
     pub(crate) fn new(max_levels: usize) -> Self {
@@ -23,11 +25,11 @@ impl CompactStatus {
         Self(RwLock::new(inner))
     }
 }
-#[derive(Debug,Default)]
-pub(crate) struct  LevelCompactStatus(Arc<LevelCompactStatusInner>);
+#[derive(Debug, Default)]
+pub(crate) struct LevelCompactStatus(pub(super) LevelCompactStatusInner);
 #[derive(Debug, Default)]
 pub(crate) struct LevelCompactStatusInner {
-    ranges: Vec<KeyRange>,
+    pub(super) ranges: Vec<KeyRange>,
     del_size: i64,
 }
 #[derive(Debug, Default, Clone)]
@@ -36,6 +38,54 @@ pub(crate) struct KeyRange {
     right: Vec<u8>,
     inf: bool,
     size: i64,
+}
+
+impl CompactStatus {
+    pub(super) async fn compare_and_add(&self, compact_def: &CompactDef) -> bool {
+        let mut status_w = self.0.write().await;
+
+        let this_level = compact_def.this_level.get_level().await;
+        let next_level = compact_def.next_level.get_level().await;
+
+        debug_assert!(this_level < status_w.levels.len());
+
+        if status_w.levels[this_level].is_overlaps_with(&compact_def.this_range) {
+            return false;
+        };
+
+        if status_w.levels[next_level].is_overlaps_with(&compact_def.next_range) {
+            return false;
+        };
+
+        status_w.levels[this_level]
+            .0
+            .ranges
+            .push(compact_def.this_range.clone());
+
+        status_w.levels[next_level]
+            .0
+            .ranges
+            .push(compact_def.next_range.clone());
+
+        for table in compact_def.top.iter() {
+            status_w.tables.insert(table.id());
+        }
+        for table in compact_def.bottom.iter() {
+            status_w.tables.insert(table.id());
+        }
+        drop(status_w);
+        true
+    }
+}
+impl LevelCompactStatus {
+    fn is_overlaps_with(&self, target: &KeyRange) -> bool {
+        for key_range in self.0.ranges.iter() {
+            if key_range.is_overlaps_with(target) {
+                return true;
+            };
+        }
+        return false;
+    }
 }
 impl KeyRange {
     pub(crate) async fn from_tables(tables: &[Table]) -> Option<KeyRange> {
@@ -124,22 +174,27 @@ impl KeyRange {
             self.inf = true
         }
     }
+
+    //is overlapped by target
     #[inline]
-    pub(crate) fn is_overlaps_with(&self, other: &KeyRange) -> bool {
-        if self.is_empty() || self.is_empty() {
+    pub(crate) fn is_overlaps_with(&self, target: &KeyRange) -> bool {
+        //empty is always overlapped by target
+        if self.is_empty() {
             return true;
         }
 
-        // if other.is_empty() {
-        //     return false;
-        // }
+        //self is not empty, so is not overlapped by empty
+        if target.is_empty() {
+            return false;
+        }
 
-        if self.inf || other.inf {
+        if self.inf || target.inf {
             return true;
         }
 
-        if compare_key(&self.left, &other.right).is_gt()
-            || compare_key(&self.right, &other.left).is_lt()
+        if compare_key(&self.left, &target.right).is_gt()  //  [..target.right] [self.left..]
+            || compare_key(&self.right, &target.left).is_lt()
+        // [..self.right] [target.left..]
         {
             return false;
         }
@@ -155,6 +210,12 @@ impl KeyRange {
     #[inline]
     pub(crate) fn get_right(&self) -> &[u8] {
         self.right.as_ref()
+    }
+    #[inline]
+    pub(crate) fn default_with_inf() -> Self {
+        let mut k = Self::default();
+        k.inf = true;
+        k
     }
 }
 

@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use anyhow::anyhow;
@@ -54,16 +54,16 @@ struct CompactionPriority {
     drop_prefixes: Vec<Vec<u8>>,
     targets: Targets,
 }
-struct CompactDef {
+pub(super) struct CompactDef {
     compactor_id: usize,
     // targets: Targets,
     priority: CompactionPriority,
-    this_level: LevelHandler,
-    next_level: LevelHandler,
-    top: Vec<Table>,
-    bottom: Vec<Table>,
-    this_range: KeyRange,
-    next_range: KeyRange,
+    pub(super) this_level: LevelHandler,
+    pub(super) next_level: LevelHandler,
+    pub(super) top: Vec<Table>,
+    pub(super) bottom: Vec<Table>,
+    pub(super) this_range: KeyRange,
+    pub(super) next_range: KeyRange,
     splits: Vec<KeyRange>,
     this_size: u64,
     // drop_prefixes: Vec<Vec<u8>>,
@@ -86,7 +86,7 @@ impl LevelsController {
             compact_status,
         };
 
-        let mut compact_status_w = levels_control.compact_status.0.write().await;;
+        let mut compact_status_w = levels_control.compact_status.0.write().await;
         for i in 0..opt.max_levels {
             levels_control.levels.push(LevelHandler::new(i));
             compact_status_w.levels.push(LevelCompactStatus::default());
@@ -415,7 +415,7 @@ impl LevelsController {
         targets
     }
 
-    async fn fill_tables_level0(&self, compact_def: &mut CompactDef) {}
+    async fn fill_tables_level0(&self, compact_def: &CompactDef) {}
     async fn fill_tables_level0_to_levelbase(&self, compact_def: &mut CompactDef) -> bool {
         if compact_def.next_level.get_level().await == 0 {
             panic!("Base level can't be zero");
@@ -425,7 +425,6 @@ impl LevelsController {
             return false;
         }
         let this_level_r = compact_def.this_level.0.read().await;
-        // let next_level_r = compact_def.next_level.0.read().await;
 
         if this_level_r.tables.len() == 0 {
             return false;
@@ -435,7 +434,7 @@ impl LevelsController {
             let mut key_range = KeyRange::default();
             for table in this_level_r.tables.iter() {
                 let k = KeyRange::from_table(table).await;
-                if !k.is_empty() && key_range.is_overlaps_with(&k) {
+                if key_range.is_overlaps_with(&k) {
                     top.push(table.clone());
                     key_range.extend(k);
                 } else {
@@ -465,10 +464,63 @@ impl LevelsController {
             KeyRange::from_tables(&compact_def.bottom).await.unwrap() //len!=0 so can unwrap()
         };
 
-        // self.compact_status.
+        return self.compact_status.compare_and_add(compact_def).await;
+    }
+
+    async fn fill_tables_level0_to_level0(&self, compact_def: &mut CompactDef) -> bool {
+        if compact_def.compactor_id != 0 {
+            return false;
+        }
+
+        compact_def.next_level = self.levels[0].clone();
+        compact_def.next_range = KeyRange::default();
+        compact_def.bottom.clear();
+
+        debug_assert!(compact_def.this_level.get_level().await == 0);
+        debug_assert!(compact_def.next_level.get_level().await == 0);
+
+        let targets = &mut compact_def.priority.targets;
+
+        let this_level_handler_r = compact_def.this_level.0.read().await;
+        let mut compact_status_w = self.compact_status.0.write().await;
+        let mut out = Vec::new();
+        let now = SystemTime::now();
+
+        for table in this_level_handler_r.tables.iter() {
+            if table.size() >= targets.file_size[0] {
+                continue;
+            }
+
+            if now.duration_since(table.created_at()).unwrap() < Duration::from_secs(10) {
+                continue;
+            };
+
+            if compact_status_w.tables.contains(&table.id()) {
+                continue;
+            }
+            out.push(table.clone());
+        }
+
+        if out.len() < 4 {
+            return false;
+        }
+
+        compact_def.this_range = KeyRange::default_with_inf();
+        compact_def.top = out;
+
+        let this_level_compact_status =
+            &mut compact_status_w.levels[compact_def.this_level.get_level().await];
+        this_level_compact_status
+            .0
+            .ranges
+            .push(KeyRange::default_with_inf());
+
+        for table in compact_def.top.iter() {
+            compact_status_w.tables.insert(table.id());
+        }
+        targets.file_size[0] = u32::MAX as usize;
         true
     }
-    fn fill_tables_level0_to_level0(&self, compact_def: &CompactDef) {}
 }
 #[inline]
 async fn close_all_tables(tables: &Arc<Mutex<BTreeMap<u8, Vec<Table>>>>) {
