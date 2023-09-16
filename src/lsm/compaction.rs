@@ -76,6 +76,12 @@ impl CompactStatus {
         drop(status_w);
         true
     }
+    pub(super) async fn is_overlaps_with(&self, level: usize, target: &KeyRange) -> bool {
+        let inner_r = self.0.read().await;
+        let r = inner_r.levels[level].is_overlaps_with(target);
+        drop(inner_r);
+        r
+    }
 }
 impl LevelCompactStatus {
     fn is_overlaps_with(&self, target: &KeyRange) -> bool {
