@@ -17,7 +17,7 @@ pub(crate) struct LevelHandlerInner {
     pub(crate) tables: Vec<Table>,
     total_size: usize,
     total_stale_size: u32,
-    level: usize,
+    pub(super) level: usize,
     str_level: String,
 }
 impl LevelHandler {

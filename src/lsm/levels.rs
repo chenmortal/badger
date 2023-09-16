@@ -342,19 +342,20 @@ impl LevelsController {
         task_id: usize,
         mut priority: CompactionPriority,
         opt: &Arc<Options>,
-    ) {
-        debug_assert!(priority.level < opt.max_levels);
+    ) -> anyhow::Result<()> {
+        let priority_level = priority.level;
+        debug_assert!(priority_level < opt.max_levels);
         if priority.targets.base_level == 0 {
             priority.targets = self.level_targets(opt).await;
         }
-        let this_level = self.levels[priority.level].clone();
-        let next_level = if priority.level == 0 {
+        let this_level = self.levels[priority_level].clone();
+        let next_level = if priority_level == 0 {
             self.levels[priority.targets.base_level].clone()
         } else {
             this_level.clone()
         };
 
-        let compact_def = CompactDef {
+        let mut compact_def = CompactDef {
             compactor_id: task_id,
             this_level,
             next_level,
@@ -366,7 +367,16 @@ impl LevelsController {
             this_size: 0,
             priority,
         };
-        if compact_def.priority.level == 0 {}
+        if priority_level == 0 {
+            if !self.fill_tables_level0(&mut compact_def).await {
+                bail!("Unable to fill tables")
+            };
+        } else {
+            if priority_level != opt.max_levels - 1 {
+                compact_def.next_level = self.levels[priority_level + 1].clone();
+            }
+        }
+        Ok(())
     }
     async fn level_targets(&self, opt: &Arc<Options>) -> Targets {
         let levels_len = self.levels.len();
@@ -414,8 +424,47 @@ impl LevelsController {
         }
         targets
     }
+    async fn fill_max_level_tables(tables: &Vec<Table>, compact_def: &mut CompactDef) ->bool{
+        let mut sorted_tables = tables.clone();
+        if sorted_tables.len() != 0 {
+            sorted_tables.sort_unstable_by(|a, b| b.stale_data_size().cmp(&a.stale_data_size()));
+        }
 
-    async fn fill_tables_level0(&self, compact_def: &CompactDef) {}
+        if sorted_tables.len() >0 && sorted_tables[0].stale_data_size()==0{
+            return false;
+        }
+        compact_def.bottom.clear();
+
+        let now = SystemTime::now();
+
+        for table in sorted_tables {
+            // table.
+        }
+        // fn sort_by_stale_data_size(tables: &Vec<Table>,compact_def: &mut CompactDef){
+
+        // }
+        true
+    }
+    async fn fill_tables(&self, compact_def: &mut CompactDef, opt: &Arc<Options>) -> bool {
+        let this_level_r = compact_def.this_level.0.read().await;
+        let next_level_r = compact_def.next_level.0.read().await;
+
+        let tables = this_level_r.tables.clone();
+        if tables.len() == 0 {
+            return false;
+        }
+
+        if this_level_r.level == opt.max_levels {}
+
+        true
+    }
+    async fn fill_tables_level0(&self, compact_def: &mut CompactDef) -> bool {
+        if self.fill_tables_level0_to_levelbase(compact_def).await {
+            true
+        } else {
+            self.fill_tables_level0_to_level0(compact_def).await
+        }
+    }
     async fn fill_tables_level0_to_levelbase(&self, compact_def: &mut CompactDef) -> bool {
         if compact_def.next_level.get_level().await == 0 {
             panic!("Base level can't be zero");
@@ -424,7 +473,9 @@ impl LevelsController {
         if compact_def.priority.adjusted > 0.0 && compact_def.priority.adjusted < 1.0 {
             return false;
         }
+
         let this_level_r = compact_def.this_level.0.read().await;
+        let next_level_r = compact_def.next_level.0.read().await;
 
         if this_level_r.tables.len() == 0 {
             return false;
@@ -444,7 +495,6 @@ impl LevelsController {
         } else {
             top = this_level_r.tables.clone();
         }
-        drop(this_level_r);
 
         compact_def.this_range = KeyRange::from_tables(&top).await.unwrap();
         compact_def.top = top;
@@ -454,16 +504,15 @@ impl LevelsController {
             .overlapping_tables(&compact_def.this_range)
             .await;
 
-        let next_level_r = compact_def.next_level.0.read().await;
         compact_def.bottom = next_level_r.tables[left_index..right_index].to_vec();
-        drop(next_level_r);
 
         compact_def.next_range = if compact_def.bottom.len() == 0 {
             compact_def.this_range.clone()
         } else {
             KeyRange::from_tables(&compact_def.bottom).await.unwrap() //len!=0 so can unwrap()
         };
-
+        drop(this_level_r);
+        drop(next_level_r);
         return self.compact_status.compare_and_add(compact_def).await;
     }
 
@@ -500,7 +549,7 @@ impl LevelsController {
             }
             out.push(table.clone());
         }
-
+        drop(this_level_handler_r);
         if out.len() < 4 {
             return false;
         }
@@ -519,9 +568,11 @@ impl LevelsController {
             compact_status_w.tables.insert(table.id());
         }
         targets.file_size[0] = u32::MAX as usize;
+        drop(compact_status_w);
         true
     }
 }
+
 #[inline]
 async fn close_all_tables(tables: &Arc<Mutex<BTreeMap<u8, Vec<Table>>>>) {
     let tables_m = tables.lock().await;

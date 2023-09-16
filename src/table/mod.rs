@@ -255,6 +255,11 @@ impl Table {
     pub(crate) fn created_at(&self)->SystemTime{
         self.0.created_at
     }
+    #[inline]
+    pub(crate) fn max_version(&self)->u64{
+        self.0.cheap_index.max_version
+    }
+
     // #[inline]
     // pub(crate) fn biggest(&self)->&[u8]{
     //     self.0.b   
