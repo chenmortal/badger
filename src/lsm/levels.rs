@@ -28,7 +28,8 @@ use crate::{
     pb::ERR_CHECKSUM_MISMATCH,
     sys::sync_dir,
     table::{Table, TableOption},
-    util::{dir_join_id_suffix, get_sst_id_set, Closer, Throttle},
+    txn::oracle::Oracle,
+    util::{compare_key, dir_join_id_suffix, get_sst_id_set, Closer, Throttle},
 };
 
 use super::{
@@ -65,7 +66,7 @@ pub(super) struct CompactDef {
     pub(super) this_range: KeyRange,
     pub(super) next_range: KeyRange,
     splits: Vec<KeyRange>,
-    this_size: u64,
+    this_size: usize,
     // drop_prefixes: Vec<Vec<u8>>,
 }
 impl LevelsController {
@@ -424,28 +425,88 @@ impl LevelsController {
         }
         targets
     }
-    async fn fill_max_level_tables(tables: &Vec<Table>, compact_def: &mut CompactDef) ->bool{
+    async fn fill_max_level_tables(
+        &self,
+        tables: &Vec<Table>,
+        compact_def: &mut CompactDef,
+        oracle: &Arc<Oracle>,
+    ) -> bool {
         let mut sorted_tables = tables.clone();
         if sorted_tables.len() != 0 {
             sorted_tables.sort_unstable_by(|a, b| b.stale_data_size().cmp(&a.stale_data_size()));
         }
 
-        if sorted_tables.len() >0 && sorted_tables[0].stale_data_size()==0{
+        if sorted_tables.len() > 0 && sorted_tables[0].stale_data_size() == 0 {
             return false;
         }
         compact_def.bottom.clear();
 
+        async fn collect_bottom_tables(tables: &Vec<Table>,compact_def: &mut CompactDef,t: &Table,need_file_size:usize){
+            let mut total_size = t.size();
+            let mut j = match tables.binary_search_by(|a| compare_key(a.smallest(), t.smallest())) {
+                Ok(s) => s,
+                Err(s) => s,
+            };
+            debug_assert!(tables[j].id()==t.id());
+            j+=1;
+            while j < tables.len() {
+                let new_t = &tables[j];
+                total_size+=new_t.size();
+                if total_size >= need_file_size{
+                    break;
+                }
+                compact_def.bottom.push(new_t.clone());
+                compact_def.next_range.extend(KeyRange::from_table(new_t).await);
+                j+=1;
+            }
+        }
         let now = SystemTime::now();
 
         for table in sorted_tables {
-            // table.
-        }
-        // fn sort_by_stale_data_size(tables: &Vec<Table>,compact_def: &mut CompactDef){
+            if table.max_version() > oracle.discard_at_or_below().await {
+                continue;
+            }
 
-        // }
-        true
+            if now.duration_since(table.created_at()).unwrap() < Duration::from_secs(60 * 60) {
+                continue;
+            }
+
+            if table.stale_data_size() < 10 << 20 {
+                continue;
+            }
+
+            compact_def.this_size = table.size();
+            compact_def.this_range = KeyRange::from_table(&table).await;
+            compact_def.next_range = compact_def.this_range.clone();
+            let this_level = compact_def.this_level.get_level().await;
+            if self
+                .compact_status
+                .is_overlaps_with(this_level, &compact_def.this_range)
+                .await
+            {
+                continue;
+            };
+            let table_size = table.size();
+            compact_def.top = vec![table.clone()];
+            let need_file_size = compact_def.priority.targets.file_size[this_level];
+            if table_size >= need_file_size {
+                break;
+            }
+            collect_bottom_tables(tables, compact_def, &table, need_file_size).await;
+            if !self.compact_status.compare_and_add(compact_def).await {
+              compact_def.bottom.clear();
+              compact_def.next_range=KeyRange::default();
+              continue;  
+            };
+            return true;
+        }
+        if compact_def.top.len()==0 {
+            return false;
+        }
+
+        return self.compact_status.compare_and_add(compact_def).await
     }
-    async fn fill_tables(&self, compact_def: &mut CompactDef, opt: &Arc<Options>) -> bool {
+    async fn fill_tables(&self, compact_def: &mut CompactDef, opt: &Arc<Options>,oracle: &Arc<Oracle>) -> bool {
         let this_level_r = compact_def.this_level.0.read().await;
         let next_level_r = compact_def.next_level.0.read().await;
 
@@ -454,7 +515,12 @@ impl LevelsController {
             return false;
         }
 
-        if this_level_r.level == opt.max_levels {}
+        if this_level_r.level == opt.max_levels-1 {
+            // drop(this_level_r);
+            // drop(next_level_r);
+            let bottom =&mut compact_def.bottom;
+            // return self.fill_max_level_tables(&tables, compact_def, oracle).await;
+        }
 
         true
     }
@@ -511,9 +577,11 @@ impl LevelsController {
         } else {
             KeyRange::from_tables(&compact_def.bottom).await.unwrap() //len!=0 so can unwrap()
         };
+
+        let r = self.compact_status.compare_and_add(compact_def).await;
         drop(this_level_r);
         drop(next_level_r);
-        return self.compact_status.compare_and_add(compact_def).await;
+        return r;
     }
 
     async fn fill_tables_level0_to_level0(&self, compact_def: &mut CompactDef) -> bool {
