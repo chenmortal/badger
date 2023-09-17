@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, ops::Deref, sync::Arc};
 
 use tokio::sync::RwLock;
 use zstd::zstd_safe::WriteBuf;
@@ -11,6 +11,13 @@ use crate::{
 use super::levels::CompactDef;
 #[derive(Debug)]
 pub(crate) struct CompactStatus(pub(crate) RwLock<CompactStatusInner>);
+impl Deref for CompactStatus {
+    type Target = RwLock<CompactStatusInner>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 #[derive(Debug)]
 pub(crate) struct CompactStatusInner {
     pub(crate) levels: Vec<LevelCompactStatus>,
@@ -34,8 +41,8 @@ pub(crate) struct LevelCompactStatusInner {
 }
 #[derive(Debug, Default, Clone)]
 pub(crate) struct KeyRange {
-    left: Vec<u8>,
-    right: Vec<u8>,
+    pub(super) left: Vec<u8>,
+    pub(super) right: Vec<u8>,
     inf: bool,
     size: i64,
 }
@@ -44,8 +51,8 @@ impl CompactStatus {
     pub(super) async fn compare_and_add(&self, compact_def: &CompactDef) -> bool {
         let mut status_w = self.0.write().await;
 
-        let this_level = compact_def.this_level.get_level().await;
-        let next_level = compact_def.next_level.get_level().await;
+        let this_level = compact_def.this_level.get_level();
+        let next_level = compact_def.next_level.get_level();
 
         debug_assert!(this_level < status_w.levels.len());
 
@@ -111,8 +118,8 @@ impl KeyRange {
             drop(biggest_i_r)
         }
         Self {
-            left: key_with_ts(parse_key(smallest).unwrap(), u64::MAX),
-            right: key_with_ts(parse_key(&biggest).unwrap(), 0),
+            left: key_with_ts(parse_key(smallest), u64::MAX),
+            right: key_with_ts(parse_key(&biggest), 0),
             inf: false,
             size: 0,
         }
@@ -120,9 +127,9 @@ impl KeyRange {
     }
     pub(crate) async fn from_table(table: &Table) -> Self {
         let smallest = table.smallest();
-        let left = key_with_ts(parse_key(smallest).unwrap(), u64::MAX);
+        let left = key_with_ts(parse_key(smallest), u64::MAX);
         let biggest = table.0.biggest.read().await;
-        let right = key_with_ts(parse_key(&biggest).unwrap(), 0);
+        let right = key_with_ts(parse_key(&biggest), 0);
         drop(biggest);
         Self {
             left,

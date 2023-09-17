@@ -20,6 +20,7 @@ use self::block::Block;
 use self::iter::TableIter;
 use crate::db::{BlockCache, IndexCache};
 use crate::fb::fb::TableIndex;
+use crate::iter::Iter;
 use crate::key_registry::{AesCipher, self, KeyRegistry};
 use crate::key_registry::NONCE_SIZE;
 use crate::options::Options;
