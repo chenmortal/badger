@@ -1,3 +1,7 @@
+use std::{future::Future, collections::HashMap};
+
+use crate::iter::Iter;
+
 use super::{
     block::Block,
     builder::{Header, HEADER_SIZE},
@@ -25,6 +29,32 @@ pub(crate) struct BlockIter {
 
     prev_overlap: usize,
 }
+pub(crate) struct ConcatIter<T:Iter>{
+    id:usize,
+    cur:Option<T>,
+    iters:HashMap<usize,T>,
+    tables:Vec<Table>,
+    reversed:bool,
+    no_cache:bool,
+}
+impl Iter for TableIter {
+    async fn rewind(&mut self) -> Result<(), anyhow::Error> {
+        if self.is_reversed {
+            self.seek_to_last().await
+        } else {
+            self.seek_to_first().await
+        }
+    }
+
+    fn get_key(&self) -> Option<&[u8]> {
+        if let Some(s) = &self.block_iter {
+            let p: &[u8] = s.key.as_ref();
+            p.into()
+        } else {
+            None
+        }
+    }
+}
 
 impl TableIter {
     #[inline]
@@ -35,14 +65,6 @@ impl TableIter {
             block_iter: None,
             is_reversed,
             use_cache,
-        }
-    }
-    #[inline]
-    pub(crate) async fn rewind(&mut self) -> anyhow::Result<()> {
-        if self.is_reversed {
-            self.seek_to_last().await
-        } else {
-            self.seek_to_first().await
         }
     }
 
@@ -72,15 +94,6 @@ impl TableIter {
         self.block_iter = block_iter.into();
 
         Ok(())
-    }
-    #[inline]
-    pub(crate) fn get_key(&self)->Option<&[u8]>{
-        if let Some(s) = &self.block_iter {
-            let p:&[u8] = s.key.as_ref();
-            p.into()
-        }else{
-            None
-        }
     }
 }
 impl BlockIter {
@@ -157,5 +170,10 @@ impl BlockIter {
 
         self.val = entry_data[value_offset..].to_vec();
         Ok(())
+    }
+}
+impl ConcatIter<TableIter> {
+    pub(crate) fn new(table:Vec<Table>,reversed:bool,use_cache:bool){
+        
     }
 }

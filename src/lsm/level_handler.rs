@@ -1,54 +1,66 @@
-use std::cmp::Ordering;
-use std::future::Future;
+use std::{cmp::Ordering, mem::size_of};
 use std::io;
-use std::sync::{Arc, RwLockWriteGuard};
+use std::ops::Deref;
+use std::sync::Arc;
 
 use anyhow::anyhow;
-use anyhow::bail;
 use tokio::sync::RwLock;
 
-use crate::{db::DB, table::Table, util::compare_key};
+use crate::{table::Table, util::compare_key};
 
 use super::compaction::KeyRange;
 #[derive(Debug, Clone)]
-pub(crate) struct LevelHandler(pub(crate) Arc<RwLock<LevelHandlerInner>>);
+pub(crate) struct LevelHandler(pub(crate) Arc<LevelHandlerInner>);
+impl Deref for LevelHandler {
+    type Target = Arc<LevelHandlerInner>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 #[derive(Debug)]
 pub(crate) struct LevelHandlerInner {
+    pub(crate) handler_tables: RwLock<LevelHandlerTables>,
+    level: usize,
+}
+impl Deref for LevelHandlerInner {
+    type Target=RwLock<LevelHandlerTables>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.handler_tables
+    }
+}
+#[derive(Debug, Default)]
+pub(crate) struct LevelHandlerTables {
     pub(crate) tables: Vec<Table>,
     total_size: usize,
     total_stale_size: u32,
-    pub(super) level: usize,
-    str_level: String,
 }
 impl LevelHandler {
     pub(crate) fn new(level: usize) -> Self {
-        let str_level = format!("l{}", level);
         let inner = LevelHandlerInner {
-            tables: Default::default(),
-            total_size: Default::default(),
-            total_stale_size: Default::default(),
+            handler_tables: RwLock::new(LevelHandlerTables::default()),
             level,
-            str_level,
-            // db,
         };
-        Self(Arc::new(RwLock::new(inner)))
+        Self(Arc::new(inner))
     }
     #[inline]
-    pub(crate) async fn get_level(&self) -> usize {
-        let inner_r = self.0.read().await;
-        let level = inner_r.level;
-        drop(inner_r);
-        level
+    pub(crate) fn get_level(&self) -> usize {
+        self.0.level
+    }
+    #[inline]
+    pub(crate) fn get_str_level(&self) -> String {
+        format!("l{}", self.level)
     }
     #[inline]
     pub(crate) async fn get_total_size(&self) -> usize {
-        let inner_r = self.0.read().await;
+        let inner_r = self.0.handler_tables.read().await;
         let total_size = inner_r.total_size;
         drop(inner_r);
         total_size
     }
     pub(crate) async fn init_tables(&self, tables: &Vec<Table>) {
-        let mut inner_w = self.0.write().await;
+        let mut inner_w = self.0.handler_tables.write().await;
         inner_w.tables = tables.clone();
         inner_w.total_size = 0;
         inner_w.total_stale_size = 0;
@@ -58,7 +70,7 @@ impl LevelHandler {
             inner_w.total_stale_size = t.stale_data_size();
         });
 
-        if inner_w.level == 0 {
+        if self.0.level == 0 {
             inner_w.tables.sort_by(|a, b| a.id().cmp(&b.id()));
         } else {
             inner_w
@@ -68,8 +80,8 @@ impl LevelHandler {
         drop(inner_w);
     }
     pub(crate) async fn validate(&self) -> anyhow::Result<()> {
-        let inner_r = self.0.read().await;
-        if inner_r.level == 0 {
+        let inner_r = self.0.handler_tables.read().await;
+        if self.0.level == 0 {
             return Ok(());
         }
         let num_tables = inner_r.tables.len();
@@ -89,7 +101,7 @@ vs Smallest(j)[{}]:
                     pre_biggest_r.as_slice(),
                     now.id(),
                     now.smallest(),
-                    inner_r.level,
+                    self.0.level,
                     j,
                     num_tables
                 );
@@ -108,7 +120,7 @@ vs
 : level={} j={} num_tables={}",
                     now.smallest(),
                     now_biggest_r.as_slice(),
-                    inner_r.level,
+                    self.0.level,
                     j,
                     num_tables
                 );
@@ -121,7 +133,7 @@ vs
     }
     pub(crate) async fn sync_mmap(&self) -> Result<(), io::Error> {
         let mut err = None;
-        let tables_r = self.0.read().await;
+        let tables_r = self.0.handler_tables.read().await;
         for table in tables_r.tables.iter() {
             match table.sync_mmap() {
                 Ok(_) => {}
@@ -144,7 +156,7 @@ vs
             return (0, 0);
         };
 
-        let self_r = self.0.read().await;
+        let self_r = self.0.handler_tables.read().await;
         let tables = &self_r.tables;
         let left_index = match binary_search_biggest(tables, left).await {
             Ok(index) => index,  // val[index].biggest == value
@@ -172,7 +184,7 @@ async fn binary_search_biggest(tables: &Vec<Table>, value: &[u8]) -> Result<usiz
     // l=0 r=6 s=6 mid=3 g
     // l=0 r=3 s=3 mid=1 l
     // l=2 r=3 s=1 mid=2 l
-    // l=3 r=1 
+    // l=3 r=1
     // return 3
     let mut size = tables.len();
     let mut left = 0;
@@ -203,4 +215,8 @@ async fn binary_search_biggest(tables: &Vec<Table>, value: &[u8]) -> Result<usiz
         size = right - left;
     }
     Err(left)
+}
+#[test]
+fn test_a(){
+    dbg!(size_of::<LevelHandler>());
 }

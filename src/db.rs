@@ -16,7 +16,7 @@ use crate::{
         memtable::{self, new_mem_table, MemTable},
     },
     manifest::open_create_manifestfile,
-    metrics::{calculate_size, set_lsm_size, set_vlog_size, update_size},
+    metrics::{calculate_size, set_lsm_size, set_metrics_enabled, set_vlog_size, update_size},
     options::Options,
     skl::skip_list::SKL_MAX_NODE_SIZE,
     table::block::{self, Block},
@@ -122,7 +122,8 @@ impl DB {
         let key_registry = KeyRegistry::open(opt).await?;
 
         let db_opt = Arc::new(opt.clone());
-
+        set_metrics_enabled(db_opt.metrics_enabled);
+        
         calculate_size(&db_opt).await;
         let mut update_size_closer = Closer::new();
         let update_size_handle =
@@ -145,7 +146,6 @@ impl DB {
             &index_cache,
         )
         .await?;
-        
 
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);

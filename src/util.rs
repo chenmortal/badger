@@ -188,15 +188,28 @@ pub(crate) fn parse_key(key: &[u8]) -> Option<&[u8]> {
     key[..key.len() - 8].into()
 }
 #[inline(always)]
-pub(crate) fn key_with_ts(key: &[u8], ts: u64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(key.len() + 8);
-    out.put(key);
-    out.put_u64(u64::MAX - ts);
-    out
+pub(crate) fn key_with_ts(key: Option<&[u8]>, ts: u64) -> Vec<u8> {
+    match key {
+        Some(s) => {
+            let mut out = Vec::with_capacity(s.len() + 8);
+            out.put(s);
+            out.put_u64(u64::MAX - ts);
+            out
+        }
+        None => {
+            let mut out = Vec::with_capacity(8);
+            out.put_u64(u64::MAX - ts);
+            out
+        }
+    }
 }
 
 #[tokio::test]
 async fn test_a() {
+    let p = vec![1,2,3];
+    let mut k = p.iter();
+    k.next_back();;
+    // k.nth(n);
     let mut closer = Closer::new();
     let sem = closer.sem_clone();
     let mut p = rand::thread_rng();
