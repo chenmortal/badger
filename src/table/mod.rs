@@ -2,7 +2,7 @@ pub(crate) mod block;
 pub(crate) mod builder;
 pub(crate) mod index;
 pub(crate) mod iter;
-
+pub(crate) mod merge;
 use std::mem;
 use std::path::PathBuf;
 use std::{sync::Arc, time::SystemTime};
@@ -13,7 +13,6 @@ use bytes::{Buf, BufMut};
 use flatbuffers::InvalidFlatbuffer;
 use prost::Message;
 use snap::raw::Decoder;
-use stretto::AsyncCache;
 use tokio::sync::{Mutex, RwLock};
 
 use self::block::Block;
@@ -21,12 +20,12 @@ use self::iter::TableIter;
 use crate::db::{BlockCache, IndexCache};
 use crate::fb::fb::TableIndex;
 use crate::iter::Iter;
-use crate::key_registry::{AesCipher, self, KeyRegistry};
 use crate::key_registry::NONCE_SIZE;
+use crate::key_registry::{AesCipher, KeyRegistry};
 use crate::options::Options;
 use crate::pb::badgerpb4::Checksum;
 use crate::{
-    db::DB, default::SSTABLE_FILE_EXT, lsm::mmap::MmapFile, options::CompressionType,
+    default::SSTABLE_FILE_EXT, lsm::mmap::MmapFile, options::CompressionType,
     pb::badgerpb4::DataKey, util::parse_file_id,
 };
 #[derive(Debug)]
@@ -134,7 +133,12 @@ pub(crate) struct TableOption {
 }
 
 impl TableOption {
-    pub(crate) async fn new(key_registry:&KeyRegistry,opt:&Arc<Options>,block_cache:&Option<BlockCache>,index_cache:&Option<IndexCache>) -> Self {
+    pub(crate) async fn new(
+        key_registry: &KeyRegistry,
+        opt: &Arc<Options>,
+        block_cache: &Option<BlockCache>,
+        index_cache: &Option<IndexCache>,
+    ) -> Self {
         let mut registry_w = key_registry.write().await;
         let data_key = registry_w.latest_datakey().await.unwrap();
         drop(registry_w);
@@ -231,39 +235,39 @@ impl Table {
     }
 
     #[inline]
-    pub(crate) fn sync_mmap(&self)->Result<(), std::io::Error>{
+    pub(crate) fn sync_mmap(&self) -> Result<(), std::io::Error> {
         self.0.mmap_f.sync()
     }
 
     #[inline]
-    pub(crate) fn size(&self)->usize{
+    pub(crate) fn size(&self) -> usize {
         self.0.table_size
     }
     #[inline]
-    pub(crate) fn stale_data_size(&self)->u32{
+    pub(crate) fn stale_data_size(&self) -> u32 {
         let table_index = self.0.index_buf.to_table_index();
         table_index.stale_data_size()
     }
     #[inline]
-    pub(crate) fn id(&self)->u64{
+    pub(crate) fn id(&self) -> u64 {
         self.0.id
     }
     #[inline]
-    pub(crate) fn smallest(&self)->&[u8]{
+    pub(crate) fn smallest(&self) -> &[u8] {
         self.0.smallest.as_ref()
     }
     #[inline]
-    pub(crate) fn created_at(&self)->SystemTime{
+    pub(crate) fn created_at(&self) -> SystemTime {
         self.0.created_at
     }
     #[inline]
-    pub(crate) fn max_version(&self)->u64{
+    pub(crate) fn max_version(&self) -> u64 {
         self.0.cheap_index.max_version
     }
 
     // #[inline]
     // pub(crate) fn biggest(&self)->&[u8]{
-    //     self.0.b   
+    //     self.0.b
     // }
 }
 
