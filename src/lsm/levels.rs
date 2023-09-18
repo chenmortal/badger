@@ -28,7 +28,11 @@ use crate::{
     options::Options,
     pb::ERR_CHECKSUM_MISMATCH,
     sys::sync_dir,
-    table::{iter::TableIter, Table, TableOption},
+    table::{
+        iter::{ConcatIter, TableIter},
+        merge::MergeIter,
+        Table, TableOption,
+    },
     txn::oracle::Oracle,
     util::{
         compare_key, dir_join_id_suffix, get_sst_id_set, key_with_ts, parse_key, Closer, Throttle,
@@ -787,24 +791,24 @@ impl LevelsController {
             valid.push(table.clone());
         }
 
-
-        if level==0{
-            let out = compact_def
-            .top
-            .iter()
-            .rev()
-            .map(|t| TableIter::new(t.clone(), false, false))
-            .collect::<Vec<_>>();
-        }else if compact_def.top.len() > 0{
-            let p = vec![TableIter::new(compact_def.top[0].clone(), false, false)];
-        };        
-       
+        let mut out = Vec::new();
+        if level == 0 {
+            compact_def
+                .top
+                .iter()
+                .rev()
+                .for_each(|t| out.push(t.clone()));
+        } else if compact_def.top.len() > 0 {
+            out.push(compact_def.top[0].clone());
+        };
 
         let mut throttle = Throttle::new(3);
-        // compact_def.top[0].
         for key_range in compact_def.splits.iter() {
             match throttle.acquire().await {
                 Ok(permit) => {
+                    let out_concat = ConcatIter::new(out.clone(), false, false);
+                    let valid_concat = ConcatIter::new(valid.clone(), false, false);
+                    let merget_iter = MergeIter::new(vec![out_concat, valid_concat], false);
                     tokio::spawn(async move {
                         permit.done_with_error(None).await;
                     });
@@ -816,6 +820,33 @@ impl LevelsController {
             };
         }
         Ok(())
+    }
+    async fn sub_compact(
+        &self,
+        merget_iter: MergeIter<TableIter>,
+        key_range: KeyRange,
+        compact_def: &mut CompactDef,
+        oracle: &Arc<Oracle>,
+    ) {
+        let mut all_tables = Vec::with_capacity(compact_def.top.len() + compact_def.bottom.len());
+        all_tables.extend_from_slice(&compact_def.top);
+        all_tables.extend_from_slice(&compact_def.bottom);
+
+        let has_overlap = self
+            .check_overlap(&all_tables, compact_def.next_level.get_level() + 1)
+            .await;
+
+        let discard_ts = oracle.discard_at_or_below().await;
+    }
+    async fn check_overlap(&self, tables: &Vec<Table>, level: usize) -> bool {
+        let key_range = KeyRange::from_tables(&tables).await.unwrap();
+        for i in level..self.levels.len() {
+            let (left, right) = self.levels[i].overlapping_tables(&key_range).await;
+            if right - left > 0 {
+                return true;
+            }
+        }
+        return false;
     }
 }
 
