@@ -6,9 +6,7 @@ pub(crate) struct WaterMark {
     last_index: AtomicU64,
     name: String,
 }
-// impl WaterMark {
 
-// }
 struct Mark {
     index: u64,
     indices: Vec<u64>,

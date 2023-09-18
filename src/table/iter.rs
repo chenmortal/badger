@@ -1,4 +1,4 @@
-use std::{future::Future, collections::HashMap};
+use std::{collections::HashMap, future::Future};
 
 use crate::iter::Iter;
 
@@ -29,13 +29,14 @@ pub(crate) struct BlockIter {
 
     prev_overlap: usize,
 }
-pub(crate) struct ConcatIter<T:Iter>{
-    id:usize,
-    cur:Option<T>,
-    iters:HashMap<usize,T>,
-    tables:Vec<Table>,
-    reversed:bool,
-    no_cache:bool,
+#[derive(Debug)]
+pub(crate) struct ConcatIter<T: Iter> {
+    cur_index: Option<usize>,
+    iters: HashMap<usize, T>,
+    tables: Vec<Table>,
+    cur: Option<*mut T>,
+    reversed: bool,
+    use_cache: bool,
 }
 impl Iter for TableIter {
     async fn rewind(&mut self) -> Result<(), anyhow::Error> {
@@ -173,7 +174,63 @@ impl BlockIter {
     }
 }
 impl ConcatIter<TableIter> {
-    pub(crate) fn new(table:Vec<Table>,reversed:bool,use_cache:bool){
+    pub(crate) fn new(tables: Vec<Table>, reversed: bool, use_cache: bool) -> Self {
+        Self {
+            cur_index: None,
+            iters: HashMap::new(),
+            tables,
+            reversed,
+            use_cache,
+            cur: None,
+        }
+    }
+    fn set_cur(&mut self, index: usize) {
+        if index >= self.tables.len() {
+            self.cur_index = None;
+            return;
+        }
+
+        if !self.iters.contains_key(&index) {
+            self.iters.insert(
+                index,
+                TableIter::new(self.tables[index].clone(), self.reversed, self.use_cache),
+            );
+        };
         
+        self.cur_index = index.into();
+        self.cur = Some(self.iters.get_mut(&index).unwrap() as *mut TableIter);
+    }
+    fn get_mut_cur(&mut self) -> Option<&mut TableIter> {
+        match self.cur {
+            Some(s) => Some(unsafe { &mut *s }),
+            None => None,
+        }
+    }
+    fn get_cur(&self) -> Option<&TableIter> {
+        match self.cur {
+            Some(s) => Some(unsafe { &*s }),
+            None => None,
+        }
+    }
+}
+impl Iter for ConcatIter<TableIter> {
+    async fn rewind(&mut self) -> Result<(), anyhow::Error> {
+        if self.tables.len() == 0 {
+            return Ok(());
+        }
+        if !self.reversed {
+            self.set_cur(0);
+        } else {
+            self.set_cur(self.tables.len() - 1);
+        }
+        self.get_mut_cur().unwrap().rewind().await?;
+        Ok(())
+    }
+
+    fn get_key(&self) -> Option<&[u8]> {
+        match self.get_cur() {
+            Some(s) => s.get_key(),
+            None => None,
+        }
     }
 }
