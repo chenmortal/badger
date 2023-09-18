@@ -1,5 +1,10 @@
 use bincode::{DefaultOptions, Options};
 use serde::{Deserialize, Serialize};
+
+
+
+
+
 #[derive(Serialize, Deserialize, Debug)]
 struct ValueInner {
     meta: u8,
@@ -7,11 +12,11 @@ struct ValueInner {
     expires_at: u64,
     value: Vec<u8>,
 }
-struct Value {
+struct ValueStruct {
     inner: ValueInner,
     version: u64,
 }
-impl Value {
+impl ValueStruct {
     fn encode(&self) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
         DefaultOptions::new()
             .with_varint_encoding()

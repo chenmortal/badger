@@ -196,7 +196,7 @@ impl ConcatIter<TableIter> {
                 TableIter::new(self.tables[index].clone(), self.reversed, self.use_cache),
             );
         };
-        
+
         self.cur_index = index.into();
         self.cur = Some(self.iters.get_mut(&index).unwrap() as *mut TableIter);
     }
