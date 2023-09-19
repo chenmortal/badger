@@ -94,7 +94,7 @@ pub struct Options {
     pub(crate) detect_conflicts: bool,
 
     // NamespaceOffset specifies the offset from where the next 8 bytes contains the namespace.
-    name_space_offset: isize,
+    pub(crate) name_space_offset: Option<usize>,
 
     // Magic version used by the application using badger to ensure that it doesn't open the DB
     // with incompatible data format.
@@ -149,7 +149,7 @@ impl Default for Options {
             verify_value_checksum: false,
             bypass_lock_guard: Default::default(),
             detect_conflicts: true,
-            name_space_offset: -1,
+            name_space_offset: None,
             external_magic_version: Default::default(),
             managed_txns: Default::default(),
             max_batch_count: Default::default(),
@@ -287,8 +287,8 @@ impl Options {
         self.index_cache_size = index_cache_size;
         self
     }
-    pub fn set_name_space_offset(mut self, offset: isize) -> Self {
-        self.name_space_offset = offset;
+    pub fn set_name_space_offset(mut self, offset: usize) -> Self {
+        self.name_space_offset = offset.into();
         self
     }
     pub fn set_detect_conflicts(mut self, detect_conflicts: bool) -> Self {

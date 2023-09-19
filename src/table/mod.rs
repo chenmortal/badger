@@ -24,6 +24,7 @@ use crate::key_registry::NONCE_SIZE;
 use crate::key_registry::{AesCipher, KeyRegistry};
 use crate::options::Options;
 use crate::pb::badgerpb4::Checksum;
+use crate::txn::TxnTs;
 use crate::{
     default::SSTABLE_FILE_EXT, lsm::mmap::MmapFile, options::CompressionType,
     pb::badgerpb4::DataKey, util::parse_file_id,
@@ -50,7 +51,7 @@ pub(crate) struct TableInner {
 pub(crate) struct Table(pub(crate) Arc<TableInner>);
 #[derive(Debug)]
 pub(crate) struct CheapIndex {
-    max_version: u64,
+    max_version: TxnTs,
     key_count: u32,
     uncompressed_size: u32,
     on_disk_size: u32,
@@ -69,7 +70,7 @@ impl CheapIndex {
             None => 0,
         };
         Self {
-            max_version: index.max_version(),
+            max_version: index.max_version().into(),
             key_count: index.key_count(),
             uncompressed_size: index.uncompressed_size(),
             on_disk_size: index.on_disk_size(),
@@ -261,7 +262,7 @@ impl Table {
         self.0.created_at
     }
     #[inline]
-    pub(crate) fn max_version(&self) -> u64 {
+    pub(crate) fn max_version(&self) -> TxnTs {
         self.0.cheap_index.max_version
     }
 

@@ -1,8 +1,13 @@
 use std::{
+    collections::HashSet,
     fs::{create_dir_all, metadata, read_dir, set_permissions, Permissions},
+    ops::Deref,
     os::unix::prelude::PermissionsExt,
     path::PathBuf,
-    sync::{atomic::AtomicU32, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU32},
+        Arc,
+    },
 };
 
 use crate::{
@@ -20,11 +25,13 @@ use crate::{
     options::Options,
     skl::skip_list::SKL_MAX_NODE_SIZE,
     table::block::{self, Block},
+    txn::oracle::Oracle,
     util::Closer,
-    value::threshold::VlogThreshold,
+    value::threshold::VlogThreshold, kv::{KeyTs, ValueStruct},
 };
 use anyhow::anyhow;
 use anyhow::bail;
+use bytes::Buf;
 use log::debug;
 use stretto::AsyncCache;
 use tokio::sync::RwLock;
@@ -53,9 +60,17 @@ impl NextId {
         self.0.store(val, std::sync::atomic::Ordering::SeqCst);
     }
 }
+#[derive(Debug, Clone)]
+pub struct DB(Arc<DBInner>);
+impl Deref for DB {
+    type Target = DBInner;
 
-#[derive(Debug, Default)]
-pub struct DB {
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+#[derive(Debug)]
+pub struct DBInner {
     lock: RwLock<()>,
     pub(crate) opt: Arc<Options>,
     pub(crate) next_mem_fid: AtomicU32,
@@ -64,8 +79,11 @@ pub struct DB {
     pub(crate) block_cache: Option<BlockCache>,
     pub(crate) index_cache: Option<IndexCache>,
     pub(crate) level_controller: Option<LevelsController>,
+    pub(crate) oracle: Arc<Oracle>,
+    banned_namespaces: RwLock<HashSet<u64>>,
+    is_closed: AtomicBool,
 }
-impl DB {
+impl DBInner {
     pub async fn open(opt: &mut Options) -> anyhow::Result<()> {
         opt.check_set_options()?;
         let mut dir_lock_guard = None;
@@ -123,7 +141,7 @@ impl DB {
 
         let db_opt = Arc::new(opt.clone());
         set_metrics_enabled(db_opt.metrics_enabled);
-        
+
         calculate_size(&db_opt).await;
         let mut update_size_closer = Closer::new();
         let update_size_handle =
@@ -153,6 +171,34 @@ impl DB {
     }
 
     pub(crate) fn update_size() {}
+    pub(crate) fn is_closed(&self) -> bool {
+        self.is_closed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    pub(crate) async fn is_banned(&self, key: &[u8]) -> Result<(), DBError> {
+        match self.opt.name_space_offset {
+            Some(offset) => {
+                if key.len() <= offset + 8 {
+                    return Ok(());
+                }
+                let mut p = &key[offset..offset + 8];
+                let name_space = p.get_u64();
+                let banned_r = self.banned_namespaces.read().await;
+                let r = banned_r.contains(&name_space);
+                drop(banned_r);
+                if r {
+                    Err(DBError::BannedKey)
+                } else {
+                    Ok(())
+                }
+            }
+            None => Ok(()),
+        }
+    }
+    pub(crate) async fn get_value(&self,key_ts:&KeyTs)->anyhow::Result<ValueStruct>{
+        // todo!();
+        let v = ValueStruct::default();
+        Ok(v)
+    }
 }
 impl Options {
     pub(crate) fn check_set_options(&mut self) -> anyhow::Result<()> {
