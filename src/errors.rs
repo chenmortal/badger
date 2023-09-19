@@ -30,6 +30,9 @@ pub enum DBError{
     EncryptionKeyMismatch,
     #[error("Invalid datakey id")]
     InvalidDataKeyID,
+    #[error("DB Closed")]
+    DBClosed,
+    
     // ErrInvalidEncryptionKey is returned if length of encryption keys is invalid.
 }
 pub(crate) fn err_file(err:Error,path:&PathBuf,msg:&str)->anyhow::Error{
