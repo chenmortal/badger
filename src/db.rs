@@ -15,6 +15,7 @@ use crate::{
     errors::DBError,
     fb::fb::TableIndex,
     key_registry::KeyRegistry,
+    kv::{KeyTs, ValueStruct},
     lock::DirLockGuard,
     lsm::{
         levels::LevelsController,
@@ -25,9 +26,9 @@ use crate::{
     options::Options,
     skl::skip_list::SKL_MAX_NODE_SIZE,
     table::block::{self, Block},
-    txn::oracle::Oracle,
+    txn::{entry::DecEntry, oracle::Oracle},
     util::Closer,
-    value::threshold::VlogThreshold, kv::{KeyTs, ValueStruct},
+    value::threshold::VlogThreshold,
 };
 use anyhow::anyhow;
 use anyhow::bail;
@@ -194,10 +195,13 @@ impl DBInner {
             None => Ok(()),
         }
     }
-    pub(crate) async fn get_value(&self,key_ts:&KeyTs)->anyhow::Result<ValueStruct>{
+    pub(crate) async fn get_value(&self, key_ts: &KeyTs) -> anyhow::Result<ValueStruct> {
         // todo!();
         let v = ValueStruct::default();
         Ok(v)
+    }
+    pub(crate) async fn send_to_write_channel(&self, entries: Vec<DecEntry>) {
+        
     }
 }
 impl Options {
@@ -213,7 +217,7 @@ impl Options {
         log::set_max_level(self.log_level);
         self.max_batch_size = (15 * self.memtable_size) / 100;
         self.max_batch_count = self.max_batch_size / (SKL_MAX_NODE_SIZE);
-        self.max_value_threshold = MAX_VALUE_THRESHOLD.min(self.max_batch_size as i64) as f64;
+        self.max_value_threshold = MAX_VALUE_THRESHOLD.min(self.max_batch_size) as f64;
         if self.vlog_percentile < 0.0 || self.vlog_percentile > 1.0 {
             bail!("vlog_percentile must be within range of 0.0-1.0")
         }
@@ -223,7 +227,7 @@ impl Options {
                 MAX_VALUE_THRESHOLD
             );
         }
-        if self.value_threshold > self.max_batch_size as i64 {
+        if self.value_threshold > self.max_batch_size {
             bail!("Valuethreshold {} greater than max batch size of {}. Either reduce Valuethreshold or increase max_table_size",self.value_threshold,self.max_batch_size);
         }
         if !(self.valuelog_file_size >= 1 << 20 && self.valuelog_file_size < 2 << 30) {

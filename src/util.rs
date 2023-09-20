@@ -1,6 +1,5 @@
 use anyhow::bail;
 use anyhow::Error;
-use bytes::Buf;
 use bytes::BufMut;
 use rand::Rng;
 use tokio::select;
@@ -8,7 +7,6 @@ use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::future::Future;
 use std::{
     collections::HashSet,

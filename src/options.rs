@@ -53,7 +53,7 @@ pub struct Options {
     pub(crate) max_levels: usize,
 
     pub(crate) vlog_percentile: f64,
-    pub(crate) value_threshold: i64,
+    pub(crate) value_threshold: usize,
     pub(crate) num_memtables: usize,
     // Changing BlockSize across DB runs will not break badger. The block size is
     // read from the block index stored at the end of the table.
@@ -208,7 +208,7 @@ impl Options {
         self.max_levels = max_levels;
         self
     }
-    pub fn set_value_threshold(mut self, value_threshold: i64) -> Self {
+    pub fn set_value_threshold(mut self, value_threshold: usize) -> Self {
         self.value_threshold = value_threshold;
         self
     }
