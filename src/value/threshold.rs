@@ -1,10 +1,10 @@
-use std::sync::atomic::AtomicI64;
+use std::sync::atomic::{AtomicI64, AtomicUsize};
 
 use crate::{options::Options};
 use stretto::Histogram;
 pub(crate) struct VlogThreshold {
     percentile: f64,
-    value_threshold: AtomicI64,
+    value_threshold: AtomicUsize,
     vlog_metrics: Histogram,
 }
 impl VlogThreshold {
@@ -30,7 +30,7 @@ impl VlogThreshold {
 
         Self {
             percentile: opt.vlog_percentile,
-            value_threshold: AtomicI64::new(opt.value_threshold),
+            value_threshold: AtomicUsize::new(opt.value_threshold),
             vlog_metrics: histogram_data,
         }
     }

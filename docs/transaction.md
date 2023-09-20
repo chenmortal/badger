@@ -4,15 +4,28 @@
 
 ### Degree 0
 
-+ P0 脏写：事务2在事务1提交或回滚前修改了A，所有隔离级别都应该避免Degree 0
++ P0 脏写：事务2在事务1提交或回滚前修改了A，如果T1或T2发生了回滚，则无法判定正确的数据是什么，所有隔离级别都应该避免Degree 0
   
-  | T1              | T2      |
-  | :-------------- | ------- |
-  | **Begin**       |         |
-  | W(A)<-1         | Begin   |
-  |                 | W(A)<-2 |
-  | Commit or Abort |         |
-  |                 | Commit  |
+  | T1              | T2              |
+  | :-------------- | --------------- |
+  | **Begin**       |                 |
+  | W(A)<-1         | Begin           |
+  |                 | W(A)<-2         |
+  | Commit or Abort |                 |
+  |                 | Commit or Abort |
++ 约束 A==B
+
+    | T1      | T2      |
+    | ------- | ------- |
+    | Begin   |         |
+    | W(A)<-1 | Begin   |
+    |         | W(A)<-2 |
+    |         | W(B)<-2 |
+    |         | Commit  |
+    | W(B)<-1 |         |
+    | Commit  |         |
+
+   A->2 B->1 => A!=B
 
 ### Degree 1 Read_Uncommitted
 
@@ -109,8 +122,6 @@
   | Commit                    |                           |
   | Check (A+B!=100)          |                           |
 
-  
-
 ### Repeatable Read
 
 读单个数据加上long duration read lock，读一组数据加上short duration read lock
@@ -161,11 +172,11 @@
 
 + 约束2：First-Committer-Wins：
 
-  if self.StartTs<=other.CommitTs<=self.CommitTs and self.Write==other.Write {
-
-  ​	self should Abort
-
-  }
+  > if self.StartTs<=other.CommitTs<=self.CommitTs && self.Write $\bigcap$ other.Write != $\varnothing$ {
+>
+  >   self should Abort
+>
+  > }
 
   > 如果有其他事务在这个事务的[StartTs,CommitTs]时间区间内，且修改了和这个事务同样的数据，那么这个事务应该回滚。  
   >
@@ -205,14 +216,17 @@
 
   + A5b(Write Skew)
 
+    约束（A+B==100）
+
     | T1                | T2                |
     | ----------------- | ----------------- |
     | Begin             |                   |
     | R(A)->50,R(B)->50 | Begin             |
     |                   | R(A)->50,R(B)->50 |
-    | W(B)<-10          | W(A)<-10          |
-    | Commit            | Commit            |
-    | Check(A+B != 100) |                   |
+    | W(B)<-10          |                   |
+    | Commit            | W(A)<-10          |
+    |                   | Commit            |
+    | A+B !=100         |                   |
 
   > + Snapshot不能避免A5b，但Repeatable Read能避免P2(修改正在执行的其他事务读过的数据)，则一定能避免A5a,A5b
   > + Snapshot能够避免A3(Snapshot可以看到的是数据库的快照而不是单个数据的快照)，但Repeatable Read不能避免A3
@@ -237,6 +251,20 @@
 
 + 快照隔离在乐观并发中对只读事务有明显优势，但不适用于长时间更新事务与高争用的短事务的竞争（长时间更新会因为约束2**First-Committer-Wins**而被丢弃）
 
+### Serializable Snapshot
+
++ 和Snapshot相比，除了约束2检测写写冲突，同时还检测读写冲突(other.write in [self.read,self.write])，从而避免A5b(write Skew)
+
+  >if self.StartTs<=other.CommitTs<=self.CommitTs && other.Write $\bigcap$ (self.Write $\bigcup$ self.Read) != $\varnothing$ {
+  >
+  > self should Abort
+  >
+  >}
++ 隔离级别一定强于Repeatable Read,略弱于Degree3 Serializable(无法完全避免P3)
++ 在badger中，可以省略写写冲突检测，只需读写冲突检测
+  + 由于事务数据的实际写入是在提交之后，且写入是按照事务有序写入，故没有破坏约束(x==y)，避免了P0脏写
+  + 由于读写冲突，避免了P4(丢失更新)，因为存在读操作，若都不存在读操作，则退化为P0问题，同上。
+
 ### Oracle Read Consistency
 
 + 只有提交才能对其他事务可见，但这也导致正在并行的事务可以读取刚提交的修改。故能避免A1,P1(脏读)，但不能避免P2(不可重复读),A5a
@@ -247,15 +275,8 @@
 
 ### 总结
 
-<img src="./txn.assets/picture2.png" alt="picture2" style="zoom:33%;" />
+<img src="./transaction.assets/picture2.png" alt="picture2" style="zoom:33%;" />
 
-<img src="./txn.assets/table2.png" alt="table2" style="zoom:50%;" />
+<img src="./transaction.assets/table2.png" alt="table2" style="zoom:50%;" />
 
-<img src="./txn.assets/table4.png" alt="table4" style="zoom: 50%;" />
-
-
-
-
-
-
-
+<img src="./transaction.assets/table4.png" alt="table4" style="zoom: 50%;" />

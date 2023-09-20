@@ -3,7 +3,7 @@ use bincode::{DefaultOptions, Options};
 use bytes::{Buf, BufMut};
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq,Clone)]
 pub(crate) struct KeyTs {
     key: Vec<u8>,
     txn_ts: TxnTs,
@@ -36,7 +36,7 @@ impl KeyTs {
     pub(crate) fn get_bytes(&self) -> Vec<u8> {
         let mut v = Vec::with_capacity(self.key.len() + 8);
         v.put_slice(&self.key);
-        v.put_u64(self.txn_ts.into());
+        v.put_u64(self.txn_ts.to_u64());
         v
     }
     pub(crate) fn key(&self) -> &[u8] {
@@ -44,6 +44,14 @@ impl KeyTs {
     }
     pub(crate) fn txn_ts(&self) -> &TxnTs {
         &self.txn_ts
+    }
+
+    pub(crate) fn set_key(&mut self, key: Vec<u8>) {
+        self.key = key;
+    }
+
+    pub(crate) fn set_txn_ts(&mut self, txn_ts: TxnTs) {
+        self.txn_ts = txn_ts;
     }
 }
 

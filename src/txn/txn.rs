@@ -1,39 +1,43 @@
 use std::{
-    alloc::System,
     collections::{HashMap, HashSet},
-    hash::BuildHasher,
-    sync::{atomic::AtomicU32, Arc},
-    time::SystemTime,
+    sync::{
+        atomic::{AtomicBool, AtomicU32},
+        Arc,
+    },
 };
 
 use anyhow::anyhow;
 use anyhow::bail;
-use libc::EXTPROC;
 use tokio::sync::Mutex;
 
 use crate::{
-    db::DB, errors::DBError, kv::KeyTs, txn::{HASH, BADGER_PREFIX}, util::now_since_unix, value::BIT_DELETE,
+    db::DB,
+    errors::DBError,
+    kv::KeyTs,
+    txn::{BADGER_PREFIX, HASH},
+    util::now_since_unix,
+    value::{BIT_DELETE, BIT_FIN_TXN, BIT_TXN},
 };
 
 use super::{
-    entry::Entry,
+    entry::{DecEntry, Entry},
     item::{self, Item, ItemInner, PRE_FETCH_STATUS},
     TxnTs, TXN_KEY,
 };
 
 pub struct Txn {
-    read_ts: TxnTs,
-    commit_ts: u64,
+    pub(super) read_ts: TxnTs,
+    pub(super) commit_ts: TxnTs,
     size: usize,
     count: usize,
     db: DB,
-    conflict_keys: Option<HashSet<u64>>,
-    reads: Mutex<Vec<u64>>,
-    pending_writes: Option<HashMap<Vec<u8>, Arc<Entry>>>, // Vec<u8> -> String
-    duplicate_writes: Vec<Arc<Entry>>,
+    pub(super) conflict_keys: Option<HashSet<u64>>,
+    pub(super) read_key_hash: Mutex<Vec<u64>>,
+    pending_writes: Option<HashMap<Vec<u8>, DecEntry>>, // Vec<u8> -> String
+    duplicate_writes: Vec<DecEntry>,
     num_iters: AtomicU32,
     discarded: bool,
-    done_read: bool,
+    pub(super) done_read: AtomicBool,
     update: bool,
 }
 impl Txn {
@@ -46,11 +50,11 @@ impl Txn {
             read_ts: if !is_managed {
                 db.oracle.get_latest_read_ts().await?
             } else {
-                TxnTs(0)
+                TxnTs::default()
             },
-            commit_ts: 0,
+            commit_ts: TxnTs::default(),
             size: TXN_KEY.len() + 10,
-            count: 1,
+            count: 1, // One extra entry for BitFin.
 
             conflict_keys: if update && db.opt.detect_conflicts {
                 Some(HashSet::new())
@@ -58,12 +62,12 @@ impl Txn {
                 None
             },
 
-            reads: Mutex::new(Vec::new()),
+            read_key_hash: Mutex::new(Vec::new()),
             pending_writes: if update { HashMap::new().into() } else { None },
             duplicate_writes: Default::default(),
             num_iters: Default::default(),
             discarded: false,
-            done_read: false,
+            done_read: AtomicBool::new(false),
             db,
             update,
         };
@@ -97,7 +101,7 @@ impl Txn {
                 None => {}
             };
             let hash = HASH.hash_one(key);
-            let mut reads_m = self.reads.lock().await;
+            let mut reads_m = self.read_key_hash.lock().await;
             reads_m.push(hash);
             drop(reads_m);
         }
@@ -126,33 +130,152 @@ impl Txn {
         item_inner.db = self.db.clone().into();
         Ok(item_inner.into())
     }
-    pub fn set(&self, key: &[u8], value: &[u8]) {
-        self.set_entry(Arc::new(Entry::new(key, value)));
+    pub async fn set(&mut self, key: &[u8], value: &[u8]) -> anyhow::Result<()> {
+        self.set_entry(Entry::new(key, value)).await
     }
-    pub fn delete(&self, key: &[u8]) {
+    pub async fn delete(&mut self, key: &[u8]) -> anyhow::Result<()> {
         let mut e = Entry::default();
         e.set_key(key.to_vec());
         e.set_meta(BIT_DELETE);
-        self.set_entry(Arc::new(e));
+        self.set_entry(e).await
     }
-    pub fn set_entry(&self, e: Arc<Entry>) {
-        self.modify(e);
+    pub async fn set_entry(&mut self, e: Entry) -> anyhow::Result<()> {
+        self.modify(e.into()).await
     }
-    fn modify(&self, e: Arc<Entry>) ->anyhow::Result<()>{
-        const MAX_KEY_SIZE:usize=65000;
+    #[inline]
+    async fn modify(&mut self, e: DecEntry) -> anyhow::Result<()> {
+        let exceeds_size = |prefix: &str, max: usize, key: &[u8]| {
+            bail!(
+                "{} with size {} exceeded {} limit. {}:\n{:?}",
+                prefix,
+                key.len(),
+                max,
+                prefix,
+                if key.len() > 1024 { &key[..1024] } else { key }
+            )
+        };
+
+        let mut check_size = |e: &DecEntry| {
+            let count = self.count + 1;
+            e.set_value_threshold(self.db.opt.value_threshold);
+            let size = self.size + e.estimate_size() + 10;
+            if count >= self.db.opt.max_batch_count || size >= self.db.opt.max_batch_size {
+                bail!(DBError::TxnTooBig)
+            }
+            self.count = count;
+            self.size = size;
+            Ok(())
+        };
+
+        const MAX_KEY_SIZE: usize = 65000;
         if !self.update {
             bail!(DBError::ReadOnlyTxn)
         }
         if self.discarded {
             bail!(DBError::DiscardedTxn)
         }
-        if e.key().is_empty(){
+        if e.key().is_empty() {
             bail!(DBError::EmptyKey)
         }
         if e.key().starts_with(BADGER_PREFIX) {
             bail!(DBError::InvalidKey)
         }
-        
+        if e.key().len() > MAX_KEY_SIZE {
+            exceeds_size("Key", MAX_KEY_SIZE, e.key())?;
+        }
+        if e.value().len() > self.db.opt.valuelog_file_size {
+            exceeds_size("Value", self.db.opt.valuelog_file_size, e.value())?
+        }
+        self.db.is_banned(&e.key()).await?;
+
+        check_size(&e)?;
+
+        if let Some(c) = self.conflict_keys.as_mut() {
+            c.insert(HASH.hash_one(e.key()));
+        }
+
+        if let Some(p) = self.pending_writes.as_mut() {
+            let new_version = e.version();
+            if let Some(old) = p.insert(e.key().to_vec(), e) {
+                if old.version() != new_version {
+                    self.duplicate_writes.push(old);
+                }
+            };
+        }
+        Ok(())
+    }
+    pub async fn commit(&self) -> anyhow::Result<()> {
+        match self.pending_writes.as_ref() {
+            Some(s) => {
+                if s.len() == 0 {
+                    return Ok(());
+                }
+            }
+            None => {
+                return Ok(());
+            }
+        };
+        self.commit_pre_check()?;
+        Ok(())
+    }
+    fn commit_pre_check(&self) -> anyhow::Result<()> {
+        if self.discarded {
+            bail!("Trying to commit a discarded txn")
+        }
+        let mut keep_togther = true;
+        if let Some(s) = self.pending_writes.as_ref() {
+            for (_, e) in s {
+                if e.version() != TxnTs::default() {
+                    keep_togther = false;
+                    break;
+                }
+            }
+        }
+        if keep_togther && self.db.opt.managed_txns && self.commit_ts == TxnTs::default() {
+            bail!("CommitTs cannot be zero. Please use commitat instead")
+        }
+        Ok(())
+    }
+    async fn commit_and_send(&mut self) -> anyhow::Result<()> {
+        let commit_ts = self.db.oracle.get_latest_commit_ts(self).await?;
+        let mut keep_together = true;
+        let mut set_version = |e: &mut DecEntry| {
+            if e.version() == TxnTs::default() {
+                e.set_version(commit_ts)
+            } else {
+                keep_together = false;
+            }
+        };
+
+        let mut pending_wirtes_len = 0;
+        if let Some(p) = self.pending_writes.as_mut() {
+            pending_wirtes_len = p.len();
+            p.iter_mut().map(|x| x.1).for_each(&mut set_version);
+        }
+        self.duplicate_writes.iter_mut().for_each(set_version);
+
+        let mut dec_entries =
+            Vec::with_capacity(pending_wirtes_len + self.duplicate_writes.len() + 1);
+        let mut process_entry = |e: &mut DecEntry| {
+            if keep_together {
+                *e.meta_mut() |= BIT_TXN;
+            }
+            dec_entries.push(e.clone());
+        };
+
+        if let Some(p) = self.pending_writes.as_mut() {
+            p.iter_mut().map(|x| x.1).for_each(&mut process_entry);
+        }
+        self.duplicate_writes.iter_mut().for_each(process_entry);
+
+        if keep_together {
+            debug_assert!(commit_ts != TxnTs::default());
+            let mut entry = Entry::new(TXN_KEY, commit_ts.to_u64().to_string().as_bytes());
+            entry.set_version(commit_ts);
+            entry.set_meta(BIT_FIN_TXN);
+            dec_entries.push(entry.into())
+        }
+
         Ok(())
     }
 }
@@ -166,4 +289,12 @@ fn is_deleted_or_expired(meta: u8, expires_at: u64) -> bool {
         return false;
     }
     expires_at <= now_since_unix().as_secs()
+}
+#[test]
+fn test_a() {
+    let a: u64 = 1001;
+    dbg!(a.to_string());
+    // let mut p = HashMap::new();
+    // p.insert(1, "a");
+    // dbg!(p.insert(1, "a"));
 }
