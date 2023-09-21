@@ -16,6 +16,8 @@ lazy_static! {
     static ref LSM_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
     static ref VLOG_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
     static ref NUM_COMPACTION_TABLES: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_BYTES_WRITTEN_USER: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_PUTS: AtomicUsize = AtomicUsize::new(0);
 }
 #[inline]
 pub(crate) fn set_metrics_enabled(enabled: bool) {
@@ -44,6 +46,13 @@ pub(crate) async fn set_vlog_size(k: &PathBuf, v: u64) {
     drop(vlog_size_w)
 }
 #[inline]
+pub(crate) fn add_num_bytes_written_user(size: usize) {
+    if !get_metrics_enabled() {
+        return;
+    }
+    NUM_BYTES_WRITTEN_USER.fetch_add(size, std::sync::atomic::Ordering::SeqCst);
+}
+#[inline]
 pub(crate) fn add_num_compaction_tables(val: usize) {
     if !get_metrics_enabled() {
         return;
@@ -51,8 +60,16 @@ pub(crate) fn add_num_compaction_tables(val: usize) {
     NUM_COMPACTION_TABLES.fetch_add(val, std::sync::atomic::Ordering::SeqCst);
 }
 #[inline]
-pub(crate) fn sub_num_compaction_tables(val: usize){
-    if !get_metrics_enabled(){
+pub(crate) fn add_num_puts(len: usize) {
+    if !get_metrics_enabled() {
+        return;
+    }
+    NUM_PUTS.fetch_add(len, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[inline]
+pub(crate) fn sub_num_compaction_tables(val: usize) {
+    if !get_metrics_enabled() {
         return;
     }
     NUM_COMPACTION_TABLES.fetch_sub(val, std::sync::atomic::Ordering::SeqCst);

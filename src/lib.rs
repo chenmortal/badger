@@ -12,13 +12,14 @@ mod pb;
 mod skl;
 mod table;
 mod sys;
-mod txn;
+pub mod txn;
 mod value;
 mod key_registry;
 mod metrics;
 mod util;
 mod iter;
 mod kv;
+mod write;
 #[allow(dead_code, unused_imports)]
 #[path = "./fb/flatbuffer_generated.rs"]
 mod fb;

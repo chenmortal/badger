@@ -32,7 +32,8 @@ pub enum DBError{
     InvalidDataKeyID,
     #[error("DB Closed")]
     DBClosed,
-    
+    #[error("Writes are blocked, possibly due to DropAll or Close")]
+    BlockedWrites
     // ErrInvalidEncryptionKey is returned if length of encryption keys is invalid.
 }
 pub(crate) fn err_file(err:Error,path:&PathBuf,msg:&str)->anyhow::Error{

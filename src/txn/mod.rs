@@ -4,8 +4,6 @@ pub(crate) mod oracle;
 mod txn;
 mod water_mark;
 
-use std::ops::Deref;
-
 use ahash::RandomState;
 use anyhow::bail;
 use rand::{thread_rng, Rng};
@@ -25,7 +23,7 @@ lazy_static! {
 }
 ///this means TransactionTimestamp
 // pub type TxnTs=u64;
-#[derive(Debug, Clone, Copy,Default,PartialEq, Eq, PartialOrd, Ord,Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TxnTs(u64);
 impl TxnTs {
     #[inline(always)]
@@ -33,21 +31,20 @@ impl TxnTs {
         Self(self.0 - 1)
     }
     #[inline(always)]
-    pub(crate) fn add_one_mut(&mut self){
-        self.0+=1;    
+    pub(crate) fn add_one_mut(&mut self) {
+        self.0 += 1;
     }
     #[inline(always)]
-    pub(crate) fn to_u64(&self)->u64{
+    pub(crate) fn to_u64(&self) -> u64 {
         self.0
     }
 }
+
 impl From<u64> for TxnTs {
     fn from(value: u64) -> Self {
         Self(value)
     }
 }
-
-
 
 //Transaction
 impl DB {
@@ -78,5 +75,4 @@ impl DB {
         let txn = Txn::new(self.clone(), true, false).await?;
         Ok(txn)
     }
-    fn new_txn() {}
 }

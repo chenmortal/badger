@@ -1,10 +1,7 @@
 use std::{collections::HashSet, ops::Deref, sync::Arc};
 
-use anyhow::bail;
-use tokio::{
-    sync::{Mutex, MutexGuard},
-    task::JoinHandle,
-};
+use anyhow::{bail, Ok};
+use tokio::sync::{Mutex, MutexGuard};
 
 use crate::{errors::DBError, options::Options, util::Closer};
 
@@ -20,6 +17,7 @@ pub(crate) struct Oracle {
     detect_conflicts: bool,
     read_mark: WaterMark,
     txn_mark: WaterMark,
+    pub(super) send_write_req: Mutex<()>,
 }
 impl Deref for Oracle {
     type Target = Mutex<OracleInner>;
@@ -34,7 +32,7 @@ pub(crate) struct OracleInner {
     discard_ts: TxnTs,
     last_cleanup_ts: TxnTs,
     committed_txns: Vec<CommittedTxn>,
-    task_handler: Vec<JoinHandle<()>>,
+    // task_handler: Vec<JoinHandle<()>>,
 }
 #[derive(Debug, Clone)]
 struct CommittedTxn {
@@ -49,6 +47,7 @@ impl Oracle {
             is_managed: opt.managed_txns,
             read_mark: WaterMark::new("badger.PendingReads", closer.sem_clone()),
             txn_mark: WaterMark::new("badger.TxnTimestamp", closer.sem_clone()),
+            send_write_req: Mutex::new(()),
             // next_txn_ts: Mutex::new(TxnTs(0)),
         }
     }
@@ -62,6 +61,16 @@ impl Oracle {
             return ts.into();
         }
         return self.read_mark.done_until();
+    }
+    #[inline]
+    pub(crate) async fn done_commit(&self, commit_ts: TxnTs) -> anyhow::Result<()> {
+        if !self.is_managed {
+            self.txn_mark
+                .sender
+                .send(Mark::new(commit_ts, true))
+                .await?;
+        }
+        Ok(())
     }
     #[inline]
     pub(crate) async fn get_latest_read_ts(&self) -> anyhow::Result<TxnTs> {

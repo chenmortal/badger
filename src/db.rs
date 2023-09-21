@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::{
-    default::{LOCK_FILE, MAX_VALUE_THRESHOLD},
+    default::{KV_WRITES_ENTRIES_CHANNEL_CAPACITY, LOCK_FILE, MAX_VALUE_THRESHOLD},
     errors::DBError,
     fb::fb::TableIndex,
     key_registry::KeyRegistry,
@@ -28,14 +28,14 @@ use crate::{
     table::block::{self, Block},
     txn::{entry::DecEntry, oracle::Oracle},
     util::Closer,
-    value::threshold::VlogThreshold,
+    value::threshold::VlogThreshold, write::WriteReq,
 };
 use anyhow::anyhow;
 use anyhow::bail;
 use bytes::Buf;
 use log::debug;
 use stretto::AsyncCache;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc::{Sender, Receiver}, RwLock};
 use tokio::{sync::mpsc, task::JoinHandle};
 struct JoinHandles {
     update_size: JoinHandle<()>,
@@ -81,8 +81,11 @@ pub struct DBInner {
     pub(crate) index_cache: Option<IndexCache>,
     pub(crate) level_controller: Option<LevelsController>,
     pub(crate) oracle: Arc<Oracle>,
+    pub(crate) send_write_req: Sender<WriteReq>,
+   
     banned_namespaces: RwLock<HashSet<u64>>,
     is_closed: AtomicBool,
+    pub(crate) block_writes: AtomicU32,
 }
 impl DBInner {
     pub async fn open(opt: &mut Options) -> anyhow::Result<()> {
@@ -99,9 +102,11 @@ impl DBInner {
             };
         }
         // }
+
         let manifest_file = open_create_manifestfile(&opt)?;
         let imm = Vec::<MemTable>::with_capacity(opt.num_memtables);
         let (sender, receiver) = mpsc::channel::<MemTable>(opt.num_memtables);
+        let p = mpsc::channel::<WriteReq>(KV_WRITES_ENTRIES_CHANNEL_CAPACITY);
         let threshold = VlogThreshold::new(&opt);
 
         // let mut db = DB::default();
@@ -199,9 +204,6 @@ impl DBInner {
         // todo!();
         let v = ValueStruct::default();
         Ok(v)
-    }
-    pub(crate) async fn send_to_write_channel(&self, entries: Vec<DecEntry>) {
-        
     }
 }
 impl Options {
