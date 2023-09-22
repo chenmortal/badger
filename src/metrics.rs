@@ -15,6 +15,7 @@ lazy_static! {
     static ref METRICS_ENABLED: AtomicBool = AtomicBool::new(Options::default().metrics_enabled);
     static ref LSM_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
     static ref VLOG_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
+    static ref PENDING_WRITES:RwLock<HashMap<PathBuf,Arc<AtomicUsize>>>=RwLock::new(HashMap::new());
     static ref NUM_COMPACTION_TABLES: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_BYTES_WRITTEN_USER: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_PUTS: AtomicUsize = AtomicUsize::new(0);
@@ -35,6 +36,15 @@ pub(crate) async fn set_lsm_size(k: &PathBuf, v: u64) {
     let mut lsm_size_w = LSM_SIZE.write().await;
     lsm_size_w.insert(k.clone(), v);
     drop(lsm_size_w)
+}
+#[inline]
+pub(crate) async fn set_pending_writes(dir: PathBuf,req_len:Arc<AtomicUsize>){
+    if !get_metrics_enabled(){
+        return ;
+    }
+    let mut pending_writes_w=PENDING_WRITES.write().await;
+    pending_writes_w.insert(dir, req_len);
+    drop(pending_writes_w);
 }
 #[inline]
 pub(crate) async fn set_vlog_size(k: &PathBuf, v: u64) {

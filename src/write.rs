@@ -1,13 +1,24 @@
-use std::{sync::{atomic::Ordering, Arc}, time::{Duration, SystemTime}};
+use std::{
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    },
+    time::{Duration, SystemTime},
+};
 
-use tokio::{sync::{Notify, Semaphore, mpsc::Receiver}, select};
+use log::{error, debug};
+use tokio::{
+    select,
+    sync::{mpsc::Receiver, Notify, Semaphore},
+};
 
 use crate::{
     db::{DBInner, DB},
+    default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
     errors::DBError,
     kv::ValuePointer,
-    metrics::{add_num_bytes_written_user, add_num_puts},
-    txn::entry::DecEntry, util::now_since_unix,
+    metrics::{add_num_bytes_written_user, add_num_puts, set_pending_writes},
+    txn::entry::DecEntry,
 };
 use anyhow::bail;
 pub(crate) struct WriteReq {
@@ -46,47 +57,168 @@ impl DB {
         Ok(notify_clone)
     }
     #[inline]
-    pub(crate) async fn do_writes(&self,mut recv_write_req:Receiver<WriteReq>, sem_clone: Arc<Semaphore>) {
+    pub(crate) async fn do_writes(
+        &self,
+        mut recv_write_req: Receiver<WriteReq>,
+        close_sem: Arc<Semaphore>,
+    ) {
         let notify_send = Arc::new(Notify::new());
         let notify_recv = notify_send.clone();
-        // self.recv_write_req.recv();
-        // sem_clone.acquire()
+        let mut write_reqs = Vec::with_capacity(10);
+        async fn write_requests(db: DB, write_reqs: Vec<WriteReq>, notify_send: Arc<Notify>) {
+            match db.write_requests(write_reqs).await {
+                Ok(_) => {}
+                Err(e) => {
+                    error!("write Requests: {}", e);
+                }
+            };
+            notify_send.notify_one();
+        }
+        let req_len = Arc::new(AtomicUsize::new(0));
+        set_pending_writes(self.opt.dir.clone(), req_len.clone()).await;
         loop {
             select! {
-                Some(wr)=recv_write_req.recv()=>{
-
+                Some(write_req)=recv_write_req.recv()=>{
+                    write_reqs.push(write_req);
+                    req_len.store(write_reqs.len(), Ordering::Relaxed);
+                    if write_reqs.len() >= 3*KV_WRITES_ENTRIES_CHANNEL_CAPACITY{
+                        notify_recv.notified().await;
+                        tokio::spawn(write_requests(self.clone(), write_reqs, notify_send.clone()));
+                        write_reqs=Vec::with_capacity(10);
+                        req_len.store(write_reqs.len(), Ordering::Relaxed);
+                    }
                 },
-                _=sem_clone.acquire()=>{
-
+                _=notify_recv.notified()=>{
+                    tokio::spawn(write_requests(self.clone(), write_reqs, notify_send.clone()));
+                    write_reqs=Vec::with_capacity(10);
+                    req_len.store(write_reqs.len(), Ordering::Relaxed);
+                }
+                _= close_sem.acquire()=>{
+                    while let Some(w) = recv_write_req.recv().await {
+                        write_reqs.push(w);
+                    }
+                    notify_recv.notified().await;
+                    write_requests(self.clone(), write_reqs, notify_send.clone()).await;
+                    return ;
                 }
             }
         }
-
-        loop {}
+    }
+    async fn write_requests(&self, reqs: Vec<WriteReq>) -> anyhow::Result<()> {
+        if reqs.len()==0{
+            return Ok(());
+        }
+        debug!("write_requests called. Writing to value log");
+        
+        Ok(())
     }
 }
+// #[tokio::t]
+
 #[tokio::test]
 async fn test_notify() {
     let notify = Arc::new(Notify::new());
-    let notify_clone=notify.clone();
+    let notify_clone = notify.clone();
+
+    // let notify_close = Arc::new(Notify::new());
+    // let notify_close_clone = notify.clone();
+    let close = Arc::new(AtomicBool::new(false));
+    let close_clone = close.clone();
+    let (s, mut r) = tokio::sync::mpsc::channel::<String>(2);
+
     tokio::spawn(async move {
-        
-        let mut p= tokio::time::interval(Duration::from_secs(1));
-        loop {
-           p.tick().await;
-           notify.notify_one();
-           println!("task complete")
+        for i in 0..10 {
+            tokio::time::sleep(Duration::from_secs_f32(1.0)).await;
+            let notify_c = notify.clone();
+            tokio::spawn(async move {
+                // notify_clone.notify_one();
+                // close.compare_exchange(current, new, success, failure)
+
+                // close_clone.swap(true, Ordering::SeqCst);
+                // notify.notify_one();
+                notify_c.notify_one();
+                // tokio::time::interval(Duration::from_secs(11));
+            });
         }
     });
-    
+
+    // tokio::spawn(async move {
+    //     let start = tokio::time::Instant::now();
+
+    //     let mut p = tokio::time::interval(Duration::from_secs(1));
+    //     let mut count = 0;
+    //     loop {
+    //         if close.load(Ordering::SeqCst) == true {
+    //             // s.send(99.to_string()).await;
+    //             break;
+    //         }
+
+    //         // tokio::time::sleep(Duration::from_secs_f32(0.5)).await;
+    //         // if tokio::time::Instant::now().duration_since(start).as_secs() == 10 {
+    //         //     return;
+    //         // };
+
+    //         // p.tick().await;
+    //         s.send(count.to_string()).await;
+    //         // notify.notify_one();
+    //         count += 1;
+    //         // notify.notify_one();
+    //         // println!("task complete")
+    //     }
+    // });
+    // while let Some(s) = r.recv().await {
+
+    // }
+    let mut count = 0;
+
     loop {
-        let s=now_since_unix().as_secs();
-        if s%3==0{
+        if count == 1 {
             notify_clone.notified().await;
-            println!("task ready a");
+            println!("cc");
         }
-        notify_clone.notified().await;
-        println!("task ready")
+        select! {
+            Some(l)=r.recv()=>{
+                // dbg!(l);
+            }
+            k=notify_clone.notified()=>{
+
+                dbg!("ok");
+                // // dbg!(r.recv().await);
+                // while let Some(s) = r.recv().await {
+                //     dbg!(s);
+                // }
+                // // match r.try_recv() {
+                // //     Ok(s) => {
+                // //         dbg!(s);
+                // //     },
+                // //     Err(e) => {
+                // //         dbg!(e);
+                // //     },
+                // // }
+                // break;
+            }
+        }
+        // match r.try_recv() {
+        //     Ok(a) => {
+        //         dbg!(a);
+        //     }
+        //     Err(e) => {
+        //         dbg!(e);
+        //     }
+        // }
+        // let s = now_since_unix().as_secs();
+        // select! {
+        //     a=notify_clone.notified()=>{
+        //         dbg!(&count);
+        //     }
+        // }
+        // count += 1;
+        // if s%3==0{
+        //     notify_clone.notified().await;
+        //     println!("task ready a");
+        // }
+        // notify_clone.notified().await;
+        // println!("task ready")
     }
     // n.notified();
 }
