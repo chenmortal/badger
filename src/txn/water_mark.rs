@@ -1,6 +1,5 @@
 use std::{
-    cmp::Reverse,
-    collections::{HashMap, BinaryHeap},
+    collections::{BinaryHeap, HashMap},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -16,7 +15,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use super::{txn::Txn, TxnTs};
+use super::TxnTs;
 #[derive(Debug)]
 pub(crate) struct WaterMark {
     done_until: Arc<AtomicU64>,
@@ -106,14 +105,14 @@ impl WaterMark {
                 RevTxn(value)
             }
         }
-        let min_heap=BinaryHeap::<RevTxn>::new();
+        let min_heap = BinaryHeap::<RevTxn>::new();
         let mut pending = HashMap::<TxnTs, usize>::new();
         let mut waiters = HashMap::<TxnTs, Vec<Arc<Notify>>>::new();
 
         let process_one = |txn_ts: TxnTs, done: bool| {
             // pending.
         };
-        
+
         let mut p = |mark: Mark| match mark.waiter {
             Some(notify) => {
                 if TxnTs::from(done_util.load(Ordering::SeqCst)) >= mark.txn_ts {
@@ -168,7 +167,7 @@ async fn test_a() {
         }
     }
     // let mut a=HashMap::<TxnTs,Vec<u8>>::new();
-    let  mut p = std::collections::BinaryHeap::<RevTxn>::new();
+    let mut p = std::collections::BinaryHeap::<RevTxn>::new();
     p.push(TxnTs(2).into());
     p.push(TxnTs(1).into());
     p.push(TxnTs(3).into());

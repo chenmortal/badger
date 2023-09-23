@@ -15,7 +15,10 @@ lazy_static! {
     static ref METRICS_ENABLED: AtomicBool = AtomicBool::new(Options::default().metrics_enabled);
     static ref LSM_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
     static ref VLOG_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
+    static ref PENDING_WRITES:RwLock<HashMap<PathBuf,Arc<AtomicUsize>>>=RwLock::new(HashMap::new());
     static ref NUM_COMPACTION_TABLES: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_BYTES_WRITTEN_USER: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_PUTS: AtomicUsize = AtomicUsize::new(0);
 }
 #[inline]
 pub(crate) fn set_metrics_enabled(enabled: bool) {
@@ -35,6 +38,15 @@ pub(crate) async fn set_lsm_size(k: &PathBuf, v: u64) {
     drop(lsm_size_w)
 }
 #[inline]
+pub(crate) async fn set_pending_writes(dir: PathBuf,req_len:Arc<AtomicUsize>){
+    if !get_metrics_enabled(){
+        return ;
+    }
+    let mut pending_writes_w=PENDING_WRITES.write().await;
+    pending_writes_w.insert(dir, req_len);
+    drop(pending_writes_w);
+}
+#[inline]
 pub(crate) async fn set_vlog_size(k: &PathBuf, v: u64) {
     if !get_metrics_enabled() {
         return;
@@ -44,6 +56,13 @@ pub(crate) async fn set_vlog_size(k: &PathBuf, v: u64) {
     drop(vlog_size_w)
 }
 #[inline]
+pub(crate) fn add_num_bytes_written_user(size: usize) {
+    if !get_metrics_enabled() {
+        return;
+    }
+    NUM_BYTES_WRITTEN_USER.fetch_add(size, std::sync::atomic::Ordering::SeqCst);
+}
+#[inline]
 pub(crate) fn add_num_compaction_tables(val: usize) {
     if !get_metrics_enabled() {
         return;
@@ -51,8 +70,16 @@ pub(crate) fn add_num_compaction_tables(val: usize) {
     NUM_COMPACTION_TABLES.fetch_add(val, std::sync::atomic::Ordering::SeqCst);
 }
 #[inline]
-pub(crate) fn sub_num_compaction_tables(val: usize){
-    if !get_metrics_enabled(){
+pub(crate) fn add_num_puts(len: usize) {
+    if !get_metrics_enabled() {
+        return;
+    }
+    NUM_PUTS.fetch_add(len, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[inline]
+pub(crate) fn sub_num_compaction_tables(val: usize) {
+    if !get_metrics_enabled() {
         return;
     }
     NUM_COMPACTION_TABLES.fetch_sub(val, std::sync::atomic::Ordering::SeqCst);

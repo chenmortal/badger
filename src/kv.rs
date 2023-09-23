@@ -3,7 +3,7 @@ use bincode::{DefaultOptions, Options};
 use bytes::{Buf, BufMut};
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
-#[derive(Debug, Default, PartialEq, Eq,Clone)]
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub(crate) struct KeyTs {
     key: Vec<u8>,
     txn_ts: TxnTs,
@@ -117,6 +117,11 @@ pub(crate) struct ValueInner {
     expires_at: u64,
     value: Vec<u8>,
 }
+pub(crate) struct ValuePointer {
+    fid: u32,
+    len: u32,
+    offset: u32,
+}
 #[derive(Debug, Default)]
 pub(crate) struct ValueStruct {
     inner: ValueInner,
@@ -134,13 +139,13 @@ impl ValueStruct {
     pub(crate) fn meta(&self) -> u8 {
         self.inner.meta
     }
-    pub(crate) fn user_meta(&self)->u8{
+    pub(crate) fn user_meta(&self) -> u8 {
         self.inner.user_meta
     }
     pub(crate) fn expires_at(&self) -> u64 {
         self.inner.expires_at
     }
-    pub(crate) fn version(&self)->TxnTs{
+    pub(crate) fn version(&self) -> TxnTs {
         self.version
     }
 }

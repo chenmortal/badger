@@ -1,7 +1,6 @@
 use anyhow::bail;
 use anyhow::Error;
 use bytes::BufMut;
-use rand::Rng;
 use tokio::select;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
@@ -200,40 +199,4 @@ pub(crate) fn key_with_ts(key: Option<&[u8]>, ts: u64) -> Vec<u8> {
             out
         }
     }
-}
-
-#[tokio::test]
-async fn test_a() {
-    let p = vec![1,2,3];
-    let mut k = p.iter();
-    k.next_back();;
-    // k.nth(n);
-    let mut closer = Closer::new();
-    let sem = closer.sem_clone();
-    let mut p = rand::thread_rng();
-    // let k:u32=p.gen_range(0..10);
-    // dbg!(k);
-    let a = tokio::spawn(async move {
-        // let p = rand::thread_rng().gen_range(0..100);
-        let p = tokio::time::sleep(Duration::from_secs(rand::thread_rng().gen_range(0..10)));
-        p.is_elapsed();
-        select! {
-            a=p=>{
-
-                dbg!(a);
-            },
-            b=sem.acquire()=>{
-                // drop(p);
-                // dbg!(b);
-            }
-
-        }
-        println!("a");
-        // tokio::time::timeout(duration, future)
-    });
-    closer.close_all();
-    a.await;
-    // async move{
-
-    // }
 }

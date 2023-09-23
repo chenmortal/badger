@@ -30,7 +30,7 @@ pub struct ItemInner {
     pub(crate) user_meta: u8,
     pub(crate) status: u8,
     pub(crate) db: Option<DB>,
-    pub(crate) next: Option<Item>,
+    // pub(crate) next: Option<Item>,
 }
 
 impl ItemInner {

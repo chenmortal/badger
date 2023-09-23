@@ -1,9 +1,8 @@
 use std::{
     collections::HashSet,
-    fs::{create_dir_all, metadata, read_dir, set_permissions, Permissions},
+    fs::{create_dir_all, set_permissions, Permissions},
     ops::Deref,
     os::unix::prelude::PermissionsExt,
-    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU32},
         Arc,
@@ -11,35 +10,32 @@ use std::{
 };
 
 use crate::{
-    default::{LOCK_FILE, MAX_VALUE_THRESHOLD},
+    default::{KV_WRITES_ENTRIES_CHANNEL_CAPACITY, LOCK_FILE, MAX_VALUE_THRESHOLD},
     errors::DBError,
-    fb::fb::TableIndex,
     key_registry::KeyRegistry,
     kv::{KeyTs, ValueStruct},
     lock::DirLockGuard,
     lsm::{
         levels::LevelsController,
-        memtable::{self, new_mem_table, MemTable},
+        memtable::{new_mem_table, MemTable},
     },
     manifest::open_create_manifestfile,
-    metrics::{calculate_size, set_lsm_size, set_metrics_enabled, set_vlog_size, update_size},
+    metrics::{calculate_size, set_metrics_enabled, update_size},
     options::Options,
     skl::skip_list::SKL_MAX_NODE_SIZE,
     table::block::{self, Block},
-    txn::{entry::DecEntry, oracle::Oracle},
+    txn::oracle::Oracle,
     util::Closer,
-    value::threshold::VlogThreshold,
+    vlog::{discard, threshold::VlogThreshold},
+    write::WriteReq,
 };
 use anyhow::anyhow;
 use anyhow::bail;
 use bytes::Buf;
-use log::debug;
 use stretto::AsyncCache;
-use tokio::sync::RwLock;
-use tokio::{sync::mpsc, task::JoinHandle};
-struct JoinHandles {
-    update_size: JoinHandle<()>,
-}
+use tokio::sync::mpsc;
+use tokio::sync::{mpsc::Sender, RwLock};
+
 pub(crate) type BlockCache = AsyncCache<Vec<u8>, Block>;
 pub(crate) type IndexCache = AsyncCache<u64, Vec<u8>>;
 pub(crate) struct NextId(AtomicU32);
@@ -81,8 +77,11 @@ pub struct DBInner {
     pub(crate) index_cache: Option<IndexCache>,
     pub(crate) level_controller: Option<LevelsController>,
     pub(crate) oracle: Arc<Oracle>,
+    pub(crate) send_write_req: Sender<WriteReq>,
+
     banned_namespaces: RwLock<HashSet<u64>>,
     is_closed: AtomicBool,
+    pub(crate) block_writes: AtomicU32,
 }
 impl DBInner {
     pub async fn open(opt: &mut Options) -> anyhow::Result<()> {
@@ -99,9 +98,11 @@ impl DBInner {
             };
         }
         // }
+
         let manifest_file = open_create_manifestfile(&opt)?;
         let imm = Vec::<MemTable>::with_capacity(opt.num_memtables);
         let (sender, receiver) = mpsc::channel::<MemTable>(opt.num_memtables);
+        let p = mpsc::channel::<WriteReq>(KV_WRITES_ENTRIES_CHANNEL_CAPACITY);
         let threshold = VlogThreshold::new(&opt);
 
         // let mut db = DB::default();
@@ -158,14 +159,14 @@ impl DBInner {
         }
 
         let levels_controller = LevelsController::new(
-            db_opt,
+            db_opt.clone(),
             &manifest_file.manifest,
             key_registry.clone(),
             &block_cache,
             &index_cache,
         )
         .await?;
-
+        let discard = discard::DiscardStats::new(db_opt.clone())?;
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);
         Ok(())
@@ -199,9 +200,6 @@ impl DBInner {
         // todo!();
         let v = ValueStruct::default();
         Ok(v)
-    }
-    pub(crate) async fn send_to_write_channel(&self, entries: Vec<DecEntry>) {
-        
     }
 }
 impl Options {

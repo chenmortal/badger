@@ -1,5 +1,3 @@
-use std::{collections::HashMap, rc::Rc};
-
 use crate::iter::Iter;
 
 use super::iter::ConcatIter;
@@ -89,40 +87,4 @@ impl<T: Iter> MergeIter<T> {
             }
         }
     }
-}
-#[derive(Debug)]
-struct MyStruct {
-    data: HashMap<usize, String>,
-    reference: *mut String, // 借用另一个成员变量
-}
-#[test]
-fn test_a() {
-    // let mut p = MyStruct::default();;
-    let mut p = HashMap::new();
-    p.insert(1, String::from("abc"));
-    let k = p.get_mut(&1).unwrap() as *mut String;
-    MyStruct {
-        data: p,
-        reference: k,
-    };
-    // p.data.insert(1, String::from("abc"));
-    // let k = p.data.get(&1).unwrap() as *const String;
-    // for i in 0..10_000_000{
-    //     let p=unsafe{&*k};
-    //     // let k = p.data.get(&1).unwrap();;
-    // }
-
-    // Rc::clone(k);
-    // let data=3;
-    // MyStruct{
-    //     data,
-    //     reference: &data,
-    // }
-    // let mut v = vec![0, 1, 2, 3, 4];
-    // let mid = v.len() / 2;
-    // let k = v.split_off(mid);
-    // dbg!(v);
-    // dbg!(k);
-    // dbg!(size_of::<MergeIter<TableIter>>()); //344 328 120
-    // dbg!(size_of::<Node<TableIter>>()); //152 144 40
 }

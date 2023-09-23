@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, mem::size_of};
+use std::cmp::Ordering;
 use std::io;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ pub(crate) struct LevelHandlerInner {
     level: usize,
 }
 impl Deref for LevelHandlerInner {
-    type Target=RwLock<LevelHandlerTables>;
+    type Target = RwLock<LevelHandlerTables>;
 
     fn deref(&self) -> &Self::Target {
         &self.handler_tables
@@ -215,8 +215,4 @@ async fn binary_search_biggest(tables: &Vec<Table>, value: &[u8]) -> Result<usiz
         size = right - left;
     }
     Err(left)
-}
-#[test]
-fn test_a(){
-    dbg!(size_of::<LevelHandler>());
 }

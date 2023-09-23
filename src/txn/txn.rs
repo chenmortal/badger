@@ -1,14 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{
-        atomic::{AtomicBool, AtomicU32},
-        Arc,
-    },
+    sync::{atomic::AtomicBool, Arc},
 };
 
 use anyhow::anyhow;
 use anyhow::bail;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use crate::{
     db::DB,
@@ -16,12 +13,12 @@ use crate::{
     kv::KeyTs,
     txn::{BADGER_PREFIX, HASH},
     util::now_since_unix,
-    value::{BIT_DELETE, BIT_FIN_TXN, BIT_TXN},
+    vlog::{BIT_DELETE, BIT_FIN_TXN, BIT_TXN},
 };
 
 use super::{
     entry::{DecEntry, Entry},
-    item::{self, Item, ItemInner, PRE_FETCH_STATUS},
+    item::{Item, ItemInner, PRE_FETCH_STATUS},
     TxnTs, TXN_KEY,
 };
 
@@ -35,7 +32,7 @@ pub struct Txn {
     pub(super) read_key_hash: Mutex<Vec<u64>>,
     pending_writes: Option<HashMap<Vec<u8>, DecEntry>>, // Vec<u8> -> String
     duplicate_writes: Vec<DecEntry>,
-    num_iters: AtomicU32,
+    // num_iters: AtomicU32,
     discarded: bool,
     pub(super) done_read: AtomicBool,
     update: bool,
@@ -65,7 +62,7 @@ impl Txn {
             read_key_hash: Mutex::new(Vec::new()),
             pending_writes: if update { HashMap::new().into() } else { None },
             duplicate_writes: Default::default(),
-            num_iters: Default::default(),
+            // num_iters: Default::default(),
             discarded: false,
             done_read: AtomicBool::new(false),
             db,
@@ -204,7 +201,7 @@ impl Txn {
         }
         Ok(())
     }
-    pub async fn commit(&self) -> anyhow::Result<()> {
+    pub async fn commit(&mut self) -> anyhow::Result<()> {
         match self.pending_writes.as_ref() {
             Some(s) => {
                 if s.len() == 0 {
@@ -216,6 +213,9 @@ impl Txn {
             }
         };
         self.commit_pre_check()?;
+        let (commit_ts, notify) = self.commit_and_send().await?;
+        notify.notified().await;
+        self.db.oracle.done_commit(commit_ts).await?;
         Ok(())
     }
     fn commit_pre_check(&self) -> anyhow::Result<()> {
@@ -236,8 +236,10 @@ impl Txn {
         }
         Ok(())
     }
-    async fn commit_and_send(&mut self) -> anyhow::Result<()> {
-        let commit_ts = self.db.oracle.get_latest_commit_ts(self).await?;
+    async fn commit_and_send(&mut self) -> anyhow::Result<(TxnTs, Arc<Notify>)> {
+        let oracle = &self.db.oracle;
+        let _guard = oracle.send_write_req.lock().await;
+        let commit_ts = oracle.get_latest_commit_ts(self).await?;
         let mut keep_together = true;
         let mut set_version = |e: &mut DecEntry| {
             if e.version() == TxnTs::default() {
@@ -252,31 +254,49 @@ impl Txn {
             pending_wirtes_len = p.len();
             p.iter_mut().map(|x| x.1).for_each(&mut set_version);
         }
+        let duplicate_writes_len = self.duplicate_writes.len();
         self.duplicate_writes.iter_mut().for_each(set_version);
 
-        let mut dec_entries =
-            Vec::with_capacity(pending_wirtes_len + self.duplicate_writes.len() + 1);
-        let mut process_entry = |e: &mut DecEntry| {
+        //read from pending_writes and duplicate_writes to Vec<>
+        let mut entries = Vec::with_capacity(pending_wirtes_len + duplicate_writes_len + 1);
+        let mut process_entry = |mut e: DecEntry| {
             if keep_together {
                 *e.meta_mut() |= BIT_TXN;
             }
-            dec_entries.push(e.clone());
+            entries.push(e);
         };
 
         if let Some(p) = self.pending_writes.as_mut() {
-            p.iter_mut().map(|x| x.1).for_each(&mut process_entry);
+            p.drain()
+                .take(pending_wirtes_len)
+                .for_each(|(_, e)| process_entry(e));
         }
-        self.duplicate_writes.iter_mut().for_each(process_entry);
+        self.duplicate_writes
+            .drain(0..)
+            .take(duplicate_writes_len)
+            .for_each(|e| process_entry(e));
 
         if keep_together {
             debug_assert!(commit_ts != TxnTs::default());
             let mut entry = Entry::new(TXN_KEY, commit_ts.to_u64().to_string().as_bytes());
             entry.set_version(commit_ts);
             entry.set_meta(BIT_FIN_TXN);
-            dec_entries.push(entry.into())
+            entries.push(entry.into())
         }
 
-        Ok(())
+        let notify = match self
+            .db
+            .send_entires_to_write_channel(entries, self.size)
+            .await
+        {
+            Ok(n) => n,
+            Err(e) => {
+                oracle.done_commit(commit_ts).await?;
+                bail!(e)
+            }
+        };
+
+        Ok((commit_ts, notify))
     }
 }
 
@@ -290,11 +310,4 @@ fn is_deleted_or_expired(meta: u8, expires_at: u64) -> bool {
     }
     expires_at <= now_since_unix().as_secs()
 }
-#[test]
-fn test_a() {
-    let a: u64 = 1001;
-    dbg!(a.to_string());
-    // let mut p = HashMap::new();
-    // p.insert(1, "a");
-    // dbg!(p.insert(1, "a"));
-}
+

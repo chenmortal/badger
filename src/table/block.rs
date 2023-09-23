@@ -1,12 +1,11 @@
-use std::mem;
-use std::{ops::Deref, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use anyhow::bail;
 use bytes::Buf;
 use prost::Message;
 
-use crate::pb::{self, badgerpb4::Checksum};
+use crate::pb::badgerpb4::Checksum;
 
 use super::bytes_to_vec_u32;
 #[derive(Debug, Clone)]
@@ -22,7 +21,7 @@ struct BlockInner {
 }
 impl Block {
     #[inline]
-    pub(crate) fn new(offset: u32,  data: Vec<u8>) -> anyhow::Result<Self> {
+    pub(crate) fn new(offset: u32, data: Vec<u8>) -> anyhow::Result<Self> {
         Ok(Self(Arc::new(BlockInner::new(offset, data)?)))
     }
 
@@ -41,7 +40,7 @@ impl Block {
         &self.0.data[..self.0.entries_index_start]
     }
     #[inline]
-    pub(crate) fn get_offset(&self)->u32{
+    pub(crate) fn get_offset(&self) -> u32 {
         self.0.offset
     }
 }
@@ -85,9 +84,4 @@ impl BlockInner {
             checksum_len,
         })
     }
-}
-#[test]
-fn test_a() {
-    dbg!(mem::size_of::<Block>());
-    dbg!(mem::size_of::<BlockInner>());
 }

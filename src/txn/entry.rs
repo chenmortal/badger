@@ -1,9 +1,7 @@
 use std::{
-    cell::RefCell,
     ops::{Deref, DerefMut},
     sync::{
-        atomic::{AtomicU64, AtomicUsize},
-        Arc,
+        Arc, atomic::AtomicUsize,
     },
 };
 
@@ -12,11 +10,9 @@ use crate::kv::KeyTs;
 use super::TxnTs;
 #[derive(Debug, Default,Clone)]
 pub struct Entry {
-    // key: Vec<u8>,
     key_ts: KeyTs,
     value: Vec<u8>,
     expires_at: u64,
-    // version: TxnTs,
     offset: u32,
     user_meta: u8,
     meta: u8,
@@ -24,7 +20,6 @@ pub struct Entry {
 
 impl Entry {
     pub fn new(key: &[u8], value: &[u8]) -> Self {
-        let mut entry = Entry::default();
         let key_ts = KeyTs::new(key, TxnTs::default());
         Self {
             key_ts,
@@ -88,7 +83,7 @@ impl Entry {
 #[derive(Debug,Clone)]
 pub(crate) struct DecEntry {
     entry: Entry,
-    header_len: Arc<AtomicUsize>,
+    // header_len: Arc<AtomicUsize>,
     value_threshold: Arc<AtomicUsize>,
 }
 impl From<Entry> for DecEntry {
@@ -96,7 +91,7 @@ impl From<Entry> for DecEntry {
         
         DecEntry {
             entry: value,
-            header_len: Default::default(),
+            // header_len: Default::default(),
             value_threshold: Default::default(),
         }
     }
