@@ -4,7 +4,7 @@ use std::{
     sync::{
         atomic::{AtomicI32, AtomicU32},
         Arc,
-    },
+    }, fs::read_dir,
 };
 
 use crate::{lsm::wal::LogFile, options::Options};
@@ -35,5 +35,10 @@ pub(crate) struct ValueLog {
     opt: Arc<Options>,
 }
 impl ValueLog {
-    pub(crate) fn init(opt: &Arc<Options>) {}
+    pub(crate) fn open(opt:Arc<Options>){
+
+    }
+    fn populate_files_map(dir:&PathBuf,){
+        let p = read_dir(dir);
+    }
 }

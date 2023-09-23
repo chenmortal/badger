@@ -15,7 +15,7 @@ use log::{debug, error, info};
 use rand::Rng;
 use tokio::{
     select,
-    sync::{Mutex, Notify, RwLock, RwLockReadGuard, Semaphore},
+    sync::{Mutex, Notify, Semaphore},
 };
 
 use crate::{
@@ -41,7 +41,7 @@ use crate::{
 
 use super::{
     compaction::{CompactStatus, KeyRange},
-    level_handler::{LevelHandler, LevelHandlerInner},
+    level_handler::LevelHandler,
 };
 #[derive(Debug)]
 pub(crate) struct LevelsController {

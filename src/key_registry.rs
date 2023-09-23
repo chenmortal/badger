@@ -468,26 +468,5 @@ impl AesCipher {
         aes_gcm_siv::Aes128GcmSiv::generate_nonce(&mut OsRng)
     }
 }
-mod tests {
-    use aes_gcm::{aead::OsRng, AeadCore};
 
-    use super::AesCipher;
 
-    #[test]
-    fn test_a() {
-        let key = vec![1 as u8; 16];
-        let key_a = vec![2 as u8; 32];
-        let p = AesCipher::new(&key, false).unwrap();
-
-        let data = "abc";
-        let nonce = AesCipher::generate_nonce();
-        let m = aes_gcm::Aes256Gcm::generate_nonce(&mut OsRng);
-        dbg!(m.as_slice().len());
-        for _ in 0..100_000 {
-            let e_data = p.encrypt(&nonce, data.as_bytes()).unwrap();
-            let k = p.decrypt(&nonce, &e_data).unwrap();
-        }
-
-        // dbg!(String::from_utf8(k));
-    }
-}

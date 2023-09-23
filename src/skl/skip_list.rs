@@ -81,20 +81,3 @@ impl SkipList {
     }
 }
 
-// impl<'a,'b:'a> SkipList<'a,'b> {
-//     fn new(arena_size: u64) -> SkipList<'a,'b> {
-//         let arena = Arena::new(arena_size as usize);
-//         // let tow=[]
-//         let head = arena.alloc(Node {
-//             value: AtomicU64::new(0),
-//             key: None,
-//             height: 2,
-//             // tower: [None;SKL_MAX_HEIGHT],
-//         });
-//         Self {
-//             height: AtomicI32::new(0),
-//             head,
-//             arena,
-//         }
-//     }
-// }

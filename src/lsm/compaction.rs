@@ -1,7 +1,6 @@
-use std::{collections::HashSet, ops::Deref, sync::Arc};
+use std::{collections::HashSet, ops::Deref};
 
 use tokio::sync::RwLock;
-use zstd::zstd_safe::WriteBuf;
 
 use crate::{
     table::Table,

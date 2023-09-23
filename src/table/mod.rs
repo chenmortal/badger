@@ -225,11 +225,6 @@ impl Table {
         Ok(table)
     }
 
-    // #[inline]
-    // pub(crate) fn get_id(&self) -> u64 {
-    //     self.0.id
-    // }
-
     #[inline]
     pub(crate) async fn get_block(&self, idx: u32, use_cache: bool) -> anyhow::Result<Block> {
         self.0.get_block(idx, use_cache).await

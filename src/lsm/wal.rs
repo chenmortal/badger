@@ -1,24 +1,21 @@
 use std::{
     fs::{remove_file, OpenOptions},
-    ops::{Deref, DerefMut},
-    os::unix::prelude::OpenOptionsExt,
     path::PathBuf,
     sync::{
-        atomic::{self, AtomicU32, Ordering},
+        atomic::{AtomicU32, Ordering},
         Arc,
     },
 };
 
 use crate::{
-    key_registry::{self, AesCipher, KeyRegistry},
+    key_registry::{AesCipher, KeyRegistry},
     lsm::mmap::{open_mmap_file, MmapFile},
     options::Options,
     pb::badgerpb4::DataKey,
-    value::{threshold::VlogThreshold, MAX_HEADER_SIZE, VLOG_HEADER_SIZE},
+    vlog::{MAX_HEADER_SIZE, VLOG_HEADER_SIZE},
 };
 use anyhow::{anyhow, bail};
 use bytes::{Buf, BufMut};
-use tokio::sync::RwLock;
 #[derive(Debug)]
 pub(crate) struct LogFile {
     fid: u32,
@@ -102,7 +99,7 @@ impl LogFile {
         let registry_r = log_file.key_registry.read().await;
         // let datakeys_r = registry_r.data_keys.read().await;
         if let Some(dk) = registry_r.get_data_key(key_id).await? {
-            log_file.datakey=Some(dk);
+            log_file.datakey = Some(dk);
         }
         // drop(datakeys_r);
         drop(registry_r);
@@ -157,4 +154,3 @@ impl LogFile {
         self.mmap[start..end].fill(0);
     }
 }
-

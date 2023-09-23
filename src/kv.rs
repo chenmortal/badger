@@ -2,7 +2,7 @@ use crate::txn::TxnTs;
 use bincode::{DefaultOptions, Options};
 use bytes::{Buf, BufMut};
 use serde::{Deserialize, Serialize};
-use std::{marker::PhantomData, ops::Deref};
+use std::ops::Deref;
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub(crate) struct KeyTs {
     key: Vec<u8>,
@@ -117,10 +117,10 @@ pub(crate) struct ValueInner {
     expires_at: u64,
     value: Vec<u8>,
 }
-pub(crate) struct ValuePointer{
-    fid:u32,
-    len:u32,
-    offset:u32,
+pub(crate) struct ValuePointer {
+    fid: u32,
+    len: u32,
+    offset: u32,
 }
 #[derive(Debug, Default)]
 pub(crate) struct ValueStruct {

@@ -1,19 +1,16 @@
-use std::{
-    sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc,
-    },
-    time::{Duration, SystemTime},
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 
-use log::{error, debug};
+use log::{debug, error};
 use tokio::{
     select,
     sync::{mpsc::Receiver, Notify, Semaphore},
 };
 
 use crate::{
-    db::{DBInner, DB},
+    db::DB,
     default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
     errors::DBError,
     kv::ValuePointer,
@@ -105,120 +102,11 @@ impl DB {
         }
     }
     async fn write_requests(&self, reqs: Vec<WriteReq>) -> anyhow::Result<()> {
-        if reqs.len()==0{
+        if reqs.len() == 0 {
             return Ok(());
         }
         debug!("write_requests called. Writing to value log");
-        
+
         Ok(())
     }
-}
-// #[tokio::t]
-
-#[tokio::test]
-async fn test_notify() {
-    let notify = Arc::new(Notify::new());
-    let notify_clone = notify.clone();
-
-    // let notify_close = Arc::new(Notify::new());
-    // let notify_close_clone = notify.clone();
-    let close = Arc::new(AtomicBool::new(false));
-    let close_clone = close.clone();
-    let (s, mut r) = tokio::sync::mpsc::channel::<String>(2);
-
-    tokio::spawn(async move {
-        for i in 0..10 {
-            tokio::time::sleep(Duration::from_secs_f32(1.0)).await;
-            let notify_c = notify.clone();
-            tokio::spawn(async move {
-                // notify_clone.notify_one();
-                // close.compare_exchange(current, new, success, failure)
-
-                // close_clone.swap(true, Ordering::SeqCst);
-                // notify.notify_one();
-                notify_c.notify_one();
-                // tokio::time::interval(Duration::from_secs(11));
-            });
-        }
-    });
-
-    // tokio::spawn(async move {
-    //     let start = tokio::time::Instant::now();
-
-    //     let mut p = tokio::time::interval(Duration::from_secs(1));
-    //     let mut count = 0;
-    //     loop {
-    //         if close.load(Ordering::SeqCst) == true {
-    //             // s.send(99.to_string()).await;
-    //             break;
-    //         }
-
-    //         // tokio::time::sleep(Duration::from_secs_f32(0.5)).await;
-    //         // if tokio::time::Instant::now().duration_since(start).as_secs() == 10 {
-    //         //     return;
-    //         // };
-
-    //         // p.tick().await;
-    //         s.send(count.to_string()).await;
-    //         // notify.notify_one();
-    //         count += 1;
-    //         // notify.notify_one();
-    //         // println!("task complete")
-    //     }
-    // });
-    // while let Some(s) = r.recv().await {
-
-    // }
-    let mut count = 0;
-
-    loop {
-        if count == 1 {
-            notify_clone.notified().await;
-            println!("cc");
-        }
-        select! {
-            Some(l)=r.recv()=>{
-                // dbg!(l);
-            }
-            k=notify_clone.notified()=>{
-
-                dbg!("ok");
-                // // dbg!(r.recv().await);
-                // while let Some(s) = r.recv().await {
-                //     dbg!(s);
-                // }
-                // // match r.try_recv() {
-                // //     Ok(s) => {
-                // //         dbg!(s);
-                // //     },
-                // //     Err(e) => {
-                // //         dbg!(e);
-                // //     },
-                // // }
-                // break;
-            }
-        }
-        // match r.try_recv() {
-        //     Ok(a) => {
-        //         dbg!(a);
-        //     }
-        //     Err(e) => {
-        //         dbg!(e);
-        //     }
-        // }
-        // let s = now_since_unix().as_secs();
-        // select! {
-        //     a=notify_clone.notified()=>{
-        //         dbg!(&count);
-        //     }
-        // }
-        // count += 1;
-        // if s%3==0{
-        //     notify_clone.notified().await;
-        //     println!("task ready a");
-        // }
-        // notify_clone.notified().await;
-        // println!("task ready")
-    }
-    // n.notified();
 }

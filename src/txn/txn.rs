@@ -13,7 +13,7 @@ use crate::{
     kv::KeyTs,
     txn::{BADGER_PREFIX, HASH},
     util::now_since_unix,
-    value::{BIT_DELETE, BIT_FIN_TXN, BIT_TXN},
+    vlog::{BIT_DELETE, BIT_FIN_TXN, BIT_TXN},
 };
 
 use super::{

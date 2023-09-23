@@ -5,7 +5,7 @@ use crate::{
 use anyhow::anyhow;
 use bytes::Buf;
 use log::info;
-use std::{fs::OpenOptions, mem::size_of, sync::Arc};
+use std::{fs::OpenOptions, sync::Arc};
 use tokio::sync::Mutex;
 const DISCARD_FILE_NAME: &str = "DISCARD";
 const DISCARD_FILE_SIZE: usize = 1 << 20; //1MB
@@ -17,12 +17,12 @@ struct DiscardStatsInner {
     next_empty_slot: usize,
 }
 impl DiscardStats {
-    pub(crate) fn new(opt: &Arc<Options>) -> anyhow::Result<Self> {
+    pub(crate) fn new(opt: Arc<Options>) -> anyhow::Result<Self> {
         Ok(Self(Arc::new(Mutex::new(DiscardStatsInner::new(opt)?))))
     }
 }
 impl DiscardStatsInner {
-    fn new(opt: &Arc<Options>) -> anyhow::Result<Self> {
+    fn new(opt: Arc<Options>) -> anyhow::Result<Self> {
         let file_path = opt.value_dir.join(DISCARD_FILE_NAME);
         let mut fp_open_opt = OpenOptions::new();
         fp_open_opt.read(true).write(true).create(true);

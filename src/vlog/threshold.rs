@@ -1,7 +1,8 @@
-use std::sync::atomic::{AtomicI64, AtomicUsize};
+use std::sync::atomic::AtomicUsize;
 
-use crate::{options::Options};
 use stretto::Histogram;
+
+use crate::options::Options;
 pub(crate) struct VlogThreshold {
     percentile: f64,
     value_threshold: AtomicUsize,

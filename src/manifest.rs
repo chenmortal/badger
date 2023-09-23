@@ -262,18 +262,4 @@ impl Manifest {
         Ok(())
     }
 }
-// impl Clone for Manifest {
-//     fn clone(&self) -> Self {
-//         let change_set = ManifestChangeSet {
-//             changes: self.as_changes(),
-//         };
-//         let mut m = Manifest::default();
-//         match m.apply_change_set(&change_set) {
-//             Ok(_) => {}
-//             Err(e) => {
-//                 error!("{}", e);
-//             }
-//         };
-//         m
-//     }
-// }
+
