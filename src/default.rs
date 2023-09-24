@@ -6,6 +6,7 @@ pub(crate) const MANIFEST_FILE_NAME: &str = "MANIFEST";
 pub(crate) const MANIFEST_REWRITE_FILE_NAME: &str = "MANIFEST-REWEITE";
 pub(crate) const MEM_FILE_EXT: &str = ".mem";
 pub(crate) const SSTABLE_FILE_EXT: &str = ".sst";
+pub(crate) const VALUELOG_FILE_EXT: &str = ".vlog";
 pub(crate) const MANIFEST_DELETIONS_REWRITE_THRESHOLD: i32 = 10000;
 pub(crate) const KV_WRITES_ENTRIES_CHANNEL_CAPACITY: usize = 1000;
 // pub(crate) const SKL_MAX_HEIGHT:usize=20;

@@ -10,8 +10,9 @@ use tokio::sync::Mutex;
 const DISCARD_FILE_NAME: &str = "DISCARD";
 const DISCARD_FILE_SIZE: usize = 1 << 20; //1MB
 const DISCARD_MAX_SLOT: usize = DISCARD_FILE_SIZE / 16; //1MB file can store 65536 discard entries. Each entry is 16 bytes;
-
+#[derive(Debug)]
 pub(crate) struct DiscardStats(Arc<Mutex<DiscardStatsInner>>);
+#[derive(Debug)]
 struct DiscardStatsInner {
     mmap_f: MmapFile,
     next_empty_slot: usize,
