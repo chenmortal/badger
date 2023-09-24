@@ -19,7 +19,7 @@ use bytes::{Buf, BufMut};
 #[derive(Debug)]
 pub(crate) struct LogFile {
     fid: u32,
-    opt: Arc<Options>,
+    // opt: Arc<Options>,
     key_registry: KeyRegistry,
     datakey: Option<DataKey>,
     pub(crate) mmap: MmapFile,
@@ -30,21 +30,17 @@ pub(crate) struct LogFile {
 
 impl LogFile {
     pub(crate) async fn open(
-        // &self,
         fid: u32,
-        file_path: PathBuf,
+        file_path: &PathBuf,
         read_only: bool,
         fp_open_opt: OpenOptions,
         fsize: u64,
-        opt: Arc<Options>,
         key_registry: KeyRegistry,
     ) -> anyhow::Result<(LogFile, bool)> {
         let (mmap, is_new) = open_mmap_file(&file_path, fp_open_opt, read_only, fsize)
             .map_err(|e| anyhow!("while opening file: {:?} for {}", &file_path, e))?;
         let mut log_file = Self {
             fid,
-            // file_path,
-            opt,
             key_registry,
             datakey: None,
             mmap,
@@ -96,7 +92,7 @@ impl LogFile {
         let mut buf_ref: &[u8] = buf.as_ref();
         let key_id = buf_ref.get_u64();
 
-        let registry_r = log_file.key_registry.read().await;
+        let registry_r: tokio::sync::RwLockReadGuard<'_, crate::key_registry::KeyRegistryInner> = log_file.key_registry.read().await;
         // let datakeys_r = registry_r.data_keys.read().await;
         if let Some(dk) = registry_r.get_data_key(key_id).await? {
             log_file.datakey = Some(dk);
@@ -152,5 +148,9 @@ impl LogFile {
             end = len;
         }
         self.mmap[start..end].fill(0);
+    }
+    #[inline]
+    pub(crate) fn get_size(&self){
+        
     }
 }

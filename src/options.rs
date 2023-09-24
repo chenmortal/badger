@@ -65,7 +65,7 @@ pub struct Options {
     pub(crate) num_level_zero_tables: usize,
     pub(crate) num_level_zero_tables_stall: usize,
 
-    pub(crate) valuelog_file_size: usize,
+    pub(crate) valuelog_file_size: u64,
     valuelog_max_entries: u32,
 
     pub(crate) num_compactors: usize,
@@ -244,7 +244,7 @@ impl Options {
         self.base_level_size = base_level_size;
         self
     }
-    pub fn set_valuelog_file_size(mut self, valuelog_file_size: usize) -> Self {
+    pub fn set_valuelog_file_size(mut self, valuelog_file_size: u64) -> Self {
         self.valuelog_file_size = valuelog_file_size;
         self
     }

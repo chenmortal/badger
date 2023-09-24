@@ -180,8 +180,8 @@ impl Txn {
         if e.key().len() > MAX_KEY_SIZE {
             exceeds_size("Key", MAX_KEY_SIZE, e.key())?;
         }
-        if e.value().len() > self.db.opt.valuelog_file_size {
-            exceeds_size("Value", self.db.opt.valuelog_file_size, e.value())?
+        if e.value().len() as u64 > self.db.opt.valuelog_file_size  {
+            exceeds_size("Value", self.db.opt.valuelog_file_size as usize, e.value())?
         }
         self.db.is_banned(&e.key()).await?;
 

@@ -65,11 +65,10 @@ async fn open_mem_table(
 
     let (log_file, is_new) = LogFile::open(
         mem_file_fid,
-        mem_file_path.clone(),
+        &mem_file_path,
         opt.read_only,
         fp_open_opt,
         2 * opt.memtable_size as u64,
-        opt.clone(),
         key_registry.clone(),
     )
     .await
