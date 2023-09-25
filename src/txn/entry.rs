@@ -13,9 +13,10 @@ pub struct Entry {
     key_ts: KeyTs,
     value: Vec<u8>,
     expires_at: u64,
-    offset: u32,
+    offset: usize,
     user_meta: u8,
     meta: u8,
+    header_len:usize,
 }
 
 impl Entry {
@@ -28,6 +29,7 @@ impl Entry {
             offset: 0,
             user_meta: 0,
             meta: 0,
+            header_len: 0,
         }
     }
     pub fn set_key(&mut self, key: Vec<u8>) {
@@ -54,7 +56,7 @@ impl Entry {
         *self.key_ts.txn_ts()
     }
 
-    pub fn offset(&self) -> u32 {
+    pub fn offset(&self) -> usize {
         self.offset
     }
 
@@ -76,6 +78,26 @@ impl Entry {
 
     pub fn meta_mut(&mut self) -> &mut u8 {
         &mut self.meta
+    }
+
+    pub(crate) fn set_user_meta(&mut self, user_meta: u8) {
+        self.user_meta = user_meta;
+    }
+
+    pub(crate) fn set_expires_at(&mut self, expires_at: u64) {
+        self.expires_at = expires_at;
+    }
+
+    pub(crate) fn set_offset(&mut self, offset: usize) {
+        self.offset = offset;
+    }
+
+    pub(crate) fn header_len(&self) -> usize {
+        self.header_len
+    }
+
+    pub(crate) fn set_header_len(&mut self, header_len: usize) {
+        self.header_len = header_len;
     }
 }
 

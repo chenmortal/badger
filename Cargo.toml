@@ -30,7 +30,7 @@ xxhash-rust = {version = "0.8.7",features = ["xxh64","xxh3"]}
 snap = "1.1.0"
 zstd="0.12"
 rand = "0.8.5"
-
+integer-encoding = "4.0.0"
 # hashbrown="*"
 ahash="*"
 

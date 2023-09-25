@@ -27,10 +27,10 @@ const KEY_REGISTRY_FILE_NAME: &str = "KEYREGISTRY";
 const KEY_REGISTRY_REWRITE_FILE_NAME: &str = "REWRITE-KEYREGISTRY";
 const SANITYTEXT: &[u8] = b"Hello Badger";
 pub const NONCE_SIZE: usize = 12;
-#[derive(Debug, Default,Clone)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct KeyRegistry(Arc<RwLock<KeyRegistryInner>>);
 impl Deref for KeyRegistry {
-    type Target=Arc<RwLock<KeyRegistryInner>>;
+    type Target = Arc<RwLock<KeyRegistryInner>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -468,5 +468,3 @@ impl AesCipher {
         aes_gcm_siv::Aes128GcmSiv::generate_nonce(&mut OsRng)
     }
 }
-
-

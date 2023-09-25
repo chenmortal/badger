@@ -1,16 +1,14 @@
 use std::{
     fs::{remove_file, OpenOptions},
+    io::{BufReader, Read},
     path::PathBuf,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use crate::{
+    default::DEFAULT_IS_SIV,
     key_registry::{AesCipher, KeyRegistry},
     lsm::mmap::{open_mmap_file, MmapFile},
-    options::Options,
     pb::badgerpb4::DataKey,
     vlog::{MAX_HEADER_SIZE, VLOG_HEADER_SIZE},
 };
@@ -19,11 +17,11 @@ use bytes::{Buf, BufMut};
 #[derive(Debug)]
 pub(crate) struct LogFile {
     fid: u32,
-    // opt: Arc<Options>,
     key_registry: KeyRegistry,
     datakey: Option<DataKey>,
+    cipher: Option<AesCipher>,
     pub(crate) mmap: MmapFile,
-    size: AtomicU32,
+    size: AtomicUsize,
     base_nonce: Vec<u8>,
     write_at: usize,
 }
@@ -44,17 +42,16 @@ impl LogFile {
             key_registry,
             datakey: None,
             mmap,
-            size: AtomicU32::new(0),
+            size: AtomicUsize::new(0),
             base_nonce: Vec::new(),
             write_at: VLOG_HEADER_SIZE,
+            cipher: None,
         };
 
         if is_new {
             match log_file.bootstrap().await {
                 Ok(_) => {
-                    log_file
-                        .size
-                        .store(VLOG_HEADER_SIZE as u32, Ordering::SeqCst);
+                    log_file.set_size(VLOG_HEADER_SIZE);
                 }
                 Err(e) => {
                     match remove_file(&log_file.mmap.file_path) {
@@ -77,11 +74,9 @@ impl LogFile {
                 }
             };
         }
-        log_file
-            .size
-            .store(log_file.mmap.len() as u32, Ordering::SeqCst);
+        log_file.set_size(log_file.mmap.len());
 
-        if log_file.size.load(Ordering::SeqCst) < VLOG_HEADER_SIZE as u32 {
+        if log_file.get_size() < VLOG_HEADER_SIZE {
             return Ok((log_file, is_new));
         }
 
@@ -92,19 +87,20 @@ impl LogFile {
         let mut buf_ref: &[u8] = buf.as_ref();
         let key_id = buf_ref.get_u64();
 
-        let registry_r: tokio::sync::RwLockReadGuard<'_, crate::key_registry::KeyRegistryInner> = log_file.key_registry.read().await;
-        // let datakeys_r = registry_r.data_keys.read().await;
+        let registry_r = log_file.key_registry.read().await;
         if let Some(dk) = registry_r.get_data_key(key_id).await? {
+            log_file.cipher = AesCipher::new(dk.data.as_slice(), DEFAULT_IS_SIV)?.into();
             log_file.datakey = Some(dk);
         }
-        // drop(datakeys_r);
         drop(registry_r);
         let nonce = buf_ref.get(0..12);
         log_file.base_nonce = nonce.unwrap().to_vec();
 
         Ok((log_file, is_new))
     }
-    fn delete(&self) {}
+    pub(crate) fn delete(&self) -> anyhow::Result<()> {
+        self.mmap.delete()
+    }
     // bootstrap will initialize the log file with key id and baseIV.
     // The below figure shows the layout of log file.
     // +----------------+------------------+------------------+
@@ -118,6 +114,9 @@ impl LogFile {
             .map_err(|e| anyhow!("Error while retrieving datakey in LogFile.bootstarp {}", e))?;
         drop(key_registry_w);
         self.datakey = datakey;
+        if let Some(dk) = &self.datakey {
+            self.cipher = AesCipher::new(&dk.data, DEFAULT_IS_SIV)?.into();
+        }
         self.base_nonce = AesCipher::generate_nonce().to_vec();
 
         let mut buf = Vec::with_capacity(VLOG_HEADER_SIZE);
@@ -137,6 +136,23 @@ impl LogFile {
         }
     }
     #[inline]
+    fn generate_nonce(&self, offset: usize) -> Vec<u8> {
+        let mut v = Vec::with_capacity(12);
+        let p = offset.to_ne_bytes();
+        v.extend_from_slice(&self.base_nonce[..12 - p.len()]);
+        v.extend_from_slice(&p);
+        v
+    }
+    #[inline]
+    pub(crate) fn try_decrypt(&self, plaintext: &[u8], offset: usize) -> Option<Vec<u8>> {
+        if let Some(c) = &self.cipher {
+            let nonce = self.generate_nonce(offset);
+            return c.decrypt_with_slice(nonce.as_slice(), plaintext);
+        } else {
+            None
+        }
+    }
+    #[inline]
     fn zero_next_entry(&mut self) {
         let start = self.write_at;
         let mut end = self.write_at + MAX_HEADER_SIZE;
@@ -150,7 +166,23 @@ impl LogFile {
         self.mmap[start..end].fill(0);
     }
     #[inline]
-    pub(crate) fn get_size(&self){
-        
+    pub(crate) fn get_size(&self) -> usize {
+        self.size.load(Ordering::SeqCst)
     }
+    #[inline]
+    pub(crate) fn set_size(&self, size: usize) {
+        self.size.store(size, Ordering::SeqCst)
+    }
+
+    pub(crate) fn fid(&self) -> u32 {
+        self.fid
+    }
+}
+#[test]
+fn test_reader() {
+    let v = b"csm";
+    let k = v.to_vec();
+    let r = k.as_slice();
+    let p = BufReader::new(r);
+    // p.read_
 }
