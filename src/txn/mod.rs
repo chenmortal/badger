@@ -18,6 +18,7 @@ const TXN_KEY: &[u8] = b"!badger!txn";
 /// For storing the banned namespaces.
 const BANNED_NAMESPACES_KEY: &[u8] = b"!badger!banned";
 
+
 lazy_static! {
     pub(crate) static ref HASH: RandomState = ahash::RandomState::with_seed(thread_rng().gen());
 }

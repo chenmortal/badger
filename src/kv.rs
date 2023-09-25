@@ -119,8 +119,13 @@ pub(crate) struct ValueInner {
 }
 pub(crate) struct ValuePointer {
     fid: u32,
-    len: u32,
-    offset: u32,
+    len: usize,
+    offset: usize,
+}
+impl ValuePointer {
+    pub(crate) fn new(fid: u32, len: usize, offset: usize) -> Self {
+        Self { fid, len, offset }
+    }
 }
 #[derive(Debug, Default)]
 pub(crate) struct ValueStruct {
