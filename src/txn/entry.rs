@@ -1,14 +1,15 @@
 use std::{
     ops::{Deref, DerefMut},
-    sync::{
-        Arc, atomic::AtomicUsize,
-    },
+    sync::{atomic::AtomicUsize, Arc},
 };
 
-use crate::kv::KeyTs;
+use crate::{
+    kv::KeyTs,
+    vlog::{header::EntryHeader, BIT_TXN},
+};
 
 use super::TxnTs;
-#[derive(Debug, Default,Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct Entry {
     key_ts: KeyTs,
     value: Vec<u8>,
@@ -16,7 +17,7 @@ pub struct Entry {
     offset: usize,
     user_meta: u8,
     meta: u8,
-    header_len:usize,
+    header_len: usize,
 }
 
 impl Entry {
@@ -30,6 +31,26 @@ impl Entry {
             user_meta: 0,
             meta: 0,
             header_len: 0,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn new_ts(
+        key_ts: &[u8],
+        value: &[u8],
+        header: &EntryHeader,
+        offset: usize,
+        header_len: usize,
+    ) -> Self {
+        let k: KeyTs = key_ts.into();
+        Self {
+            key_ts: k,
+            value: value.to_vec(),
+            expires_at: header.expires_at(),
+            offset,
+            user_meta: header.user_meta(),
+            meta: header.meta(),
+            header_len,
         }
     }
     pub fn set_key(&mut self, key: Vec<u8>) {
@@ -53,7 +74,7 @@ impl Entry {
     }
 
     pub fn version(&self) -> TxnTs {
-        *self.key_ts.txn_ts()
+        self.key_ts.txn_ts()
     }
 
     pub fn offset(&self) -> usize {
@@ -79,7 +100,7 @@ impl Entry {
     pub fn meta_mut(&mut self) -> &mut u8 {
         &mut self.meta
     }
-
+   
     pub(crate) fn set_user_meta(&mut self, user_meta: u8) {
         self.user_meta = user_meta;
     }
@@ -102,7 +123,7 @@ impl Entry {
 }
 
 ///decorated entry with val_threshold
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct DecEntry {
     entry: Entry,
     // header_len: Arc<AtomicUsize>,
@@ -110,7 +131,6 @@ pub(crate) struct DecEntry {
 }
 impl From<Entry> for DecEntry {
     fn from(value: Entry) -> Self {
-        
         DecEntry {
             entry: value,
             // header_len: Default::default(),

@@ -131,7 +131,7 @@ vs
         }
         Ok(())
     }
-    pub(crate) async fn sync_mmap(&self) -> Result<(), io::Error> {
+    pub(crate) async fn sync_mmap(&self) -> anyhow::Result<()> {
         let mut err = None;
         let tables_r = self.0.handler_tables.read().await;
         for table in tables_r.tables.iter() {

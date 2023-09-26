@@ -231,7 +231,7 @@ impl Table {
     }
 
     #[inline]
-    pub(crate) fn sync_mmap(&self) -> Result<(), std::io::Error> {
+    pub(crate) fn sync_mmap(&self) -> anyhow::Result<()> {
         self.0.mmap_f.sync()
     }
 

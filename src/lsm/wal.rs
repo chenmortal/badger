@@ -101,6 +101,9 @@ impl LogFile {
     pub(crate) fn delete(&self) -> anyhow::Result<()> {
         self.mmap.delete()
     }
+    pub(crate) fn truncate(&self,end_offset:usize){
+        
+    }
     // bootstrap will initialize the log file with key id and baseIV.
     // The below figure shows the layout of log file.
     // +----------------+------------------+------------------+
