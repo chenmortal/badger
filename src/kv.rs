@@ -42,8 +42,8 @@ impl KeyTs {
     pub(crate) fn key(&self) -> &[u8] {
         &self.key
     }
-    pub(crate) fn txn_ts(&self) -> &TxnTs {
-        &self.txn_ts
+    pub(crate) fn txn_ts(&self) -> TxnTs {
+        self.txn_ts
     }
 
     pub(crate) fn set_key(&mut self, key: Vec<u8>) {

@@ -20,14 +20,15 @@ use crate::{
     lsm::wal::LogFile,
     options::Options,
     util::{dir_join_id_suffix, parse_file_id},
+    vlog::read::LogFileIter,
 };
 
 use self::discard::DiscardStats;
 
 pub(crate) mod discard;
-pub(crate) mod threshold;
-pub(crate) mod read;
 pub(crate) mod header;
+pub(crate) mod read;
+pub(crate) mod threshold;
 // size of vlog header.
 // +----------------+------------------+
 // | keyID(8 bytes) |  baseIV(12 bytes)|
@@ -40,8 +41,8 @@ pub(crate) const BIT_DISCARD_EARLIER_VERSIONS: u8 = 1 << 2;
 pub(crate) const BIT_MERGE_ENTRY: u8 = 1 << 3;
 pub(crate) const BIT_TXN: u8 = 1 << 6;
 pub(crate) const BIT_FIN_TXN: u8 = 1 << 7;
-#[derive(Debug,Error)]
-pub enum VlogError{
+#[derive(Debug, Error)]
+pub enum VlogError {
     #[error("Do truncate")]
     Truncate,
     #[error("Stop iteration")]
@@ -50,7 +51,7 @@ pub enum VlogError{
 #[derive(Debug)]
 pub(crate) struct ValueLog {
     // dir_path: PathBuf,
-    fid_logfile: RwLock<BTreeMap<u32, Arc<LogFile>>>,
+    fid_logfile: RwLock<BTreeMap<u32, LogFile>>,
     max_fid: u32,
     files_to_be_deleted: Vec<u32>,
     num_active_iter: AtomicI32,
@@ -83,24 +84,35 @@ impl ValueLog {
             return Ok(());
         }
         if fid_logfile_len == 0 {
-            self.create_vlog_file(key_registry)
+            self.create_vlog_file(key_registry.clone())
                 .await
                 .map_err(|e| anyhow!("Error while creating log file in vlog.open for {}", e))?;
         }
 
-        let fid_logfile_r = self.fid_logfile.read().await;
-        let log_file = fid_logfile_r.get(&self.max_fid);
-        debug_assert!(log_file.is_some());
-        let log_file=log_file.unwrap();
-        // let last = &fid_logfile_r[&self.max_fid];
-
-        // for fid in self.sorted_fids().await {}
-
-        // drop(fid_logfile_r);
-
-        // let mut value_log = ValueLog::default();
-        // value_log.dir_path = opt.value_dir;
-        // value_log.populate_files_map(opt.read_only, key_registry);
+        let mut fid_logfile_w = self.fid_logfile.write().await;
+        let last_log_file = fid_logfile_w.get_mut(&self.max_fid);
+        debug_assert!(last_log_file.is_some());
+        let last_log_file = last_log_file.unwrap();
+        let mut last_log_file_iter = LogFileIter::new(last_log_file, VLOG_HEADER_SIZE);
+        loop {
+            if let Some(_) = last_log_file_iter.next().map_err(|e| {
+                anyhow!(
+                    "While iterating over: {:?} for {}",
+                    last_log_file.mmap.file_path,
+                    e
+                )
+            })? {
+                continue;
+            };
+            break;
+        }
+        last_log_file
+            .mmap
+            .truncate(last_log_file_iter.valid_end_offset())?;
+        drop(fid_logfile_w);
+        self.create_vlog_file(key_registry)
+            .await
+            .map_err(|e| anyhow!("Error while creating log file in vlog.open for {}", e))?;
         Ok(())
     }
     async fn populate_files_map(&mut self, key_registry: KeyRegistry) -> anyhow::Result<()> {
@@ -136,7 +148,7 @@ impl ValueLog {
                         anyhow!("While trying to delete empty file: {:?} for {}", &path, e)
                     })?;
                 }
-                fid_logfile_w.insert(fid, Arc::new(log_file));
+                fid_logfile_w.insert(fid, log_file);
                 self.max_fid = self.max_fid.max(fid);
             };
         }
@@ -158,7 +170,7 @@ impl ValueLog {
         )
         .await?;
         let mut fid_logfile_w = self.fid_logfile.write().await;
-        fid_logfile_w.insert(fid, Arc::new(log_file));
+        fid_logfile_w.insert(fid, log_file);
         debug_assert!(fid > self.max_fid);
         self.max_fid = fid;
         self.writable_log_offset

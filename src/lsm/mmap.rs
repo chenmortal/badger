@@ -21,6 +21,12 @@ use std::{fs::OpenOptions, path::PathBuf};
 use std::{io, ptr};
 
 use crate::sys::sync_dir;
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const MAP_POPULATE: libc::c_int = libc::MAP_POPULATE;
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const MAP_POPULATE: libc::c_int = 0;
 #[derive(Debug)]
 pub(crate) struct MmapFile {
     ptr: *mut libc::c_void,
@@ -100,8 +106,9 @@ impl MmapFile {
         }
     }
     #[inline]
-    pub fn sync(&self) -> io::Result<()> {
+    pub fn sync(&self) -> anyhow::Result<()> {
         self.flush(0, self.len)
+            .map_err(|e| anyhow!("while sync file:{:?}, for {}", self.file_path, e))
     }
     #[inline]
     pub fn flush(&self, offset: usize, len: usize) -> io::Result<()> {
@@ -160,10 +167,68 @@ impl MmapFile {
             .map_err(|e| anyhow!("while sync file:{:?}, for {}", self.file_path, e))?;
         self.munmap()
             .map_err(|e| anyhow!("while munmap file:{:?}, for {}", self.file_path, e))?;
-        self.file_handle.set_len(max_sz as u64).map_err(|e| anyhow!("while truncate file:{:?}, for {}",self.file_path,e))?;
+        self.file_handle
+            .set_len(max_sz as u64)
+            .map_err(|e| anyhow!("while truncate file:{:?}, for {}", self.file_path, e))?;
         Ok(())
     }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn remap(&mut self, size: usize) -> io::Result<()> {
+        unsafe {
+            let new_ptr = libc::mremap(self.ptr, self.len, size, 0);
 
+            if new_ptr == libc::MAP_FAILED {
+                Err(io::Error::last_os_error())
+            } else {
+                // We explicitly don't drop self since the pointer within is no longer valid.
+                // ptr::write(self, Self::from_raw_parts(new_ptr, new_len, offset));
+                self.ptr = new_ptr;
+                self.len = size;
+                Ok(())
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub(crate) fn truncate(&mut self, size: usize) -> anyhow::Result<()> {
+        self.flush(0, size);
+        self.file_handle
+            .set_len(0)
+            .map_err(|e| anyhow!("while truncate file:{:?}, error: {},", self.file_path, e))?;
+        self.remap(size)?;
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    pub(crate) fn truncate(&mut self, size: usize) -> anyhow::Result<()> {
+        self.flush(0, size)?;
+        self.munmap()?;
+        self.file_handle
+            .set_len(0)
+            .map_err(|e| anyhow!("while truncate file:{:?}, error: {},", self.file_path, e))?;
+        let ptr = unsafe {
+            let prot = libc::PROT_READ | libc::PROT_WRITE;
+            let flags = libc::MAP_SHARED | MAP_POPULATE;
+            let ptr = mmap(
+                ptr::null_mut(),
+                size as libc::size_t,
+                prot,
+                flags,
+                self.file_handle.as_raw_fd(),
+                0,
+            );
+            if ptr == libc::MAP_FAILED {
+                bail!(
+                    "cannot get mmap from {:?} :{}",
+                    self.file_path,
+                    io::Error::last_os_error()
+                );
+            }
+            ptr
+        };
+        self.ptr = ptr;
+        self.len = size;
+        Ok(())
+    }
 }
 unsafe impl Send for MmapFile {}
 unsafe impl Sync for MmapFile {}
@@ -200,7 +265,7 @@ pub(crate) fn open_mmap_file(
         if !read_only {
             prot |= libc::PROT_WRITE;
         }
-        let flags = libc::MAP_SHARED;
+        let flags = libc::MAP_SHARED | MAP_POPULATE;
         let ptr = mmap(
             ptr::null_mut(),
             file_size as libc::size_t,

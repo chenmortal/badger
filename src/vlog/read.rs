@@ -3,24 +3,38 @@ use std::{
     io::{self, BufRead, BufReader, Read},
 };
 
-use crate::{kv::ValuePointer, lsm::wal::LogFile, txn::entry::Entry};
+use crate::{
+    kv::ValuePointer,
+    lsm::wal::LogFile,
+    txn::{entry::Entry, TxnTs},
+};
 
 use super::{header::EntryHeader, BIT_FIN_TXN, BIT_TXN};
 use anyhow::bail;
 use bytes::Buf;
-pub(crate) struct SafeRead<'a> {
-    key: Vec<u8>,
-    value: Vec<u8>,
-    record_offset: usize,
+
+pub(crate) struct LogFileIter<'a> {
     log_file: &'a LogFile,
+    record_offset: usize,
+    reader: BufReader<&'a [u8]>,
+    entries_vptrs: Vec<(Entry, ValuePointer)>,
+    valid_end_offset: usize,
 }
-impl SafeRead<'_> {
-    pub(crate) fn read_entry(
-        &mut self,
-        reader: &mut BufReader<&[u8]>,
-    ) -> std::io::Result<(Entry, usize)> {
+impl<'a> LogFileIter<'a> {
+    pub(crate) fn new(log_file: &'a LogFile, offset: usize) -> Self {
+        let buf_reader = BufReader::new(&log_file.mmap[offset..]);
+        Self {
+            log_file,
+            record_offset: offset,
+            reader: buf_reader,
+            entries_vptrs: Vec::new(),
+            valid_end_offset: offset,
+        }
+    }
+
+    pub(crate) fn read_entry(&mut self) -> std::io::Result<(Entry, ValuePointer)> {
         let mut hash_reader = HashReader {
-            reader,
+            reader: &mut self.reader,
             hasher: crc32fast::Hasher::new(),
             len: 0,
         };
@@ -35,16 +49,7 @@ impl SafeRead<'_> {
         }
 
         let key_len = entry_header.key_len() as usize;
-        if self.key.capacity() < key_len {
-            self.key = Vec::with_capacity(2 * key_len);
-        }
-
         let value_len = entry_header.value_len() as usize;
-        if self.value.capacity() < value_len {
-            self.value = Vec::with_capacity(2 * value_len);
-        }
-
-        let offset = self.record_offset;
 
         let mut kv_buf = vec![0; key_len + value_len];
         hash_reader.read_exact(&mut kv_buf)?;
@@ -53,7 +58,14 @@ impl SafeRead<'_> {
             kv_buf = s;
         };
 
-        let mut entry = Entry::new(&kv_buf[..key_len], &kv_buf[key_len..]);
+        let entry = Entry::new_ts(
+            &kv_buf[..key_len],
+            &kv_buf[key_len..],
+            &entry_header,
+            self.record_offset,
+            header_len,
+        );
+
         let mut crc_buf = (0 as u32).to_be_bytes();
 
         hash_reader.read_exact(&mut crc_buf)?;
@@ -66,38 +78,42 @@ impl SafeRead<'_> {
             ));
         };
 
-        entry.set_meta(entry_header.meta());
-        entry.set_user_meta(entry_header.user_meta());
-        entry.set_expires_at(entry_header.expires_at());
-        entry.set_offset(offset);
-        entry.set_header_len(header_len);
-
         let size = header_len + key_len + value_len + crc_buf.len();
-        Ok((entry, size))
+        debug_assert!(size == hash_reader.len);
+
+        let v_ptr = ValuePointer::new(self.log_file.fid(), size, self.record_offset);
+        self.record_offset += size;
+        Ok((entry, v_ptr))
     }
-}
 
-impl LogFile {
-    pub(crate) fn iterate(&self, read_only: bool, offset: usize) -> anyhow::Result<()> {
-        let mut buf_reader = BufReader::new(&self.mmap[offset..]);
-        let mut safe_read = SafeRead {
-            key: Vec::with_capacity(10),
-            value: Vec::with_capacity(10),
-            record_offset: offset,
-            log_file: self,
-        };
+    pub(crate) fn next(&mut self) -> anyhow::Result<Option<&Vec<(Entry, ValuePointer)>>> {
+        let mut last_commit = TxnTs::default();
+        self.entries_vptrs.clear();
         loop {
-            match safe_read.read_entry(&mut buf_reader) {
-                Ok((mut entry, len)) => {
-                    if entry.key().len() == 0 {
-                        break;
-                    }
-                    let pointer = ValuePointer::new(self.fid(), len, entry.offset());
-                    safe_read.record_offset += entry.offset();
-
+            match self.read_entry() {
+                Ok((entry, v_ptr)) => {
                     if entry.meta() & BIT_TXN > 0 {
+                        let txn_ts = entry.version();
+                        if last_commit == TxnTs::default() {
+                            last_commit = txn_ts;
+                        }
+                        if last_commit != txn_ts {
+                            break;
+                        }
+                        self.entries_vptrs.push((entry, v_ptr));
                     } else if entry.meta() & BIT_FIN_TXN > 0 {
+                        let txn_ts = entry.version();
+                        if last_commit != txn_ts {
+                            break;
+                        }
+                        self.valid_end_offset = self.record_offset;
+                        return Ok(Some(&self.entries_vptrs));
                     } else {
+                        if last_commit != TxnTs::default() {
+                            break;
+                        }
+                        self.valid_end_offset = self.record_offset;
+                        return Ok(Some(&self.entries_vptrs));
                     }
                 }
                 Err(e) => match e.kind() {
@@ -108,11 +124,16 @@ impl LogFile {
                         bail!(e)
                     }
                 },
-            };
+            }
         }
-        Ok(())
+        Ok(None)
+    }
+
+    pub(crate) fn valid_end_offset(&self) -> usize {
+        self.valid_end_offset
     }
 }
+
 pub(crate) struct HashReader<'a, B: BufRead, T: Hasher> {
     reader: &'a mut BufReader<B>,
     hasher: T,
