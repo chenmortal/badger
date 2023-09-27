@@ -1,6 +1,5 @@
 use std::{
     fs::{remove_file, OpenOptions},
-    io::{BufReader, Read},
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -32,7 +31,7 @@ impl LogFile {
         file_path: &PathBuf,
         read_only: bool,
         fp_open_opt: OpenOptions,
-        fsize: u64,
+        fsize: usize,
         key_registry: KeyRegistry,
     ) -> anyhow::Result<(LogFile, bool)> {
         let (mmap, is_new) = open_mmap_file(&file_path, fp_open_opt, read_only, fsize)
@@ -101,9 +100,7 @@ impl LogFile {
     pub(crate) fn delete(&self) -> anyhow::Result<()> {
         self.mmap.delete()
     }
-    pub(crate) fn truncate(&self,end_offset:usize){
-        
-    }
+    pub(crate) fn truncate(&self, end_offset: usize) {}
     // bootstrap will initialize the log file with key id and baseIV.
     // The below figure shows the layout of log file.
     // +----------------+------------------+------------------+
@@ -156,6 +153,15 @@ impl LogFile {
         }
     }
     #[inline]
+    pub(crate) fn try_encrypt(&self, plaintext: &[u8], offset: usize) -> Option<Vec<u8>> {
+        if let Some(c) = &self.cipher {
+            let nonce = self.generate_nonce(offset);
+            return c.encrypt_with_slice(nonce.as_slice(), plaintext);
+        } else {
+            None
+        }
+    }
+    #[inline]
     fn zero_next_entry(&mut self) {
         let start = self.write_at;
         let mut end = self.write_at + MAX_HEADER_SIZE;
@@ -180,12 +186,4 @@ impl LogFile {
     pub(crate) fn fid(&self) -> u32 {
         self.fid
     }
-}
-#[test]
-fn test_reader() {
-    let v = b"csm";
-    let k = v.to_vec();
-    let r = k.as_slice();
-    let p = BufReader::new(r);
-    // p.read_
 }

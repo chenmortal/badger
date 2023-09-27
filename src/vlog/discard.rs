@@ -32,7 +32,7 @@ impl DiscardStatsInner {
             &file_path,
             fp_open_opt,
             opt.read_only,
-            DISCARD_FILE_SIZE as u64,
+            DISCARD_FILE_SIZE ,
         )
         .map_err(|e| anyhow!("while openint file: {} for {} \n", DISCARD_FILE_NAME, e))?;
         let mut discard_stats = Self {

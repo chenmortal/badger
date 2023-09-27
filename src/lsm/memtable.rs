@@ -68,7 +68,7 @@ async fn open_mem_table(
         &mem_file_path,
         opt.read_only,
         fp_open_opt,
-        2 * opt.memtable_size as u64,
+        2 * opt.memtable_size ,
         key_registry.clone(),
     )
     .await

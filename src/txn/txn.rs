@@ -32,7 +32,6 @@ pub struct Txn {
     pub(super) read_key_hash: Mutex<Vec<u64>>,
     pending_writes: Option<HashMap<Vec<u8>, DecEntry>>, // Vec<u8> -> String
     duplicate_writes: Vec<DecEntry>,
-    // num_iters: AtomicU32,
     discarded: bool,
     pub(super) done_read: AtomicBool,
     update: bool,
@@ -140,7 +139,7 @@ impl Txn {
         self.modify(e.into()).await
     }
     #[inline]
-    async fn modify(&mut self, e: DecEntry) -> anyhow::Result<()> {
+    async fn modify(&mut self, mut e: DecEntry) -> anyhow::Result<()> {
         let exceeds_size = |prefix: &str, max: usize, key: &[u8]| {
             bail!(
                 "{} with size {} exceeded {} limit. {}:\n{:?}",
@@ -151,10 +150,10 @@ impl Txn {
                 if key.len() > 1024 { &key[..1024] } else { key }
             )
         };
-
-        let mut check_size = |e: &DecEntry| {
+        let threshold = self.db.opt.value_threshold;
+        let mut check_size = |e: &mut DecEntry| {
             let count = self.count + 1;
-            e.set_value_threshold(self.db.opt.value_threshold);
+            e.try_set_value_threshold(threshold);
             let size = self.size + e.estimate_size() + 10;
             if count >= self.db.opt.max_batch_count || size >= self.db.opt.max_batch_size {
                 bail!(DBError::TxnTooBig)
@@ -180,12 +179,12 @@ impl Txn {
         if e.key().len() > MAX_KEY_SIZE {
             exceeds_size("Key", MAX_KEY_SIZE, e.key())?;
         }
-        if e.value().len() as u64 > self.db.opt.valuelog_file_size  {
-            exceeds_size("Value", self.db.opt.valuelog_file_size as usize, e.value())?
+        if e.value().len()  > self.db.opt.vlog_file_size {
+            exceeds_size("Value", self.db.opt.vlog_file_size as usize, e.value())?
         }
         self.db.is_banned(&e.key()).await?;
 
-        check_size(&e)?;
+        check_size(&mut e)?;
 
         if let Some(c) = self.conflict_keys.as_mut() {
             c.insert(HASH.hash_one(e.key()));
@@ -310,4 +309,3 @@ fn is_deleted_or_expired(meta: u8, expires_at: u64) -> bool {
     }
     expires_at <= now_since_unix().as_secs()
 }
-
