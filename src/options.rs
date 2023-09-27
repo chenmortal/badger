@@ -65,7 +65,7 @@ pub struct Options {
     pub(crate) num_level_zero_tables: usize,
     pub(crate) num_level_zero_tables_stall: usize,
 
-    pub(crate) valuelog_file_size: u64,
+    pub(crate) vlog_file_size: usize,
     valuelog_max_entries: u32,
 
     pub(crate) num_compactors: usize,
@@ -140,7 +140,7 @@ impl Default for Options {
             index_cache_size: 0,
             num_level_zero_tables: 5,
             num_level_zero_tables_stall: 15,
-            valuelog_file_size: 1 << 30 - 1,
+            vlog_file_size: 1 << 30 - 1,
             valuelog_max_entries: 1000_000,
             num_compactors: 4,
             compactl0_on_close: false,
@@ -244,8 +244,8 @@ impl Options {
         self.base_level_size = base_level_size;
         self
     }
-    pub fn set_valuelog_file_size(mut self, valuelog_file_size: u64) -> Self {
-        self.valuelog_file_size = valuelog_file_size;
+    pub fn set_vlog_file_size(mut self, vlog_file_size: usize) -> Self {
+        self.vlog_file_size = vlog_file_size;
         self
     }
     pub fn set_valuelog_max_entries(mut self, valuelog_max_entries: u32) -> Self {

@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     kv::KeyTs,
-    vlog::{header::EntryHeader, BIT_TXN},
+    vlog::{header::EntryHeader, BIT_TXN, BIT_FIN_TXN},
 };
 
 use super::TxnTs;
@@ -76,7 +76,9 @@ impl Entry {
     pub fn version(&self) -> TxnTs {
         self.key_ts.txn_ts()
     }
-
+    pub(crate) fn key_ts(&self) ->&KeyTs{
+        &self.key_ts
+    }
     pub fn offset(&self) -> usize {
         self.offset
     }
@@ -100,7 +102,7 @@ impl Entry {
     pub fn meta_mut(&mut self) -> &mut u8 {
         &mut self.meta
     }
-   
+
     pub(crate) fn set_user_meta(&mut self, user_meta: u8) {
         self.user_meta = user_meta;
     }
@@ -120,20 +122,28 @@ impl Entry {
     pub(crate) fn set_header_len(&mut self, header_len: usize) {
         self.header_len = header_len;
     }
+    pub(crate) fn estimate_size(&self, threshold: usize) -> usize {
+        if self.value().len() < threshold {
+            self.key().len() + self.value().len() + 2
+        } else {
+            self.key().len() + 12 + 2
+        }
+    }
+    pub(crate) fn clean_meta_bit(&mut self, clean_meta: u8) {
+        self.meta = self.meta & (!clean_meta);
+    }
 }
 
-///decorated entry with val_threshold
+// decorated entry with val_threshold
 #[derive(Debug, Clone)]
 pub(crate) struct DecEntry {
-    entry: Entry,
-    // header_len: Arc<AtomicUsize>,
-    value_threshold: Arc<AtomicUsize>,
+    pub(crate) entry: Entry,
+    pub(crate) value_threshold: usize,
 }
 impl From<Entry> for DecEntry {
     fn from(value: Entry) -> Self {
         DecEntry {
             entry: value,
-            // header_len: Default::default(),
             value_threshold: Default::default(),
         }
     }
@@ -151,9 +161,10 @@ impl DerefMut for DecEntry {
     }
 }
 impl DecEntry {
-    pub(crate) fn set_value_threshold(&self, threshold: usize) {
-        self.value_threshold
-            .store(threshold, std::sync::atomic::Ordering::SeqCst);
+    pub(crate) fn try_set_value_threshold(&mut self, threshold: usize) {
+        if self.value_threshold == 0 {
+            self.value_threshold = threshold;
+        }
     }
 
     pub(crate) fn estimate_size(&self) -> usize {
@@ -166,6 +177,5 @@ impl DecEntry {
 
     pub(crate) fn value_threshold(&self) -> usize {
         self.value_threshold
-            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }

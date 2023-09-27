@@ -19,19 +19,28 @@ use crate::{
 };
 use anyhow::bail;
 pub(crate) struct WriteReq {
-    entries: Vec<DecEntry>,
-    ptrs: Vec<ValuePointer>,
+    entries_vptrs: Vec<(DecEntry, ValuePointer)>,
     notify: Arc<Notify>,
 }
 
 impl WriteReq {
-    pub(crate) fn new(entries: Vec<DecEntry>, notify: Arc<Notify>) -> Self {
-        let len = entries.len();
+    pub(crate) fn new(mut entries: Vec<DecEntry>, notify: Arc<Notify>) -> Self {
+        let p = entries
+            .drain(..)
+            .map(|x| (x, ValuePointer::default()))
+            .collect::<Vec<_>>();
         Self {
-            entries,
-            ptrs: Vec::with_capacity(len),
+            entries_vptrs: p,
             notify,
         }
+    }
+
+    pub(crate) fn entries_vptrs_mut(&mut self) -> &mut Vec<(DecEntry, ValuePointer)> {
+        &mut self.entries_vptrs
+    }
+
+    pub(crate) fn entries_vptrs(&self) -> &[(DecEntry, ValuePointer)] {
+        self.entries_vptrs.as_ref()
     }
 }
 impl DB {

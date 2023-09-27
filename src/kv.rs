@@ -2,7 +2,7 @@ use crate::txn::TxnTs;
 use bincode::{DefaultOptions, Options};
 use bytes::{Buf, BufMut};
 use serde::{Deserialize, Serialize};
-use std::ops::Deref;
+use std::{mem, ops::Deref};
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub(crate) struct KeyTs {
     key: Vec<u8>,
@@ -26,6 +26,23 @@ impl Ord for KeyTs {
         other.txn_ts.cmp(&self.txn_ts)
     }
 }
+impl From<&[u8]> for KeyTs {
+    fn from(value: &[u8]) -> Self {
+        let len = value.len();
+        if len <= 8 {
+            Self {
+                key: value.to_vec(),
+                txn_ts: 0.into(),
+            }
+        } else {
+            let mut p = &value[len - 8..];
+            Self {
+                key: value[..len - 8].to_vec(),
+                txn_ts: p.get_u64().into(),
+            }
+        }
+    }
+}
 impl KeyTs {
     pub(crate) fn new(key: &[u8], ts: TxnTs) -> Self {
         Self {
@@ -33,6 +50,7 @@ impl KeyTs {
             txn_ts: ts,
         }
     }
+
     pub(crate) fn get_bytes(&self) -> Vec<u8> {
         let mut v = Vec::with_capacity(self.key.len() + 8);
         v.put_slice(&self.key);
@@ -52,6 +70,9 @@ impl KeyTs {
 
     pub(crate) fn set_txn_ts(&mut self, txn_ts: TxnTs) {
         self.txn_ts = txn_ts;
+    }
+    pub(crate) fn len(&self) -> usize {
+        self.key.len() + std::mem::size_of::<u64>()
     }
 }
 
@@ -92,23 +113,7 @@ impl Ord for KeyTsBorrow<'_> {
     }
 }
 
-impl From<&[u8]> for KeyTs {
-    fn from(value: &[u8]) -> Self {
-        let len = value.len();
-        if len <= 8 {
-            Self {
-                key: value.to_vec(),
-                txn_ts: 0.into(),
-            }
-        } else {
-            let mut p = &value[len - 8..];
-            Self {
-                key: value[..len - 8].to_vec(),
-                txn_ts: p.get_u64().into(),
-            }
-        }
-    }
-}
+
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub(crate) struct ValueInner {
@@ -117,6 +122,7 @@ pub(crate) struct ValueInner {
     expires_at: u64,
     value: Vec<u8>,
 }
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ValuePointer {
     fid: u32,
     len: usize,
@@ -125,6 +131,9 @@ pub(crate) struct ValuePointer {
 impl ValuePointer {
     pub(crate) fn new(fid: u32, len: usize, offset: usize) -> Self {
         Self { fid, len, offset }
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        *self == ValuePointer::default()
     }
 }
 #[derive(Debug, Default)]

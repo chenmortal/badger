@@ -20,6 +20,7 @@ use std::time::SystemTime;
 use std::{fs::OpenOptions, path::PathBuf};
 use std::{io, ptr};
 
+use crate::default::DEFAULT_PAGE_SIZE;
 use crate::sys::sync_dir;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -63,20 +64,20 @@ impl Drop for MmapFile {
         self.munmap();
     }
 }
-fn page_size() -> usize {
-    static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
+// fn page_size() -> usize {
+//     static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
 
-    match PAGE_SIZE.load(Ordering::Relaxed) {
-        0 => {
-            let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+//     match PAGE_SIZE.load(Ordering::Relaxed) {
+//         0 => {
+//             let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
 
-            PAGE_SIZE.store(page_size, Ordering::Relaxed);
+//             PAGE_SIZE.store(page_size, Ordering::Relaxed);
 
-            page_size
-        }
-        page_size => page_size,
-    }
-}
+//             page_size
+//         }
+//         page_size => page_size,
+//     }
+// }
 impl MmapFile {
     pub(crate) fn lock(&self) -> io::Result<()> {
         unsafe {
@@ -112,7 +113,7 @@ impl MmapFile {
     }
     #[inline]
     pub fn flush(&self, offset: usize, len: usize) -> io::Result<()> {
-        let alignment = (self.ptr as usize + offset) % page_size();
+        let alignment = (self.ptr as usize + offset) % DEFAULT_PAGE_SIZE.to_owned();
         let offset = offset as isize - alignment as isize;
         let len = len + alignment;
         let result =
@@ -125,7 +126,7 @@ impl MmapFile {
     }
 
     pub fn flush_async(&self, offset: usize, len: usize) -> io::Result<()> {
-        let alignment = (self.ptr as usize + offset) % page_size();
+        let alignment = (self.ptr as usize + offset) % DEFAULT_PAGE_SIZE.to_owned();
         let offset = offset as isize - alignment as isize;
         let len = len + alignment;
         let result =
@@ -237,7 +238,7 @@ pub(crate) fn open_mmap_file(
     file_path: &PathBuf,
     fp_open_opt: OpenOptions,
     read_only: bool,
-    max_file_size: u64,
+    max_file_size: usize,
 ) -> anyhow::Result<(MmapFile, bool)> {
     let fd = fp_open_opt
         .open(file_path)
@@ -248,7 +249,7 @@ pub(crate) fn open_mmap_file(
     let mut file_size = metadata.len();
     let mut is_new_file = false;
     if max_file_size > 0 && file_size == 0 {
-        fd.set_len(max_file_size).map_err(|e| {
+        fd.set_len(max_file_size as u64).map_err(|e| {
             anyhow!(
                 "cannot truncate {:?} to {} : {}",
                 file_path,
@@ -256,7 +257,7 @@ pub(crate) fn open_mmap_file(
                 e
             )
         })?;
-        file_size = max_file_size;
+        file_size = max_file_size as u64;
         is_new_file = true;
     }
 
@@ -305,18 +306,21 @@ pub(crate) fn open_mmap_file(
 #[tokio::test]
 // #[test]
 async fn test_a() {
-    let file_path = PathBuf::from("tt.txt");
-    let mut fp_open_opt = OpenOptions::new();
-    fp_open_opt.read(true).write(true).create(true);
-    let s = "hello world";
-    dbg!(s.len());
-    let (mut mmap, is_new) =
-        open_mmap_file(&file_path, fp_open_opt, false, (s.len() + 10) as u64).unwrap();
-    // mmap.munmap();
-    dbg!(is_new);
-    // mmap[]
 
-    mmap[0..s.len()].copy_from_slice(s.as_bytes());
-    mmap.munmap();
+    let p=unsafe{ libc::sysconf(libc::_SC_PAGESIZE) as usize};
+    dbg!(p);
+    // let file_path = PathBuf::from("tt.txt");
+    // let mut fp_open_opt = OpenOptions::new();
+    // fp_open_opt.read(true).write(true).create(true);
+    // let s = "hello world";
+    // dbg!(s.len());
+    // let (mut mmap, is_new) =
+    //     open_mmap_file(&file_path, fp_open_opt, false, (s.len() + 10) ).unwrap();
+    // // mmap.munmap();
+    // dbg!(is_new);
+    // // mmap[]
+
+    // mmap[0..s.len()].copy_from_slice(s.as_bytes());
+    // mmap.munmap();
     // mmap[0..s.len()].fill(0);
 }

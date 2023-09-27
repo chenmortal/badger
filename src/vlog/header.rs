@@ -3,6 +3,8 @@ use std::io::Read;
 use bytes::{Buf, BufMut};
 use integer_encoding::{VarInt, VarIntReader};
 
+use crate::txn::entry::Entry;
+
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct EntryHeader {
     key_len: u32,
@@ -11,7 +13,17 @@ pub(crate) struct EntryHeader {
     meta: u8,
     user_meta: u8,
 }
+pub(crate) const MAX_HEADER_SIZE: usize = 22;
 impl EntryHeader {
+    pub(crate) fn new(e: &Entry) -> Self {
+        Self {
+            key_len: e.key_ts().len() as u32,
+            value_len: e.value().len() as u32,
+            expires_at: e.expires_at(),
+            meta: e.meta(),
+            user_meta: e.user_meta(),
+        }
+    }
     // +------+----------+------------+--------------+-----------+
     // | Meta | UserMeta | Key Length | Value Length | ExpiresAt |
     // +------+----------+------------+--------------+-----------+

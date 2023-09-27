@@ -1,8 +1,9 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs::{read_dir, OpenOptions},
+    io::{LineWriter, BufWriter},
     sync::{
-        atomic::{AtomicI32, AtomicUsize, Ordering},
+        atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
 };
@@ -17,17 +18,21 @@ use crate::{
     default::VLOG_FILE_EXT,
     errors::err_file,
     key_registry::KeyRegistry,
+    kv::ValuePointer,
     lsm::wal::LogFile,
     options::Options,
+    txn::entry::DecEntry,
     util::{dir_join_id_suffix, parse_file_id},
     vlog::read::LogFileIter,
+    write::WriteReq,
 };
 
-use self::discard::DiscardStats;
+use self::{discard::DiscardStats, header::EntryHeader, threshold::VlogThreshold};
 
 pub(crate) mod discard;
 pub(crate) mod header;
 pub(crate) mod read;
+pub(crate) mod write;
 pub(crate) mod threshold;
 // size of vlog header.
 // +----------------+------------------+
@@ -41,6 +46,8 @@ pub(crate) const BIT_DISCARD_EARLIER_VERSIONS: u8 = 1 << 2;
 pub(crate) const BIT_MERGE_ENTRY: u8 = 1 << 3;
 pub(crate) const BIT_TXN: u8 = 1 << 6;
 pub(crate) const BIT_FIN_TXN: u8 = 1 << 7;
+
+pub(crate) const MAX_VLOG_FILE_SIZE: usize = u32::MAX as usize;
 #[derive(Debug, Error)]
 pub enum VlogError {
     #[error("Do truncate")]
@@ -50,7 +57,6 @@ pub enum VlogError {
 }
 #[derive(Debug)]
 pub(crate) struct ValueLog {
-    // dir_path: PathBuf,
     fid_logfile: RwLock<BTreeMap<u32, LogFile>>,
     max_fid: u32,
     files_to_be_deleted: Vec<u32>,
@@ -59,9 +65,11 @@ pub(crate) struct ValueLog {
     num_entries_written: u32,
     discard_stats: DiscardStats,
     opt: Arc<Options>,
+    threshold: VlogThreshold,
+    // threshold:
 }
 impl ValueLog {
-    pub(crate) fn new(opt: Arc<Options>) -> anyhow::Result<Self> {
+    pub(crate) fn new(opt: Arc<Options>, threshold: VlogThreshold) -> anyhow::Result<Self> {
         Ok(Self {
             fid_logfile: Default::default(),
             max_fid: Default::default(),
@@ -71,6 +79,7 @@ impl ValueLog {
             num_entries_written: Default::default(),
             discard_stats: discard::DiscardStats::new(opt.clone())?,
             opt,
+            threshold,
         })
     }
     pub(crate) async fn open(&mut self, key_registry: KeyRegistry) -> anyhow::Result<()> {
@@ -115,6 +124,7 @@ impl ValueLog {
             .map_err(|e| anyhow!("Error while creating log file in vlog.open for {}", e))?;
         Ok(())
     }
+
     async fn populate_files_map(&mut self, key_registry: KeyRegistry) -> anyhow::Result<()> {
         let dir = &self.opt.value_dir;
         let read_only = self.opt.read_only;
@@ -135,7 +145,7 @@ impl ValueLog {
                     &path,
                     read_only,
                     fp_open_opt.clone(),
-                    2 * self.opt.valuelog_file_size,
+                    2 * self.opt.vlog_file_size,
                     key_registry.clone(),
                 )
                 .await
@@ -165,7 +175,7 @@ impl ValueLog {
             &file_path,
             true,
             fp_open_opt,
-            2 * self.opt.valuelog_file_size,
+            2 * self.opt.vlog_file_size,
             key_registry,
         )
         .await?;
@@ -179,35 +189,10 @@ impl ValueLog {
         drop(fid_logfile_w);
         Ok(())
     }
-    async fn sorted_fids(&self) -> Vec<u32> {
-        let to_be_deleted = self
-            .files_to_be_deleted
-            .iter()
-            .map(|x| *x)
-            .collect::<HashSet<_>>();
-        let fid_logfile_r = self.fid_logfile.read().await;
-        let mut r = fid_logfile_r
-            .iter()
-            .filter_map(|(fid, _)| {
-                if !to_be_deleted.contains(fid) {
-                    Some(*fid)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        drop(fid_logfile_r);
-        r.sort();
-        r
-    }
+
+
+
+ 
 }
-#[test]
-fn test_map() {
-    let mut p = std::collections::BTreeMap::new();
-    p.insert(2, "b");
-    p.insert(3, "c");
-    p.insert(1, "d");
-    for ele in p.iter() {
-        dbg!(ele);
-    }
-}
+
+

@@ -103,7 +103,9 @@ impl DBInner {
         let imm = Vec::<MemTable>::with_capacity(opt.num_memtables);
         let (sender, receiver) = mpsc::channel::<MemTable>(opt.num_memtables);
         let p = mpsc::channel::<WriteReq>(KV_WRITES_ENTRIES_CHANNEL_CAPACITY);
-        let threshold = VlogThreshold::new(&opt);
+
+        // let mut closer = Closer::new();
+        // let threshold = VlogThreshold::new(&opt, closer.sem_clone());
 
         // let mut db = DB::default();
         let mut block_cache = None;
@@ -228,7 +230,7 @@ impl Options {
         if self.value_threshold > self.max_batch_size {
             bail!("Valuethreshold {} greater than max batch size of {}. Either reduce Valuethreshold or increase max_table_size",self.value_threshold,self.max_batch_size);
         }
-        if !(self.valuelog_file_size >= 1 << 20 && self.valuelog_file_size < 2 << 30) {
+        if !(self.vlog_file_size >= 1 << 20 && self.vlog_file_size < 2 << 30) {
             bail!(DBError::ValuelogSize);
         }
         if self.read_only {
