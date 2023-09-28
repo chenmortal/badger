@@ -100,7 +100,18 @@ impl LogFile {
     pub(crate) fn delete(&self) -> anyhow::Result<()> {
         self.mmap.delete()
     }
-    pub(crate) fn truncate(&self, end_offset: usize) {}
+    pub(crate) fn truncate(&mut self, end_offset: usize) -> anyhow::Result<()> {
+        let metadata =
+            self.mmap.file_handle.metadata().map_err(|e| {
+                anyhow!("cannot get metadata file:{:?} :{}", self.mmap.file_path, e)
+            })?;
+        let file_size = metadata.len() as usize;
+        if file_size == end_offset {
+            return Ok(());
+        }
+        self.set_size(end_offset);
+        self.mmap.truncate(end_offset)
+    }
     // bootstrap will initialize the log file with key id and baseIV.
     // The below figure shows the layout of log file.
     // +----------------+------------------+------------------+

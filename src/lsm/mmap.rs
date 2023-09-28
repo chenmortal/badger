@@ -33,7 +33,7 @@ pub(crate) struct MmapFile {
     ptr: *mut libc::c_void,
     len: usize,
     pub(crate) file_path: PathBuf,
-    file_handle: File,
+    pub(crate) file_handle: File,
 }
 impl Deref for MmapFile {
     type Target = [u8];
@@ -306,8 +306,7 @@ pub(crate) fn open_mmap_file(
 #[tokio::test]
 // #[test]
 async fn test_a() {
-
-    let p=unsafe{ libc::sysconf(libc::_SC_PAGESIZE) as usize};
+    let p = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
     dbg!(p);
     // let file_path = PathBuf::from("tt.txt");
     // let mut fp_open_opt = OpenOptions::new();

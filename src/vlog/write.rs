@@ -1,9 +1,4 @@
-use std::{
-    hash::Hasher,
-    io::{BufWriter, Write},
-    mem,
-    sync::atomic::Ordering,
-};
+use std::{hash::Hasher, io::Write, mem, sync::atomic::Ordering};
 
 use bytes::BufMut;
 
@@ -38,17 +33,19 @@ impl<T: Hasher> Write for HashWriter<'_, T> {
 impl ValueLog {
     async fn write(&mut self, reqs: &mut Vec<WriteReq>) -> anyhow::Result<()> {
         self.validate_write(reqs)?;
-        let fid_logfile_r = self.fid_logfile.read().await;
-        let log_file = fid_logfile_r.get(&self.max_fid);
-        debug_assert!(log_file.is_some());
-        let log_file = log_file.unwrap();
+        let cur_logfile = self.get_latest_logfile().await?;
+        
+        let mut cur_logfile_w = cur_logfile.write().await;
         let mut buf = Vec::with_capacity(DEFAULT_PAGE_SIZE.to_owned());
 
-        let write=||{
-            if buf.len()==0{
+        let write = || {
+            if buf.len() == 0 {
                 return;
             }
-
+            let buf_len = buf.len();
+            let start_offset = self.writable_log_offset_fetch_add(buf_len);
+            let end_offset=start_offset+buf_len;
+            // log_file.mmap[start_offset..end_offset].copy_from_slice(&buf);  
         };
         for req in reqs.iter_mut() {
             let entries_vptrs = req.entries_vptrs_mut();
@@ -64,18 +61,16 @@ impl ValueLog {
                     }
                     continue;
                 }
-                let fid = log_file.fid();
+                let fid = cur_logfile_w.fid();
                 let offset = self.writable_log_offset();
 
                 let tmp_meta = dec_entry.meta();
                 dec_entry.clean_meta_bit(BIT_TXN | BIT_FIN_TXN);
 
-                let len = log_file.encode_entry(&mut buf, &dec_entry, offset);
+                let len = cur_logfile_w.encode_entry(&mut buf, &dec_entry, offset);
 
                 dec_entry.set_meta(tmp_meta);
                 *vptr = ValuePointer::new(fid, len, offset);
-
-
             }
         }
         Ok(())
@@ -113,7 +108,7 @@ impl ValueLog {
         self.writable_log_offset.load(Ordering::SeqCst)
     }
     #[inline]
-    pub(crate) fn writable_log_offset_fetch_add(&self,size:usize)->usize{
+    pub(crate) fn writable_log_offset_fetch_add(&self, size: usize) -> usize {
         self.writable_log_offset.fetch_add(size, Ordering::SeqCst)
     }
 }
