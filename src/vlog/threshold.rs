@@ -22,7 +22,7 @@ pub(crate) struct VlogThresholdInner {
     value_threshold: AtomicUsize,
     vlog_metrics: Histogram,
     close_sem: Arc<Semaphore>,
-    sender: Sender<Vec<i64>>,
+    sender: Sender<Vec<usize>>,
     clear_notify: Arc<Notify>,
     default_threshold: usize,
     // receiver:Receiver<Vec<usize>>
@@ -31,7 +31,7 @@ impl VlogThresholdInner {
     pub(crate) fn new(
         opt: &Options,
         close_sem: Arc<Semaphore>,
-        sender: Sender<Vec<i64>>,
+        sender: Sender<Vec<usize>>,
         clear_notify: Arc<Notify>,
     ) -> Self {
         let max_bd = opt.max_value_threshold;
@@ -64,7 +64,7 @@ impl VlogThresholdInner {
         }
     }
 
-    pub(crate) fn sender(&self) -> Sender<Vec<i64>> {
+    pub(crate) fn sender(&self) -> Sender<Vec<usize>> {
         self.sender.clone()
     }
     pub(crate) fn clear(&self) {
@@ -75,7 +75,7 @@ impl VlogThresholdInner {
         self.value_threshold
             .load(std::sync::atomic::Ordering::SeqCst)
     }
-
+    
     pub(crate) fn set_value_threshold(&self, value_threshold: usize) {
         self.value_threshold
             .store(value_threshold, std::sync::atomic::Ordering::SeqCst);
@@ -90,7 +90,7 @@ impl Deref for VlogThreshold {
 }
 impl VlogThreshold {
     pub(crate) fn new(opt: &Arc<Options>, close_sem: Arc<Semaphore>) -> Self {
-        let (sender, receiver) = tokio::sync::mpsc::channel::<Vec<i64>>(1000);
+        let (sender, receiver) = tokio::sync::mpsc::channel::<Vec<usize>>(1000);
         let clear_notify = Arc::new(Notify::new());
         let clear_notified = clear_notify.clone();
         let vlog_threshold = VlogThreshold(Arc::new(VlogThresholdInner::new(
@@ -105,7 +105,7 @@ impl VlogThreshold {
     }
     pub(crate) async fn listen_for_value_threshold_update(
         self,
-        mut receiver: Receiver<Vec<i64>>,
+        mut receiver: Receiver<Vec<usize>>,
         clear_notified: Arc<Notify>,
     ) {
         loop {
@@ -115,7 +115,7 @@ impl VlogThreshold {
                 }
                 Some(v)=receiver.recv()=>{
                     for ele in v {
-                        self.vlog_metrics.update(ele);
+                        self.vlog_metrics.update(ele as i64);
                     }
                     let p = self.vlog_metrics.percentile(self.percentile) as usize;
                     if self.value_threshold() != p{

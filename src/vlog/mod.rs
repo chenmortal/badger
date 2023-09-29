@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     fs::{read_dir, OpenOptions},
     sync::{
-        atomic::{AtomicI32, AtomicUsize, Ordering},
+        atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering},
         Arc,
     },
 };
@@ -54,18 +54,23 @@ pub enum VlogError {
 #[derive(Debug)]
 pub(crate) struct ValueLog {
     fid_logfile: RwLock<BTreeMap<u32, Arc<RwLock<LogFile>>>>,
-    max_fid: u32,
+    max_fid: AtomicU32,
     files_to_be_deleted: Vec<u32>,
     num_active_iter: AtomicI32,
     writable_log_offset: AtomicUsize,
-    num_entries_written: u32,
+    num_entries_written: AtomicUsize,
     discard_stats: DiscardStats,
     opt: Arc<Options>,
     threshold: VlogThreshold,
     // threshold:
+    key_registry: KeyRegistry,
 }
 impl ValueLog {
-    pub(crate) fn new(opt: Arc<Options>, threshold: VlogThreshold) -> anyhow::Result<Self> {
+    pub(crate) fn new(
+        opt: Arc<Options>,
+        threshold: VlogThreshold,
+        key_registry: KeyRegistry,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             fid_logfile: Default::default(),
             max_fid: Default::default(),
@@ -76,10 +81,11 @@ impl ValueLog {
             discard_stats: discard::DiscardStats::new(opt.clone())?,
             opt,
             threshold,
+            key_registry,
         })
     }
-    pub(crate) async fn open(&mut self, key_registry: KeyRegistry) -> anyhow::Result<()> {
-        self.populate_files_map(key_registry.clone()).await?;
+    pub(crate) async fn open(&mut self) -> anyhow::Result<()> {
+        self.populate_files_map(self.key_registry.clone()).await?;
 
         let fid_logfile_r = self.fid_logfile.read().await;
         let fid_logfile_len = fid_logfile_r.len();
@@ -89,7 +95,7 @@ impl ValueLog {
             return Ok(());
         }
         if fid_logfile_len == 0 {
-            self.create_vlog_file(key_registry.clone())
+            self.create_vlog_file()
                 .await
                 .map_err(|e| anyhow!("Error while creating log file in vlog.open for {}", e))?;
         }
@@ -112,8 +118,8 @@ impl ValueLog {
         let file_len = last_log_file_iter.valid_end_offset();
         drop(last_log_file_iter);
         last_logfile_w.truncate(file_len)?;
-        
-        self.create_vlog_file(key_registry)
+
+        self.create_vlog_file()
             .await
             .map_err(|e| anyhow!("Error while creating log file in vlog.open for {}", e))?;
         Ok(())
@@ -153,14 +159,14 @@ impl ValueLog {
                     })?;
                 }
                 fid_logfile_w.insert(fid, Arc::new(RwLock::new(log_file)));
-                self.max_fid = self.max_fid.max(fid);
+                self.max_fid.fetch_max(fid, Ordering::SeqCst);
             };
         }
         drop(fid_logfile_w);
         Ok(())
     }
-    async fn create_vlog_file(&mut self, key_registry: KeyRegistry) -> anyhow::Result<()> {
-        let fid = self.max_fid + 1;
+    async fn create_vlog_file(&self) -> anyhow::Result<Arc<RwLock<LogFile>>> {
+        let fid = self.max_fid.fetch_add(1, Ordering::SeqCst) + 1;
         let file_path = dir_join_id_suffix(&self.opt.value_dir, fid, VLOG_FILE_EXT);
         let mut fp_open_opt = OpenOptions::new();
         fp_open_opt.read(true).write(true).create_new(true);
@@ -170,18 +176,19 @@ impl ValueLog {
             true,
             fp_open_opt,
             2 * self.opt.vlog_file_size,
-            key_registry,
+            self.key_registry.clone(),
         )
         .await?;
         let mut fid_logfile_w = self.fid_logfile.write().await;
-        fid_logfile_w.insert(fid, Arc::new(RwLock::new(log_file)));
-        debug_assert!(fid > self.max_fid);
-        self.max_fid = fid;
+        let new_logfile = Arc::new(RwLock::new(log_file));
+        fid_logfile_w.insert(fid, new_logfile.clone());
+        // debug_assert!(fid > self.max_fid);
+        // self.max_fid = fid;
         self.writable_log_offset
             .store(VLOG_HEADER_SIZE, Ordering::SeqCst);
-        self.num_entries_written = 0;
+        self.num_entries_written.store(0, Ordering::SeqCst);
         drop(fid_logfile_w);
-        Ok(())
+        Ok(new_logfile)
     }
     #[inline]
     pub(crate) async fn get_logfile(&self, fid: u32) -> Option<Arc<RwLock<LogFile>>> {
@@ -197,7 +204,7 @@ impl ValueLog {
     #[inline]
     pub(crate) async fn get_latest_logfile(&self) -> anyhow::Result<Arc<RwLock<LogFile>>> {
         let p = self.fid_logfile.read().await;
-        let r = if let Some(s) = p.get(&self.max_fid) {
+        let r = if let Some(s) = p.get(&self.max_fid.load(Ordering::SeqCst)) {
             s.clone()
         } else {
             bail!("Failed to get latest_logfile");

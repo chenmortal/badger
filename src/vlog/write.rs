@@ -6,6 +6,7 @@ use crate::{
     default::DEFAULT_PAGE_SIZE,
     kv::ValuePointer,
     lsm::wal::LogFile,
+    metrics::{add_num_bytes_vlog_written, add_num_writes_vlog},
     txn::{entry::DecEntry, TxnTs},
     vlog::{BIT_FIN_TXN, BIT_TXN},
     write::WriteReq,
@@ -31,26 +32,21 @@ impl<T: Hasher> Write for HashWriter<'_, T> {
 }
 
 impl ValueLog {
-    async fn write(&mut self, reqs: &mut Vec<WriteReq>) -> anyhow::Result<()> {
+    pub(crate) async fn write(&self, reqs: &mut Vec<WriteReq>) -> anyhow::Result<()> {
         self.validate_write(reqs)?;
-        let cur_logfile = self.get_latest_logfile().await?;
-        
-        let mut cur_logfile_w = cur_logfile.write().await;
+
         let mut buf = Vec::with_capacity(DEFAULT_PAGE_SIZE.to_owned());
 
-        let write = || {
-            if buf.len() == 0 {
-                return;
-            }
-            let buf_len = buf.len();
-            let start_offset = self.writable_log_offset_fetch_add(buf_len);
-            let end_offset=start_offset+buf_len;
-            // log_file.mmap[start_offset..end_offset].copy_from_slice(&buf);  
-        };
+        let sender = self.threshold.sender();
+        let mut cur_logfile = self.get_latest_logfile().await?;
+      
         for req in reqs.iter_mut() {
+            
+            let mut cur_logfile_w = cur_logfile.write().await;
             let entries_vptrs = req.entries_vptrs_mut();
             let mut value_sizes = Vec::with_capacity(entries_vptrs.len());
-
+            let mut written = 0;
+            let mut bytes_written = 0;
             for (dec_entry, vptr) in entries_vptrs {
                 buf.clear();
                 value_sizes.push(dec_entry.value().len());
@@ -71,8 +67,48 @@ impl ValueLog {
 
                 dec_entry.set_meta(tmp_meta);
                 *vptr = ValuePointer::new(fid, len, offset);
+
+                if buf.len() != 0 {
+                    let buf_len = buf.len();
+                    let start_offset = self.writable_log_offset_fetch_add(buf_len);
+                    let end_offset = start_offset + buf_len;
+                    if end_offset >= cur_logfile_w.mmap.len() {
+                        cur_logfile_w.truncate(end_offset)?;
+                    };
+                    cur_logfile_w.mmap[start_offset..end_offset].copy_from_slice(&buf);
+                }
+                written += 1;
+                bytes_written += buf.len();
             }
+            add_num_writes_vlog(written);
+            add_num_bytes_vlog_written(bytes_written);
+            self.num_entries_written.fetch_add(written, Ordering::SeqCst);
+            sender.send(value_sizes).await?;
+            let w_offset = self.writable_log_offset();
+            if w_offset > self.opt.vlog_file_size
+                || self.num_entries_written.load(Ordering::SeqCst) > self.opt.vlog_max_entries
+            {
+                if self.opt.sync_writes {
+                    cur_logfile_w.mmap.sync()?;
+                }
+                cur_logfile_w.truncate(w_offset)?;
+                let new = self.create_vlog_file().await?; //new logfile will be latest logfile
+                drop(cur_logfile_w);
+                cur_logfile=new;
+            };
         }
+        //wait for async closure trait
+        let mut cur_logfile_w = cur_logfile.write().await;
+        let w_offset = self.writable_log_offset();
+        if w_offset > self.opt.vlog_file_size
+            || self.num_entries_written.load(Ordering::SeqCst) > self.opt.vlog_max_entries
+        {
+            if self.opt.sync_writes {
+                cur_logfile_w.mmap.sync()?;
+            }
+            cur_logfile_w.truncate(w_offset)?;
+            let _ = self.create_vlog_file().await?; //new logfile will be latest logfile
+        };
         Ok(())
     }
     fn validate_write(&self, reqs: &Vec<WriteReq>) -> anyhow::Result<()> {
