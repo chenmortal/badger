@@ -6,11 +6,11 @@ use std::sync::{
 use log::{debug, error};
 use tokio::{
     select,
-    sync::{mpsc::Receiver, Notify, Semaphore},
+    sync::{mpsc::Receiver, oneshot, Notify, Semaphore},
 };
 
 use crate::{
-    db::DB,
+    db::{DB, DBInner},
     default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
     errors::DBError,
     kv::ValuePointer,
@@ -20,18 +20,22 @@ use crate::{
 use anyhow::bail;
 pub(crate) struct WriteReq {
     entries_vptrs: Vec<(DecEntry, ValuePointer)>,
-    notify: Arc<Notify>,
+    // notify: Arc<Notify>,
+    send_result: oneshot::Sender<anyhow::Result<()>>,
 }
 
 impl WriteReq {
-    pub(crate) fn new(mut entries: Vec<DecEntry>, notify: Arc<Notify>) -> Self {
+    pub(crate) fn new(
+        mut entries: Vec<DecEntry>,
+        send_result: oneshot::Sender<anyhow::Result<()>>,
+    ) -> Self {
         let p = entries
             .drain(..)
             .map(|x| (x, ValuePointer::default()))
             .collect::<Vec<_>>();
         Self {
             entries_vptrs: p,
-            notify,
+            send_result,
         }
     }
 
@@ -49,18 +53,17 @@ impl DB {
         &self,
         entries: Vec<DecEntry>,
         entries_size: usize,
-    ) -> anyhow::Result<Arc<Notify>> {
+    ) -> anyhow::Result<oneshot::Receiver<anyhow::Result<()>>> {
         if self.block_writes.load(Ordering::SeqCst) == 1 {
             bail!(DBError::BlockedWrites)
         };
         let entires_len = entries.len();
         add_num_bytes_written_user(entries_size);
-        let notify = Arc::new(Notify::new());
-        let notify_clone = notify.clone();
-        let w_req = WriteReq::new(entries, notify);
+        let (send_result, receiver) = oneshot::channel::<anyhow::Result<()>>();
+        let w_req = WriteReq::new(entries, send_result);
         self.send_write_req.send(w_req).await?;
         add_num_puts(entires_len);
-        Ok(notify_clone)
+        Ok(receiver)
     }
     #[inline]
     pub(crate) async fn do_writes(
@@ -110,12 +113,15 @@ impl DB {
             }
         }
     }
-    async fn write_requests(&self, reqs: Vec<WriteReq>) -> anyhow::Result<()> {
+    
+}
+impl DBInner {
+    async fn write_requests(&mut self, mut reqs: Vec<WriteReq>) -> anyhow::Result<()> {
         if reqs.len() == 0 {
             return Ok(());
         }
         debug!("write_requests called. Writing to value log");
-
+        self.vlog.write(&mut reqs);
         Ok(())
     }
 }

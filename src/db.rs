@@ -26,7 +26,7 @@ use crate::{
     table::block::{self, Block},
     txn::oracle::Oracle,
     util::Closer,
-    vlog::{discard, threshold::VlogThreshold},
+    vlog::{discard, threshold::VlogThreshold, ValueLog},
     write::WriteReq,
 };
 use anyhow::anyhow;
@@ -78,7 +78,7 @@ pub struct DBInner {
     pub(crate) level_controller: Option<LevelsController>,
     pub(crate) oracle: Arc<Oracle>,
     pub(crate) send_write_req: Sender<WriteReq>,
-
+    pub(crate) vlog:ValueLog,
     banned_namespaces: RwLock<HashSet<u64>>,
     is_closed: AtomicBool,
     pub(crate) block_writes: AtomicU32,
