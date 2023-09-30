@@ -1,12 +1,18 @@
+use std::fs::{create_dir_all, set_permissions, Permissions};
+use std::os::unix::prelude::PermissionsExt;
 use std::{path::PathBuf, time::Duration};
 
-use log::LevelFilter;
-
+use crate::errors::DBError;
+use crate::skl::skip_list::SKL_MAX_NODE_SIZE;
 use crate::{
     default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD},
     table::ChecksumVerificationMode,
 };
-#[derive(Debug, Clone, Copy,PartialEq, PartialOrd)]
+use anyhow::anyhow;
+use anyhow::bail;
+use log::LevelFilter;
+use once_cell::sync::OnceCell;
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum CompressionType {
     None = 0,
     Snappy = 1,
@@ -26,91 +32,92 @@ impl From<u32> for CompressionType {
         }
     }
 }
+// static OPT:Options=Options::default();
 // const MAX_VALUE_THRESHOLD: i64 = 1 << 20;
 #[derive(Debug, Clone)]
 pub struct Options {
     // Required options.
-    pub(crate) dir: PathBuf,
-    pub(crate) value_dir: PathBuf,
+    dir: PathBuf,
+    value_dir: PathBuf,
 
     // Usually modified options.
-    pub(crate) sync_writes: bool,
+    sync_writes: bool,
     num_versions_to_keep: isize,
-    pub(crate) read_only: bool,
-    pub(crate) log_level: LevelFilter,
-    pub(crate) compression: CompressionType,
+    read_only: bool,
+    log_level: LevelFilter,
+    compression: CompressionType,
     // pub(crate) in_memory: bool,
-    pub(crate) metrics_enabled: bool,
+    metrics_enabled: bool,
     // Sets the Stream.numGo field
     num_goroutines: usize,
 
     // Fine tuning options.
-    pub(crate) memtable_size: usize,
-    pub(crate) base_table_size: usize,
-    pub(crate) base_level_size: usize,
-    pub(crate) level_size_multiplier: usize,
-    pub(crate) table_size_multiplier: usize,
-    pub(crate) max_levels: usize,
+    memtable_size: usize,
+    base_table_size: usize,
+    base_level_size: usize,
+    level_size_multiplier: usize,
+    table_size_multiplier: usize,
+    max_levels: usize,
 
-    pub(crate) vlog_percentile: f64,
-    pub(crate) value_threshold: usize,
-    pub(crate) num_memtables: usize,
+    vlog_percentile: f64,
+    value_threshold: usize,
+    num_memtables: usize,
     // Changing BlockSize across DB runs will not break badger. The block size is
     // read from the block index stored at the end of the table.
-    pub(crate) block_size: usize,
-    pub(crate) bloom_false_positive: f64,
-    pub(crate) block_cache_size: usize,
-    pub(crate) index_cache_size: i64,
+    block_size: usize,
+    bloom_false_positive: f64,
+    block_cache_size: usize,
+    index_cache_size: i64,
 
-    pub(crate) num_level_zero_tables: usize,
-    pub(crate) num_level_zero_tables_stall: usize,
+    num_level_zero_tables: usize,
+    num_level_zero_tables_stall: usize,
 
-    pub(crate) vlog_file_size: usize,
-    pub(crate) vlog_max_entries: usize,
+    vlog_file_size: usize,
+    vlog_max_entries: usize,
 
-    pub(crate) num_compactors: usize,
-    pub(crate) compactl0_on_close: bool,
-    pub(crate) lmax_compaction: bool,
-    pub(crate) zstd_compression_level: isize,
+    num_compactors: usize,
+    compactl0_on_close: bool,
+    lmax_compaction: bool,
+    zstd_compression_level: isize,
 
     // When set, checksum will be validated for each entry read from the value log file.
     verify_value_checksum: bool,
 
     // Encryption related options.
-    pub(crate) encryption_key: Vec<u8>, // encryption key
-    pub(crate) encryption_key_rotation_duration: Duration, // key rotation duration
+    encryption_key: Vec<u8>,                    // encryption key
+    encryption_key_rotation_duration: Duration, // key rotation duration
 
     // BypassLockGuard will bypass the lock guard on badger. Bypassing lock
     // guard can cause data corruption if multiple badger instances are using
     // the same directory. Use this options with caution.
-    pub(crate) bypass_lock_guard: bool,
+    bypass_lock_guard: bool,
 
     // ChecksumVerificationMode decides when db should verify checksums for SSTable blocks.
-    pub(crate) checksum_verification_mode: ChecksumVerificationMode,
+    checksum_verification_mode: ChecksumVerificationMode,
 
     // DetectConflicts determines whether the transactions would be checked for
     // conflicts. The transactions can be processed at a higher rate when
     // conflict detection is disabled.
-    pub(crate) detect_conflicts: bool,
+    detect_conflicts: bool,
 
     // NamespaceOffset specifies the offset from where the next 8 bytes contains the namespace.
-    pub(crate) name_space_offset: Option<usize>,
+    name_space_offset: Option<usize>,
 
     // Magic version used by the application using badger to ensure that it doesn't open the DB
     // with incompatible data format.
-    pub(crate) external_magic_version: u16,
+    external_magic_version: u16,
 
     // Transaction start and commit timestamps are managed by end-user.
     // This is only useful for databases built on top of Badger (like Dgraph).
     // Not recommended for most users.
-    pub(crate) managed_txns: bool,
+    managed_txns: bool,
 
     // 4. Flags for testing purposes
     // ------------------------------
-    pub(crate) max_batch_count: usize, // max entries in batch
-    pub(crate) max_batch_size: usize,  // max batch size in bytes
+    max_batch_count: usize, // max entries in batch
+    max_batch_size: usize,  // max batch size in bytes
 
-    pub(crate) max_value_threshold: f64,
+    max_value_threshold: f64,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -318,9 +325,244 @@ impl Options {
     pub fn set_checksum_verification_mode(
         mut self,
         checksum_verification_mode: ChecksumVerificationMode,
-    ) ->Self{
+    ) -> Self {
         self.checksum_verification_mode = checksum_verification_mode;
         self
     }
+
+    pub fn set_table_size_multiplier(mut self, table_size_multiplier: usize) ->Self{
+        self.table_size_multiplier = table_size_multiplier;
+        self
+    }
+
+    
 }
-impl Options {}
+static OPT: OnceCell<Options> = once_cell::sync::OnceCell::new();
+impl Options {
+    pub(crate) fn check_set_options(&mut self) -> anyhow::Result<()> {
+        if self.num_compactors == 1 {
+            bail!("Cannot have 1 compactor. Need at least 2");
+        }
+        // if self.in_memory && (self.dir != PathBuf::from("") || self.value_dir != PathBuf::from(""))
+        // {
+        //     bail!("Cannot use badger in Disk-less mode with Dir or ValueDir set");
+        // }
+
+        log::set_max_level(self.log_level);
+        self.max_batch_size = (15 * self.memtable_size) / 100;
+        self.max_batch_count = self.max_batch_size / (SKL_MAX_NODE_SIZE);
+        self.max_value_threshold = MAX_VALUE_THRESHOLD.min(self.max_batch_size) as f64;
+        if self.vlog_percentile < 0.0 || self.vlog_percentile > 1.0 {
+            bail!("vlog_percentile must be within range of 0.0-1.0")
+        }
+        if self.value_threshold > MAX_VALUE_THRESHOLD {
+            bail!(
+                "Invalid ValueThreshold, must be less or equal to {}",
+                MAX_VALUE_THRESHOLD
+            );
+        }
+        if self.value_threshold > self.max_batch_size {
+            bail!("Valuethreshold {} greater than max batch size of {}. Either reduce Valuethreshold or increase max_table_size",self.value_threshold,self.max_batch_size);
+        }
+        if !(self.vlog_file_size >= 1 << 20 && self.vlog_file_size < 2 << 30) {
+            bail!(DBError::ValuelogSize);
+        }
+        if self.read_only {
+            self.compactl0_on_close = false;
+        }
+        match self.compression {
+            _ => {}
+        }
+        let need_cache = match self.compression {
+            crate::options::CompressionType::None => true,
+            _ => false,
+        };
+        if need_cache && self.block_cache_size == 0 {
+            panic!("Block_Cache_Size should be set since compression are enabled")
+        }
+        Ok(())
+    }
+    fn create_dirs(&self) -> anyhow::Result<()> {
+        for path in [&self.dir, &self.value_dir] {
+            if !path
+                .try_exists()
+                .map_err(|e| anyhow!("Invalid Dir : {}", e))?
+            {
+                if self.read_only {
+                    bail!("Cannot find directory {:?} for read-only open", path)
+                }
+                create_dir_all(path)
+                    .map_err(|e| anyhow!("Error Creating Dir: {:?} : {}", path, e))?;
+                set_permissions(path, Permissions::from_mode(0o700))
+                    .map_err(|e| anyhow!("Error Set Permissions 0o700: {:?} : {}", path, e))?;
+            };
+        }
+
+        Ok(())
+    }
+    pub(super) fn init(mut self) -> anyhow::Result<()> {
+        self.check_set_options()?;
+        self.create_dirs()?;
+        match OPT.set(self) {
+            Ok(_) => {}
+            Err(e) => {
+                panic!("cannot set static OPT with {:?}", e);
+            }
+        };
+        Ok(())
+    }
+    fn get_static() -> &'static Self {
+        unsafe { OPT.get_unchecked() }
+    }
+
+    pub(crate) fn dir() -> &'static PathBuf {
+        &Self::get_static().dir
+    }
+
+    pub(crate) fn value_dir() -> &'static PathBuf {
+        &Self::get_static().value_dir
+    }
+
+    pub(crate) fn sync_writes() -> bool {
+        Self::get_static().sync_writes
+    }
+
+    pub(crate) fn read_only() -> bool {
+        Self::get_static().read_only
+    }
+
+    pub(crate) fn log_level() -> LevelFilter {
+        Self::get_static().log_level
+    }
+
+    pub(crate) fn compression() -> CompressionType {
+        Self::get_static().compression
+    }
+
+    pub(crate) fn metrics_enabled() -> bool {
+        Self::get_static().metrics_enabled
+    }
+
+    pub(crate) fn memtable_size() -> usize {
+        Self::get_static().memtable_size
+    }
+
+    pub(crate) fn base_table_size() -> usize {
+        Self::get_static().base_table_size
+    }
+
+    pub(crate) fn base_level_size() -> usize {
+        Self::get_static().base_level_size
+    }
+
+    pub(crate) fn level_size_multiplier() -> usize {
+        Self::get_static().level_size_multiplier
+    }
+
+    pub(crate) fn max_levels() -> usize {
+        Self::get_static().max_levels
+    }
+
+    pub(crate) fn vlog_percentile() -> f64 {
+        Self::get_static().vlog_percentile
+    }
+
+    pub(crate) fn value_threshold() -> usize {
+        Self::get_static().value_threshold
+    }
+
+    pub(crate) fn num_memtables() -> usize {
+        Self::get_static().num_memtables
+    }
+
+    pub(crate) fn block_size() -> usize {
+        Self::get_static().block_size
+    }
+
+    pub(crate) fn bloom_false_positive() -> f64 {
+        Self::get_static().bloom_false_positive
+    }
+
+    pub(crate) fn block_cache_size() -> usize {
+        Self::get_static().block_cache_size
+    }
+
+    pub(crate) fn index_cache_size() -> i64 {
+        Self::get_static().index_cache_size
+    }
+
+    pub(crate) fn num_level_zero_tables() -> usize {
+        Self::get_static().num_level_zero_tables
+    }
+
+    pub(crate) fn num_level_zero_tables_stall() -> usize {
+        Self::get_static().num_level_zero_tables_stall
+    }
+
+    pub(crate) fn vlog_file_size() -> usize {
+        Self::get_static().vlog_file_size
+    }
+
+    pub(crate) fn vlog_max_entries() -> usize {
+        Self::get_static().vlog_max_entries
+    }
+
+    pub(crate) fn num_compactors() -> usize {
+        Self::get_static().num_compactors
+    }
+
+    pub(crate) fn compactl0_on_close() -> bool {
+        Self::get_static().compactl0_on_close
+    }
+
+    pub(crate) fn zstd_compression_level() -> isize {
+        Self::get_static().zstd_compression_level
+    }
+
+    pub(crate) fn encryption_key() -> &'static [u8] {
+        Self::get_static().encryption_key.as_ref()
+    }
+
+    pub(crate) fn encryption_key_rotation_duration() -> Duration {
+        Self::get_static().encryption_key_rotation_duration
+    }
+
+    pub(crate) fn bypass_lock_guard() -> bool {
+        Self::get_static().bypass_lock_guard
+    }
+
+    pub(crate) fn checksum_verification_mode() -> ChecksumVerificationMode {
+        Self::get_static().checksum_verification_mode
+    }
+
+    pub(crate) fn detect_conflicts() -> bool {
+        Self::get_static().detect_conflicts
+    }
+
+    pub(crate) fn name_space_offset() -> Option<usize> {
+        Self::get_static().name_space_offset
+    }
+
+    pub(crate) fn external_magic_version() -> u16 {
+        Self::get_static().external_magic_version
+    }
+
+    pub(crate) fn managed_txns() -> bool {
+        Self::get_static().managed_txns
+    }
+
+    pub(crate) fn max_batch_count() -> usize {
+        Self::get_static().max_batch_count
+    }
+
+    pub(crate) fn max_batch_size() -> usize {
+        Self::get_static().max_batch_size
+    }
+
+    pub(crate) fn max_value_threshold() -> f64 {
+        Self::get_static().max_value_threshold
+    }
+    pub(crate) fn table_size_multiplier() -> usize {
+        Self::get_static().table_size_multiplier
+    }
+}

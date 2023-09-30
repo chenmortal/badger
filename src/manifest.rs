@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{rename, File, OpenOptions},
     io::{BufReader, Read, Seek, SeekFrom, Write},
-    path::PathBuf,
     sync::Arc,
 };
 
@@ -38,36 +37,31 @@ pub(crate) struct TableManifest {
 #[derive(Debug)]
 pub(crate) struct ManifestFile {
     file_handle: File,
-    dir: PathBuf,
-    external_magic: u16,
     pub(crate) manifest: Arc<Mutex<Manifest>>,
-    // in_memory:bool
 }
-pub(crate) fn open_create_manifestfile(opt: &Options) -> anyhow::Result<ManifestFile> {
-    let path = opt.dir.clone().join(MANIFEST_FILE_NAME);
+pub(crate) fn open_create_manifestfile() -> anyhow::Result<ManifestFile> {
+    let path = Options::dir().join(MANIFEST_FILE_NAME);
     match OpenOptions::new()
         .read(true)
-        .write(!opt.read_only)
+        .write(!Options::read_only())
         .open(&path)
     {
         Ok(mut file_handle) => {
             let (manifest, trunc_offset) =
-                replay_manifest_file(&file_handle, opt.external_magic_version)?;
-            if !opt.read_only {
+                replay_manifest_file(&file_handle, Options::external_magic_version())?;
+            if !Options::read_only() {
                 file_handle.set_len(trunc_offset)?;
             }
             file_handle.seek(SeekFrom::End(0))?;
             let manifest_file = ManifestFile {
                 file_handle,
-                dir: opt.dir.clone(),
-                external_magic: opt.external_magic_version,
                 manifest: Arc::new(Mutex::new(manifest)),
             };
             Ok(manifest_file)
         }
         Err(e) => match e.kind() {
             std::io::ErrorKind::NotFound => {
-                if opt.read_only {
+                if Options::read_only() {
                     bail!(err_file(
                         e,
                         &path,
@@ -75,13 +69,10 @@ pub(crate) fn open_create_manifestfile(opt: &Options) -> anyhow::Result<Manifest
                     ));
                 }
                 let manifest = Manifest::default();
-                let (file_handle, net_creations) =
-                    help_rewrite(&opt.dir, &manifest, opt.external_magic_version)?;
+                let (file_handle, net_creations) = help_rewrite(&manifest)?;
                 assert_eq!(net_creations, 0);
                 let manifest_file = ManifestFile {
                     file_handle,
-                    dir: opt.dir.clone(),
-                    external_magic: opt.external_magic_version,
                     manifest: Arc::new(Mutex::new(manifest)),
                 };
                 Ok(manifest_file)
@@ -92,12 +83,8 @@ pub(crate) fn open_create_manifestfile(opt: &Options) -> anyhow::Result<Manifest
 }
 const BADGER_MAGIC_VERSION: u16 = 8;
 const MAGIC_TEXT: &[u8; 4] = b"Bdgr";
-fn help_rewrite(
-    dir: &PathBuf,
-    manifest: &Manifest,
-    ext_magic: u16,
-) -> anyhow::Result<(File, usize)> {
-    let rewrite_path = dir.join(MANIFEST_REWRITE_FILE_NAME);
+fn help_rewrite(manifest: &Manifest) -> anyhow::Result<(File, usize)> {
+    let rewrite_path = Options::dir().join(MANIFEST_REWRITE_FILE_NAME);
     let mut fp = OpenOptions::new()
         .read(true)
         .write(true)
@@ -112,7 +99,7 @@ fn help_rewrite(
 
     let mut buf = Vec::with_capacity(8);
     buf.put(&MAGIC_TEXT[..]);
-    buf.put_u16(ext_magic);
+    buf.put_u16(Options::external_magic_version());
     buf.put_u16(BADGER_MAGIC_VERSION);
 
     let net_creations = manifest.tables.len();
@@ -130,14 +117,14 @@ fn help_rewrite(
     fp.sync_all()?;
     drop(fp);
 
-    let manifest_path = dir.join(MANIFEST_FILE_NAME);
+    let manifest_path = Options::dir().join(MANIFEST_FILE_NAME);
     rename(rewrite_path, &manifest_path)?;
     let mut fp = OpenOptions::new()
         .read(true)
         .write(true)
         .open(manifest_path)?;
     fp.seek(SeekFrom::End(0))?;
-    sync_dir(dir)?;
+    sync_dir(Options::dir())?;
     Ok((fp, net_creations))
 }
 fn replay_manifest_file(fp: &File, ext_magic: u16) -> anyhow::Result<(Manifest, u64)> {
@@ -151,9 +138,7 @@ fn replay_manifest_file(fp: &File, ext_magic: u16) -> anyhow::Result<(Manifest, 
         bail!("manifest has bad magic");
     }
 
-    // let ext_version = to_u16(&magic_buf[4..6]);
     let ext_version = magic_buf.as_ref().get_u16();
-    // let version = to_u16(&magic_buf[6..8]);
     let version = magic_buf.as_ref().get_u16();
     if version != BADGER_MAGIC_VERSION {
         bail!(
@@ -222,7 +207,6 @@ impl Manifest {
         }
 
         changes
-        // ManifestChange::default();
     }
     fn apply_change_set(&mut self, change_set: &ManifestChangeSet) -> anyhow::Result<()> {
         for change in change_set.changes.iter() {
@@ -262,4 +246,3 @@ impl Manifest {
         Ok(())
     }
 }
-

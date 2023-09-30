@@ -136,7 +136,6 @@ pub(crate) struct TableOption {
 impl TableOption {
     pub(crate) async fn new(
         key_registry: &KeyRegistry,
-        opt: &Arc<Options>,
         block_cache: &Option<BlockCache>,
         index_cache: &Option<IndexCache>,
     ) -> Self {
@@ -144,16 +143,16 @@ impl TableOption {
         let data_key = registry_w.latest_datakey().await.unwrap();
         drop(registry_w);
         Self {
-            read_only: opt.read_only,
-            metrics_enabled: opt.metrics_enabled,
-            table_size: opt.base_table_size as u64,
+            read_only: Options::read_only(),
+            metrics_enabled: Options::metrics_enabled(),
+            table_size: Options::base_table_size() as u64,
             table_capacity: Default::default(),
-            chk_mode: opt.checksum_verification_mode,
-            bloom_false_positive: opt.bloom_false_positive,
-            block_size: opt.block_size,
+            chk_mode: Options::checksum_verification_mode(),
+            bloom_false_positive: Options::bloom_false_positive(),
+            block_size: Options::block_size(),
             datakey: data_key,
-            compression: opt.compression,
-            zstd_compression_level: opt.zstd_compression_level,
+            compression: Options::compression(),
+            zstd_compression_level: Options::zstd_compression_level(),
             block_cache: block_cache.clone(),
             index_cache: index_cache.clone(),
         }

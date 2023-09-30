@@ -1,7 +1,4 @@
-use std::{
-    fs::{read_dir, OpenOptions},
-    sync::Arc,
-};
+use std::fs::{read_dir, OpenOptions};
 
 use crate::{
     db::NextId,
@@ -21,19 +18,16 @@ use super::wal::LogFile;
 pub(crate) struct MemTable {
     skip_list: SkipList,
     wal: LogFile,
-    opt: Arc<Options>,
     max_version: usize,
     buf: BytesMut,
 }
 
 pub(crate) async fn open_mem_tables(
-    opt: &Arc<Options>,
     key_registry: &KeyRegistry,
     next_mem_fid: &NextId,
 ) -> Result<()> {
-    // let opt = &opt;
-    let dir =
-        read_dir(&opt.dir).map_err(|err| err_file(err, &opt.dir, "Unable to open mem dir"))?;
+    let dir = read_dir(Options::dir())
+        .map_err(|err| err_file(err, Options::dir(), "Unable to open mem dir"))?;
 
     let mut mem_file_fids = dir
         .filter_map(|ele| ele.ok())
@@ -43,8 +37,8 @@ pub(crate) async fn open_mem_tables(
     mem_file_fids.sort();
     for fid in &mem_file_fids {
         let mut fp_open_opt = OpenOptions::new();
-        fp_open_opt.read(true).write(!opt.read_only);
-        open_mem_table(opt, key_registry, *fid as u32, fp_open_opt).await;
+        fp_open_opt.read(true).write(!Options::read_only());
+        open_mem_table(key_registry, *fid as u32, fp_open_opt).await;
     }
     if mem_file_fids.len() != 0 {
         next_mem_fid.store(*mem_file_fids.last().unwrap() as u32);
@@ -54,21 +48,20 @@ pub(crate) async fn open_mem_tables(
 }
 
 async fn open_mem_table(
-    opt: &Arc<Options>,
     key_registry: &KeyRegistry,
     mem_file_fid: u32,
     fp_open_opt: OpenOptions,
 ) -> anyhow::Result<(MemTable, bool)> {
-    let mem_file_path = dir_join_id_suffix(&opt.dir, mem_file_fid, MEM_FILE_EXT);
+    let mem_file_path = dir_join_id_suffix(Options::dir(), mem_file_fid, MEM_FILE_EXT);
 
-    let skip_list = SkipList::new(opt.arena_size());
+    let skip_list = SkipList::new(Options::arena_size());
 
     let (log_file, is_new) = LogFile::open(
         mem_file_fid,
         &mem_file_path,
-        opt.read_only,
+        Options::read_only(),
         fp_open_opt,
-        2 * opt.memtable_size ,
+        2 * Options::memtable_size(),
         key_registry.clone(),
     )
     .await
@@ -77,7 +70,6 @@ async fn open_mem_table(
     let mem_table = MemTable {
         skip_list,
         wal: log_file,
-        opt: opt.clone(),
         max_version: 0,
         buf: BytesMut::new(),
     };
@@ -89,14 +81,13 @@ async fn open_mem_table(
 }
 
 pub(crate) async fn new_mem_table(
-    opt: &Arc<Options>,
     key_registry: &KeyRegistry,
     next_mem_fid: &NextId,
 ) -> anyhow::Result<MemTable> {
     let mut open_opt = OpenOptions::new();
     open_opt.read(true).write(true).create(true);
     let mem_file_fid = next_mem_fid.get_next_id();
-    let (memtable, is_new) = open_mem_table(opt, key_registry, mem_file_fid, open_opt)
+    let (memtable, is_new) = open_mem_table(key_registry, mem_file_fid, open_opt)
         .await
         .map_err(|e| anyhow!("Gor error: {} for id {}", e, mem_file_fid))?;
     if !is_new {
@@ -106,7 +97,9 @@ pub(crate) async fn new_mem_table(
 }
 
 impl Options {
-    fn arena_size(&self) -> usize {
-        self.memtable_size + self.max_batch_size + self.max_batch_count * (SKL_MAX_NODE_SIZE)
+    fn arena_size() -> usize {
+        Options::memtable_size()
+            + Options::max_batch_size()
+            + Options::max_batch_count() * (SKL_MAX_NODE_SIZE)
     }
 }

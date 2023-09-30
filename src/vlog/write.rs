@@ -7,6 +7,7 @@ use crate::{
     kv::ValuePointer,
     lsm::wal::LogFile,
     metrics::{add_num_bytes_vlog_written, add_num_writes_vlog},
+    options::Options,
     txn::{entry::DecEntry, TxnTs},
     vlog::{BIT_FIN_TXN, BIT_TXN},
     write::WriteReq,
@@ -39,9 +40,8 @@ impl ValueLog {
 
         let sender = self.threshold.sender();
         let mut cur_logfile = self.get_latest_logfile().await?;
-      
+
         for req in reqs.iter_mut() {
-            
             let mut cur_logfile_w = cur_logfile.write().await;
             let entries_vptrs = req.entries_vptrs_mut();
             let mut value_sizes = Vec::with_capacity(entries_vptrs.len());
@@ -82,28 +82,29 @@ impl ValueLog {
             }
             add_num_writes_vlog(written);
             add_num_bytes_vlog_written(bytes_written);
-            self.num_entries_written.fetch_add(written, Ordering::SeqCst);
+            self.num_entries_written
+                .fetch_add(written, Ordering::SeqCst);
             sender.send(value_sizes).await?;
             let w_offset = self.writable_log_offset();
-            if w_offset > self.opt.vlog_file_size
-                || self.num_entries_written.load(Ordering::SeqCst) > self.opt.vlog_max_entries
+            if w_offset > Options::vlog_file_size()
+                || self.num_entries_written.load(Ordering::SeqCst) > Options::vlog_max_entries()
             {
-                if self.opt.sync_writes {
+                if Options::sync_writes() {
                     cur_logfile_w.mmap.sync()?;
                 }
                 cur_logfile_w.truncate(w_offset)?;
                 let new = self.create_vlog_file().await?; //new logfile will be latest logfile
                 drop(cur_logfile_w);
-                cur_logfile=new;
+                cur_logfile = new;
             };
         }
         //wait for async closure trait
         let mut cur_logfile_w = cur_logfile.write().await;
         let w_offset = self.writable_log_offset();
-        if w_offset > self.opt.vlog_file_size
-            || self.num_entries_written.load(Ordering::SeqCst) > self.opt.vlog_max_entries
+        if w_offset > Options::vlog_file_size()
+            || self.num_entries_written.load(Ordering::SeqCst) > Options::vlog_max_entries()
         {
-            if self.opt.sync_writes {
+            if Options::sync_writes() {
                 cur_logfile_w.mmap.sync()?;
             }
             cur_logfile_w.truncate(w_offset)?;
@@ -131,7 +132,7 @@ impl ValueLog {
                 )
             }
 
-            if estimate >= self.opt.vlog_file_size {
+            if estimate >= Options::vlog_file_size() {
                 vlog_offset = 0;
                 continue;
             }

@@ -18,23 +18,19 @@ struct DiscardStatsInner {
     next_empty_slot: usize,
 }
 impl DiscardStats {
-    pub(crate) fn new(opt: Arc<Options>) -> anyhow::Result<Self> {
-        Ok(Self(Arc::new(Mutex::new(DiscardStatsInner::new(opt)?))))
+    pub(crate) fn new() -> anyhow::Result<Self> {
+        Ok(Self(Arc::new(Mutex::new(DiscardStatsInner::new()?))))
     }
 }
 impl DiscardStatsInner {
-    fn new(opt: Arc<Options>) -> anyhow::Result<Self> {
-        let file_path = opt.value_dir.join(DISCARD_FILE_NAME);
+    fn new() -> anyhow::Result<Self> {
+        let file_path = Options::value_dir().join(DISCARD_FILE_NAME);
         let mut fp_open_opt = OpenOptions::new();
         fp_open_opt.read(true).write(true).create(true);
 
-        let (mmap_f, is_new) = open_mmap_file(
-            &file_path,
-            fp_open_opt,
-            opt.read_only,
-            DISCARD_FILE_SIZE ,
-        )
-        .map_err(|e| anyhow!("while openint file: {} for {} \n", DISCARD_FILE_NAME, e))?;
+        let (mmap_f, is_new) =
+            open_mmap_file(&file_path, fp_open_opt, Options::read_only(), DISCARD_FILE_SIZE)
+                .map_err(|e| anyhow!("while openint file: {} for {} \n", DISCARD_FILE_NAME, e))?;
         let mut discard_stats = Self {
             mmap_f,
             next_empty_slot: 0,

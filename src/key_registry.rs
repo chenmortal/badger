@@ -19,8 +19,6 @@ use std::{
     fs::{rename, File, OpenOptions},
     io::{BufReader, Read, Seek, Write},
     os::unix::prelude::OpenOptionsExt,
-    path::PathBuf,
-    time::Duration,
 };
 use tokio::sync::RwLock;
 const KEY_REGISTRY_FILE_NAME: &str = "KEYREGISTRY";
@@ -43,9 +41,9 @@ pub(crate) struct KeyRegistryInner {
     next_key_id: u64,
     fp: Option<File>,
     cipher: Option<AesCipher>,
-    dir: PathBuf,
-    read_only: bool,
-    cipher_rotation_duration: Duration,
+    // dir: PathBuf,
+    // read_only: bool,
+    // cipher_rotation_duration: Duration,
 }
 
 struct KeyRegistryIter<'a> {
@@ -54,20 +52,18 @@ struct KeyRegistryIter<'a> {
     len_crc_buf: Vec<u8>,
 }
 impl KeyRegistry {
-    pub(crate) async fn open(opt: &Options) -> anyhow::Result<Self> {
-        Ok(Self(Arc::new(RwLock::new(
-            KeyRegistryInner::open(opt).await?,
-        ))))
+    pub(crate) async fn open() -> anyhow::Result<Self> {
+        Ok(Self(Arc::new(RwLock::new(KeyRegistryInner::open().await?))))
     }
 }
 impl KeyRegistryInner {
-    fn new(opt: &Options) -> anyhow::Result<Self> {
-        let keys_len = opt.encryption_key.len();
+    fn new() -> anyhow::Result<Self> {
+        let keys_len = Options::encryption_key().len();
         if keys_len > 0 && !vec![16, 32].contains(&keys_len) {
             bail!("{:?} During OpenKeyRegistry", DBError::InvalidEncryptionKey);
         }
-        let cipher = if opt.encryption_key.len() > 0 {
-            AesCipher::new(&opt.encryption_key, true).ok()
+        let cipher = if keys_len > 0 {
+            AesCipher::new(Options::encryption_key(), true).ok()
         } else {
             None
         };
@@ -78,15 +74,15 @@ impl KeyRegistryInner {
             next_key_id: 0,
             fp: None,
             cipher,
-            dir: opt.dir.clone(),
-            read_only: opt.read_only,
-            cipher_rotation_duration: opt.encryption_key_rotation_duration,
+            // dir: opt.dir.clone(),
+            // read_only: opt.read_only,
+            // cipher_rotation_duration: opt.encryption_key_rotation_duration,
         })
     }
-    async fn open(opt: &Options) -> anyhow::Result<Self> {
-        let mut key_registry = KeyRegistryInner::new(opt)?;
-        let read_only = key_registry.read_only;
-        let key_registry_path = key_registry.dir.join(KEY_REGISTRY_FILE_NAME);
+    async fn open() -> anyhow::Result<Self> {
+        let mut key_registry = KeyRegistryInner::new()?;
+        let read_only = Options::read_only();
+        let key_registry_path = Options::dir().join(KEY_REGISTRY_FILE_NAME);
         if !key_registry_path.exists() {
             if read_only {
                 return Ok(key_registry);
@@ -136,7 +132,7 @@ impl KeyRegistryInner {
                 .map_err(|e| anyhow!("Error while storing datakey in WriteKeyRegistry {}", e))?;
         }
 
-        let rewrite_path = self.dir.join(KEY_REGISTRY_REWRITE_FILE_NAME);
+        let rewrite_path = Options::dir().join(KEY_REGISTRY_REWRITE_FILE_NAME);
         let mut rewrite_fp = OpenOptions::new()
             .create(true)
             .write(true)
@@ -149,9 +145,9 @@ impl KeyRegistryInner {
             .write_all(&buf)
             .map_err(|e| anyhow!("Error while writing buf in WriteKeyRegistry {}", e))?;
 
-        rename(rewrite_path, self.dir.join(KEY_REGISTRY_FILE_NAME))
+        rename(rewrite_path, Options::dir().join(KEY_REGISTRY_FILE_NAME))
             .map_err(|e| anyhow!("Error while renaming file in WriteKeyRegistry {}", e))?;
-        sync_dir(&self.dir)?;
+        sync_dir(Options::dir())?;
         Ok(())
     }
 
@@ -218,7 +214,7 @@ impl KeyRegistryInner {
             let last = secs_to_systime(self.last_created);
 
             if let Ok(diff) = SystemTime::now().duration_since(last) {
-                if diff < self.cipher_rotation_duration {
+                if diff < Options::encryption_key_rotation_duration() {
                     // let data_keys_r = self.data_keys.read().await;
                     let r = match self.data_keys.get(&self.next_key_id) {
                         Some(d) => Some(d.clone()),

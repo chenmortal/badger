@@ -1,26 +1,33 @@
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
+use std::{
+    mem::replace,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
 use log::{debug, error};
 use tokio::{
     select,
-    sync::{mpsc::Receiver, oneshot, Notify, Semaphore},
+    sync::{
+        mpsc::{error::TrySendError, Receiver},
+        oneshot, Notify, Semaphore,
+    },
 };
 
 use crate::{
-    db::{DB, DBInner},
+    db::{DBInner, DB},
     default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
     errors::DBError,
     kv::ValuePointer,
     metrics::{add_num_bytes_written_user, add_num_puts, set_pending_writes},
+    options::Options,
     txn::entry::DecEntry,
 };
+use anyhow::anyhow;
 use anyhow::bail;
 pub(crate) struct WriteReq {
     entries_vptrs: Vec<(DecEntry, ValuePointer)>,
-    // notify: Arc<Notify>,
     send_result: oneshot::Sender<anyhow::Result<()>>,
 }
 
@@ -84,7 +91,7 @@ impl DB {
             notify_send.notify_one();
         }
         let req_len = Arc::new(AtomicUsize::new(0));
-        set_pending_writes(self.opt.dir.clone(), req_len.clone()).await;
+        set_pending_writes(Options::dir().clone(), req_len.clone()).await;
         loop {
             select! {
                 Some(write_req)=recv_write_req.recv()=>{
@@ -113,15 +120,67 @@ impl DB {
             }
         }
     }
-    
-}
-impl DBInner {
-    async fn write_requests(&mut self, mut reqs: Vec<WriteReq>) -> anyhow::Result<()> {
+    async fn write_requests(&self, mut reqs: Vec<WriteReq>) -> anyhow::Result<()> {
         if reqs.len() == 0 {
             return Ok(());
         }
         debug!("write_requests called. Writing to value log");
-        self.vlog.write(&mut reqs);
+
+        fn done_err(e: &anyhow::Error, reqs: Vec<WriteReq>) -> anyhow::Result<()> {
+            let e = e.to_string();
+            for ele in reqs {
+                if let Err(e) = ele.send_result.send(Err(anyhow!(e.clone()))) {
+                    return e;
+                };
+            }
+            Ok(())
+        }
+        if let Err(e) = self.vlog.write(&mut reqs).await {
+            done_err(&e, reqs)?;
+            bail!(e);
+        };
+
+        debug!("Writing to memtable");
+        let mut count = 0;
+        for req in reqs.iter() {
+            if req.entries_vptrs().len() == 0 {
+                continue;
+            }
+            count += req.entries_vptrs().len();
+        }
+        // for ele in reqs.iter_mut() {
+        //     ele.send_result.send(result);
+        // }
+        // reqs.iter().for_each(|req|req.send_result.send(result.clone()));
         Ok(())
     }
+}
+#[tokio::test]
+async fn test_recv() {
+    let p = tokio::sync::RwLock::new(String::from("a"));
+    let mut w = p.write().await;
+
+    let k = replace(&mut *w, String::from("b"));
+    dbg!(k);
+    dbg!(w);
+    // replace(dest, src)
+    let (sender, receiver) = tokio::sync::mpsc::channel::<String>(1);
+    let a = sender.try_send(String::from("a"));
+    dbg!(a);
+    let b = sender.try_send(String::from("b"));
+    match b {
+        Ok(_) => {}
+        Err(e) => match e {
+            TrySendError::Full(f) => {
+                dbg!(f);
+            }
+            TrySendError::Closed(e) => {
+                println!("err")
+            }
+        },
+    }
+    // once_cell::sync::OnceCell::new();
+
+    // tokio::sync::OnceCell::const_new();
+    // dbg!(b);
 }

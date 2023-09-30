@@ -8,7 +8,7 @@ use ahash::RandomState;
 use anyhow::bail;
 use rand::{thread_rng, Rng};
 
-use crate::{db::DB, errors::DBError};
+use crate::{db::DB, errors::DBError, options::Options};
 
 use self::txn::Txn;
 /// Prefix for internal keys used by badger.
@@ -70,7 +70,7 @@ impl DB {
         if self.is_closed() {
             bail!(DBError::DBClosed);
         }
-        if self.opt.managed_txns {
+        if Options::managed_txns() {
             panic!("Update can only be used with managed_txns=false");
         }
         let txn = Txn::new(self.clone(), true, false).await?;
