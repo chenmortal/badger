@@ -78,24 +78,23 @@ pub(super) struct CompactDef {
 }
 impl LevelsController {
     pub(crate) async fn new(
-        opt: Arc<Options>,
         manifest: &Arc<Mutex<Manifest>>,
         key_registry: KeyRegistry,
         block_cache: &Option<BlockCache>,
         index_cache: &Option<IndexCache>,
     ) -> anyhow::Result<LevelsController> {
-        debug_assert!(opt.num_level_zero_tables_stall > opt.num_level_zero_tables);
+        debug_assert!(Options::num_level_zero_tables_stall() > Options::num_level_zero_tables());
 
-        let compact_status = CompactStatus::new(opt.max_levels);
+        let compact_status = CompactStatus::new(Options::max_levels());
         let mut levels_control = Self {
             next_file_id: Default::default(),
             l0_stalls_ms: Default::default(),
-            levels: Vec::with_capacity(opt.max_levels),
+            levels: Vec::with_capacity(Options::max_levels()),
             compact_status,
         };
 
         let mut compact_status_w = levels_control.compact_status.0.write().await;
-        for i in 0..opt.max_levels {
+        for i in 0..Options::max_levels() {
             levels_control.levels.push(LevelHandler::new(i));
             compact_status_w.levels.push(LevelCompactStatus::default());
         }
@@ -103,7 +102,7 @@ impl LevelsController {
 
         let manifest_lock = manifest.lock().await;
         let manifest = &*manifest_lock;
-        revert_to_manifest(&opt.dir, manifest, get_sst_id_set(&opt.dir))?;
+        revert_to_manifest(Options::dir(), manifest, get_sst_id_set(Options::dir()))?;
 
         let num_opened = Arc::new(AtomicU32::new(0));
         let mut throttle = Throttle::new(3);
@@ -139,7 +138,7 @@ impl LevelsController {
         for (file_id, table_manifest) in manifest.tables.iter() {
             let num_opened_clone = num_opened.clone();
             let tables_clone = tables.clone();
-            let path = dir_join_id_suffix(&opt.dir, *file_id as u32, SSTABLE_FILE_EXT);
+            let path = dir_join_id_suffix(Options::dir(), *file_id as u32, SSTABLE_FILE_EXT);
             let permit = match throttle.acquire().await {
                 Ok(p) => p,
                 Err(e) => {
@@ -155,10 +154,10 @@ impl LevelsController {
             let key_registry_clone = key_registry.clone();
             let block_cache_clone = block_cache.clone();
             let index_cache_clone = index_cache.clone();
-            let opt_clone = opt.clone();
+            // let opt_clone = opt.clone();
 
             let future = async move {
-                let read_only = opt_clone.read_only;
+                let read_only = Options::read_only();
                 let registry_r = key_registry_clone.read().await;
                 let data_key = match registry_r.get_data_key(tm.keyid).await {
                     Ok(dk) => dk,
@@ -169,7 +168,7 @@ impl LevelsController {
                 drop(registry_r);
                 let mut table_opt = TableOption::new(
                     &key_registry_clone,
-                    &opt_clone,
+                    // &opt_clone,
                     &block_cache_clone,
                     &index_cache_clone,
                 )
@@ -245,7 +244,7 @@ impl LevelsController {
             }
         }
 
-        match sync_dir(&opt.dir) {
+        match sync_dir(Options::dir()) {
             Ok(_) => {}
             Err(e) => {
                 let _ = levels_control.cleanup_levels().await;
@@ -294,7 +293,7 @@ impl LevelsController {
         sem: Arc<Semaphore>,
         oracle: &Arc<Oracle>,
     ) {
-        let num = opt.num_compactors;
+        let num = Options::num_compactors();
         for task_id in 0..num {
             let sem = closer.sem_clone();
             let opt_clone = opt.clone();
@@ -338,16 +337,16 @@ impl LevelsController {
             score: 0.0,
             adjusted: 0.0,
             drop_prefixes: Vec::new(),
-            targets: self.level_targets(&opt).await,
+            targets: self.level_targets().await,
         };
         self.do_compact(task_id, priority, &opt, oracle).await;
         loop {
             select! {
                 _=ticker.tick()=>{
                     count+=1;
-                    if opt.lmax_compaction && task_id==2 && count >=200{
+                    // if Options::lmax_compaction  && task_id==2 && count >=200{
 
-                    }
+                    // }
                 }
                 _=sem.acquire()=>{return ;}
             }
@@ -394,9 +393,9 @@ impl LevelsController {
         oracle: &Arc<Oracle>,
     ) -> anyhow::Result<()> {
         let priority_level = priority.level;
-        debug_assert!(priority_level < opt.max_levels);
+        debug_assert!(priority_level < Options::max_levels());
         if priority.targets.base_level == 0 {
-            priority.targets = self.level_targets(opt).await;
+            priority.targets = self.level_targets().await;
         }
         let this_level = self.levels[priority_level].clone();
         let next_level = if priority_level == 0 {
@@ -422,7 +421,7 @@ impl LevelsController {
                 bail!("Unable to fill tables")
             };
         } else {
-            if priority_level != opt.max_levels - 1 {
+            if priority_level != Options::max_levels() - 1 {
                 compact_def.next_level = self.levels[priority_level + 1].clone();
             }
             if !self.fill_tables(&mut compact_def, opt, oracle).await {
@@ -431,7 +430,7 @@ impl LevelsController {
         }
         Ok(())
     }
-    async fn level_targets(&self, opt: &Arc<Options>) -> Targets {
+    async fn level_targets(&self) -> Targets {
         let levels_len = self.levels.len();
         let mut targets = Targets {
             base_level: 0,
@@ -440,21 +439,21 @@ impl LevelsController {
         };
         let mut level_size = self.last_level().get_total_size().await;
         for i in (1..levels_len).rev() {
-            targets.target_size[i] = level_size.max(opt.base_level_size);
-            if targets.base_level == 0 && level_size <= opt.base_level_size {
+            targets.target_size[i] = level_size.max(Options::base_level_size());
+            if targets.base_level == 0 && level_size <= Options::base_level_size() {
                 targets.base_level = i;
             }
-            level_size /= opt.level_size_multiplier;
+            level_size /= Options::level_size_multiplier();
         }
 
-        let mut table_size = opt.base_table_size;
+        let mut table_size = Options::base_table_size();
         for i in 0..levels_len {
             targets.file_size[i] = if i == 0 {
-                opt.memtable_size
+                Options::memtable_size()
             } else if i <= targets.base_level {
                 table_size
             } else {
-                table_size *= opt.table_size_multiplier;
+                table_size *= Options::table_size_multiplier();
                 table_size
             }
         }
@@ -489,7 +488,7 @@ impl LevelsController {
         if tables.len() == 0 {
             return false.into();
         }
-        if compact_def.this_level.get_level() != opt.max_levels - 1 {
+        if compact_def.this_level.get_level() != Options::max_levels() - 1 {
             return None;
         }
         let mut sorted_tables = tables.clone();

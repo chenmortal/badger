@@ -1,16 +1,17 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{atomic::AtomicBool, Arc},
+    sync::atomic::AtomicBool,
 };
 
 use anyhow::anyhow;
 use anyhow::bail;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{oneshot::Receiver, Mutex};
 
 use crate::{
     db::DB,
     errors::DBError,
     kv::KeyTs,
+    options::Options,
     txn::{BADGER_PREFIX, HASH},
     util::now_since_unix,
     vlog::{BIT_DELETE, BIT_FIN_TXN, BIT_TXN},
@@ -38,7 +39,7 @@ pub struct Txn {
 }
 impl Txn {
     pub(super) async fn new(db: DB, mut update: bool, is_managed: bool) -> anyhow::Result<Self> {
-        if db.opt.read_only && update {
+        if Options::read_only() && update {
             update = false;
         }
 
@@ -52,7 +53,7 @@ impl Txn {
             size: TXN_KEY.len() + 10,
             count: 1, // One extra entry for BitFin.
 
-            conflict_keys: if update && db.opt.detect_conflicts {
+            conflict_keys: if update && Options::detect_conflicts() {
                 Some(HashSet::new())
             } else {
                 None
@@ -61,7 +62,6 @@ impl Txn {
             read_key_hash: Mutex::new(Vec::new()),
             pending_writes: if update { HashMap::new().into() } else { None },
             duplicate_writes: Default::default(),
-            // num_iters: Default::default(),
             discarded: false,
             done_read: AtomicBool::new(false),
             db,
@@ -150,12 +150,12 @@ impl Txn {
                 if key.len() > 1024 { &key[..1024] } else { key }
             )
         };
-        let threshold = self.db.opt.value_threshold;
+        let threshold = Options::value_threshold();
         let mut check_size = |e: &mut DecEntry| {
             let count = self.count + 1;
             e.try_set_value_threshold(threshold);
             let size = self.size + e.estimate_size() + 10;
-            if count >= self.db.opt.max_batch_count || size >= self.db.opt.max_batch_size {
+            if count >= Options::max_batch_count() || size >= Options::max_batch_size() {
                 bail!(DBError::TxnTooBig)
             }
             self.count = count;
@@ -179,8 +179,8 @@ impl Txn {
         if e.key().len() > MAX_KEY_SIZE {
             exceeds_size("Key", MAX_KEY_SIZE, e.key())?;
         }
-        if e.value().len()  > self.db.opt.vlog_file_size {
-            exceeds_size("Value", self.db.opt.vlog_file_size as usize, e.value())?
+        if e.value().len() > Options::vlog_file_size() {
+            exceeds_size("Value", Options::vlog_file_size() as usize, e.value())?
         }
         self.db.is_banned(&e.key()).await?;
 
@@ -212,9 +212,10 @@ impl Txn {
             }
         };
         self.commit_pre_check()?;
-        let (commit_ts, notify) = self.commit_and_send().await?;
-        notify.notified().await;
+        let (commit_ts, recv) = self.commit_and_send().await?;
+        let result = recv.await;
         self.db.oracle.done_commit(commit_ts).await?;
+        result??;
         Ok(())
     }
     fn commit_pre_check(&self) -> anyhow::Result<()> {
@@ -230,12 +231,12 @@ impl Txn {
                 }
             }
         }
-        if keep_togther && self.db.opt.managed_txns && self.commit_ts == TxnTs::default() {
+        if keep_togther && Options::managed_txns() && self.commit_ts == TxnTs::default() {
             bail!("CommitTs cannot be zero. Please use commitat instead")
         }
         Ok(())
     }
-    async fn commit_and_send(&mut self) -> anyhow::Result<(TxnTs, Arc<Notify>)> {
+    async fn commit_and_send(&mut self) -> anyhow::Result<(TxnTs, Receiver<anyhow::Result<()>>)> {
         let oracle = &self.db.oracle;
         let _guard = oracle.send_write_req.lock().await;
         let commit_ts = oracle.get_latest_commit_ts(self).await?;
@@ -283,7 +284,7 @@ impl Txn {
             entries.push(entry.into())
         }
 
-        let notify = match self
+        let receiver = match self
             .db
             .send_entires_to_write_channel(entries, self.size)
             .await
@@ -295,7 +296,7 @@ impl Txn {
             }
         };
 
-        Ok((commit_ts, notify))
+        Ok((commit_ts, receiver))
     }
 }
 

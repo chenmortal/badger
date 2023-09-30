@@ -1,4 +1,4 @@
-use std::{collections::HashSet, ops::Deref, sync::Arc};
+use std::{collections::HashSet, ops::Deref};
 
 use anyhow::{bail, Ok};
 use tokio::sync::{Mutex, MutexGuard};
@@ -13,8 +13,6 @@ use super::{
 #[derive(Debug)]
 pub(crate) struct Oracle {
     inner: Mutex<OracleInner>,
-    is_managed: bool,
-    detect_conflicts: bool,
     read_mark: WaterMark,
     txn_mark: WaterMark,
     pub(super) send_write_req: Mutex<()>,
@@ -32,7 +30,6 @@ pub(crate) struct OracleInner {
     discard_ts: TxnTs,
     last_cleanup_ts: TxnTs,
     committed_txns: Vec<CommittedTxn>,
-    // task_handler: Vec<JoinHandle<()>>,
 }
 #[derive(Debug, Clone)]
 struct CommittedTxn {
@@ -40,21 +37,18 @@ struct CommittedTxn {
     conflict_keys: HashSet<u64>,
 }
 impl Oracle {
-    pub(crate) fn new(opt: &Arc<Options>, closer: &mut Closer) -> Self {
+    pub(crate) fn new(closer: &mut Closer) -> Self {
         Self {
-            detect_conflicts: opt.detect_conflicts,
             inner: Mutex::new(OracleInner::default()),
-            is_managed: opt.managed_txns,
             read_mark: WaterMark::new("badger.PendingReads", closer.sem_clone()),
             txn_mark: WaterMark::new("badger.TxnTimestamp", closer.sem_clone()),
             send_write_req: Mutex::new(()),
-            // next_txn_ts: Mutex::new(TxnTs(0)),
         }
     }
 
     #[inline]
     pub(crate) async fn discard_at_or_below(&self) -> TxnTs {
-        if self.is_managed {
+        if Options::managed_txns() {
             let lock = self.inner.lock().await;
             let ts = lock.discard_ts;
             drop(lock);
@@ -64,7 +58,7 @@ impl Oracle {
     }
     #[inline]
     pub(crate) async fn done_commit(&self, commit_ts: TxnTs) -> anyhow::Result<()> {
-        if !self.is_managed {
+        if !Options::managed_txns() {
             self.txn_mark
                 .sender
                 .send(Mark::new(commit_ts, true))
@@ -74,7 +68,7 @@ impl Oracle {
     }
     #[inline]
     pub(crate) async fn get_latest_read_ts(&self) -> anyhow::Result<TxnTs> {
-        if self.is_managed {
+        if Options::managed_txns() {
             panic!("ReadTimestamp should not be retrieved for managed DB");
         }
         let inner_lock = self.inner.lock().await;
@@ -106,7 +100,7 @@ impl Oracle {
         }
         drop(read_key_hash_r);
 
-        let commit_ts = if !self.is_managed {
+        let commit_ts = if !Options::managed_txns() {
             self.done_read(txn).await?;
             self.cleanup_committed_txns(&mut inner_lock);
 
@@ -120,7 +114,7 @@ impl Oracle {
 
         debug_assert!(commit_ts >= inner_lock.last_cleanup_ts);
 
-        if self.detect_conflicts {
+        if Options::detect_conflicts() {
             inner_lock.committed_txns.push(CommittedTxn {
                 ts: commit_ts,
                 conflict_keys: txn.conflict_keys.as_ref().unwrap().clone(),
@@ -142,10 +136,10 @@ impl Oracle {
         Ok(())
     }
     fn cleanup_committed_txns(&self, guard: &mut MutexGuard<OracleInner>) {
-        if !self.detect_conflicts {
+        if !Options::detect_conflicts() {
             return;
         }
-        let max_read_tx = if self.is_managed {
+        let max_read_tx = if Options::managed_txns() {
             guard.discard_ts
         } else {
             self.read_mark.done_until()

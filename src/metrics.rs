@@ -12,7 +12,7 @@ use tokio::{
 
 use crate::options::Options;
 lazy_static! {
-    static ref METRICS_ENABLED: AtomicBool = AtomicBool::new(Options::default().metrics_enabled);
+    static ref METRICS_ENABLED: AtomicBool = AtomicBool::new(true);
     static ref LSM_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
     static ref VLOG_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
     static ref PENDING_WRITES: RwLock<HashMap<PathBuf, Arc<AtomicUsize>>> =
@@ -105,35 +105,37 @@ pub(crate) fn sub_num_compaction_tables(val: usize) {
 }
 
 #[inline]
-pub(crate) async fn calculate_size(opt: &Arc<Options>) {
-    let (lsm_size, mut vlog_size) = match total_size(&opt.dir) {
+pub(crate) async fn calculate_size() {
+    let dir = Options::dir();
+    let value_dir = Options::value_dir();
+    let (lsm_size, mut vlog_size) = match total_size(dir) {
         Ok(r) => r,
         Err(e) => {
-            debug!("Cannot calculate_size {:?} for {}", opt.dir, e);
+            debug!("Cannot calculate_size {:?} for {}", dir, e);
             (0, 0)
         }
     };
-    set_lsm_size(&opt.dir, lsm_size).await;
-    if opt.value_dir != opt.dir {
-        match total_size(&opt.value_dir) {
+    set_lsm_size(dir, lsm_size).await;
+    if value_dir != dir {
+        match total_size(value_dir) {
             Ok((_, v)) => {
                 vlog_size = v;
             }
             Err(e) => {
-                debug!("Cannot calculate_size {:?} for {}", opt.value_dir, e);
+                debug!("Cannot calculate_size {:?} for {}", value_dir, e);
                 vlog_size = 0;
             }
         };
     }
-    set_vlog_size(&opt.value_dir, vlog_size).await;
+    set_vlog_size(value_dir, vlog_size).await;
 }
 
-pub(crate) async fn update_size(opt: Arc<Options>, sem: Arc<Semaphore>) {
+pub(crate) async fn update_size(sem: Arc<Semaphore>) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
     loop {
         select! {
             _instant=interval.tick() =>{
-                calculate_size(&opt).await;
+                calculate_size().await;
             },
             _=sem.acquire()=>{
                 break;

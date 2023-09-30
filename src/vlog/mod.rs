@@ -60,14 +60,12 @@ pub(crate) struct ValueLog {
     writable_log_offset: AtomicUsize,
     num_entries_written: AtomicUsize,
     discard_stats: DiscardStats,
-    opt: Arc<Options>,
     threshold: VlogThreshold,
-    // threshold:
     key_registry: KeyRegistry,
 }
 impl ValueLog {
     pub(crate) fn new(
-        opt: Arc<Options>,
+        // opt: Arc<Options>,
         threshold: VlogThreshold,
         key_registry: KeyRegistry,
     ) -> anyhow::Result<Self> {
@@ -78,8 +76,8 @@ impl ValueLog {
             num_active_iter: Default::default(),
             writable_log_offset: Default::default(),
             num_entries_written: Default::default(),
-            discard_stats: discard::DiscardStats::new(opt.clone())?,
-            opt,
+            discard_stats: discard::DiscardStats::new()?,
+            // opt,
             threshold,
             key_registry,
         })
@@ -91,7 +89,7 @@ impl ValueLog {
         let fid_logfile_len = fid_logfile_r.len();
         drop(fid_logfile_r);
 
-        if self.opt.read_only {
+        if Options::read_only() {
             return Ok(());
         }
         if fid_logfile_len == 0 {
@@ -126,8 +124,8 @@ impl ValueLog {
     }
 
     async fn populate_files_map(&mut self, key_registry: KeyRegistry) -> anyhow::Result<()> {
-        let dir = &self.opt.value_dir;
-        let read_only = self.opt.read_only;
+        let dir = Options::value_dir();
+        let read_only = Options::read_only();
         let mut fp_open_opt = OpenOptions::new();
         fp_open_opt.read(true).write(!read_only);
         let mut found = HashSet::new();
@@ -145,7 +143,7 @@ impl ValueLog {
                     &path,
                     read_only,
                     fp_open_opt.clone(),
-                    2 * self.opt.vlog_file_size,
+                    2 * Options::vlog_file_size(),
                     key_registry.clone(),
                 )
                 .await
@@ -167,7 +165,7 @@ impl ValueLog {
     }
     async fn create_vlog_file(&self) -> anyhow::Result<Arc<RwLock<LogFile>>> {
         let fid = self.max_fid.fetch_add(1, Ordering::SeqCst) + 1;
-        let file_path = dir_join_id_suffix(&self.opt.value_dir, fid, VLOG_FILE_EXT);
+        let file_path = dir_join_id_suffix(Options::value_dir(), fid, VLOG_FILE_EXT);
         let mut fp_open_opt = OpenOptions::new();
         fp_open_opt.read(true).write(true).create_new(true);
         let (log_file, _) = LogFile::open(
@@ -175,7 +173,7 @@ impl ValueLog {
             &file_path,
             true,
             fp_open_opt,
-            2 * self.opt.vlog_file_size,
+            2 * Options::vlog_file_size(),
             self.key_registry.clone(),
         )
         .await?;

@@ -24,18 +24,16 @@ pub(crate) struct VlogThresholdInner {
     close_sem: Arc<Semaphore>,
     sender: Sender<Vec<usize>>,
     clear_notify: Arc<Notify>,
-    default_threshold: usize,
-    // receiver:Receiver<Vec<usize>>
 }
 impl VlogThresholdInner {
     pub(crate) fn new(
-        opt: &Options,
+        // opt: &Options,
         close_sem: Arc<Semaphore>,
         sender: Sender<Vec<usize>>,
         clear_notify: Arc<Notify>,
     ) -> Self {
-        let max_bd = opt.max_value_threshold;
-        let min_bd = opt.value_threshold as f64;
+        let max_bd = Options::max_value_threshold();
+        let min_bd = Options::value_threshold() as f64;
         assert!(max_bd >= min_bd);
         let size = (max_bd - min_bd + 1 as f64).min(1024.0);
         let bd_step = (max_bd - min_bd) / size;
@@ -54,13 +52,12 @@ impl VlogThresholdInner {
         let histogram_data = Histogram::new(bounds);
 
         Self {
-            percentile: opt.vlog_percentile,
-            value_threshold: AtomicUsize::new(opt.value_threshold),
+            percentile: Options::vlog_percentile(),
+            value_threshold: AtomicUsize::new(Options::value_threshold()),
             vlog_metrics: histogram_data,
             close_sem,
             sender,
             clear_notify,
-            default_threshold: opt.value_threshold,
         }
     }
 
@@ -68,14 +65,14 @@ impl VlogThresholdInner {
         self.sender.clone()
     }
     pub(crate) fn clear(&self) {
-        self.set_value_threshold(self.default_threshold);
+        self.set_value_threshold(Options::value_threshold());
         self.clear_notify.notify_one();
     }
     pub(crate) fn value_threshold(&self) -> usize {
         self.value_threshold
             .load(std::sync::atomic::Ordering::SeqCst)
     }
-    
+
     pub(crate) fn set_value_threshold(&self, value_threshold: usize) {
         self.value_threshold
             .store(value_threshold, std::sync::atomic::Ordering::SeqCst);
@@ -89,12 +86,11 @@ impl Deref for VlogThreshold {
     }
 }
 impl VlogThreshold {
-    pub(crate) fn new(opt: &Arc<Options>, close_sem: Arc<Semaphore>) -> Self {
+    pub(crate) fn new(close_sem: Arc<Semaphore>) -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel::<Vec<usize>>(1000);
         let clear_notify = Arc::new(Notify::new());
         let clear_notified = clear_notify.clone();
         let vlog_threshold = VlogThreshold(Arc::new(VlogThresholdInner::new(
-            opt,
             close_sem,
             sender,
             clear_notify,
