@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     kv::KeyTs,
-    vlog::{header::EntryHeader, BIT_TXN, BIT_FIN_TXN},
+    vlog::{header::EntryHeader, BIT_FIN_TXN, BIT_TXN},
 };
 
 use super::TxnTs;
@@ -76,7 +76,7 @@ impl Entry {
     pub fn version(&self) -> TxnTs {
         self.key_ts.txn_ts()
     }
-    pub(crate) fn key_ts(&self) ->&KeyTs{
+    pub(crate) fn key_ts(&self) -> &KeyTs {
         &self.key_ts
     }
     pub fn offset(&self) -> usize {
@@ -131,6 +131,9 @@ impl Entry {
     }
     pub(crate) fn clean_meta_bit(&mut self, clean_meta: u8) {
         self.meta = self.meta & (!clean_meta);
+    }
+    pub(crate) fn add_meta_bit(&mut self, add_meta: u8) {
+        self.meta |= add_meta;
     }
 }
 

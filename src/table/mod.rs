@@ -3,6 +3,7 @@ pub(crate) mod builder;
 pub(crate) mod index;
 pub(crate) mod iter;
 pub(crate) mod merge;
+use std::io::{self, Write};
 use std::mem;
 use std::path::PathBuf;
 use std::{sync::Arc, time::SystemTime};
@@ -230,8 +231,8 @@ impl Table {
     }
 
     #[inline]
-    pub(crate) fn sync_mmap(&self) -> anyhow::Result<()> {
-        self.0.mmap_f.sync()
+    pub(crate) fn sync_mmap(&self) -> io::Result<()> {
+        self.0.mmap_f.flush()
     }
 
     #[inline]

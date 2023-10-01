@@ -1,8 +1,6 @@
 use std::{
     collections::HashSet,
-    fs::{create_dir_all, set_permissions, Permissions},
     ops::Deref,
-    os::unix::prelude::PermissionsExt,
     sync::{
         atomic::{AtomicBool, AtomicU32},
         Arc,
@@ -10,7 +8,7 @@ use std::{
 };
 
 use crate::{
-    default::{KV_WRITES_ENTRIES_CHANNEL_CAPACITY, LOCK_FILE, MAX_VALUE_THRESHOLD},
+    default::{KV_WRITES_ENTRIES_CHANNEL_CAPACITY, LOCK_FILE},
     errors::DBError,
     key_registry::KeyRegistry,
     kv::{KeyTs, ValueStruct},
@@ -22,23 +20,21 @@ use crate::{
     manifest::open_create_manifestfile,
     metrics::{calculate_size, set_metrics_enabled, update_size},
     options::Options,
-    skl::skip_list::SKL_MAX_NODE_SIZE,
     table::block::{self, Block},
     txn::oracle::Oracle,
     util::Closer,
-    vlog::{discard, threshold::VlogThreshold, ValueLog},
+    vlog::{discard, ValueLog},
     write::WriteReq,
 };
 use anyhow::anyhow;
-use anyhow::bail;
 use bytes::Buf;
-use once_cell::sync::OnceCell;
 use stretto::AsyncCache;
 use tokio::sync::mpsc;
 use tokio::sync::{mpsc::Sender, RwLock};
 
 pub(crate) type BlockCache = AsyncCache<Vec<u8>, Block>;
 pub(crate) type IndexCache = AsyncCache<u64, Vec<u8>>;
+#[derive(Debug)]
 pub(crate) struct NextId(AtomicU32);
 impl NextId {
     #[inline]
@@ -71,14 +67,16 @@ impl Deref for DB {
 pub struct DBInner {
     lock: RwLock<()>,
     // pub(crate) opt: Arc<Options>,
-    pub(crate) next_mem_fid: AtomicU32,
+    pub(crate) next_mem_fid: NextId,
     pub(crate) key_registry: KeyRegistry,
-    memtable: Option<MemTable>,
+    pub(crate) memtable: Arc<RwLock<MemTable>>,
+    pub(crate) immut_memtable: RwLock<Vec<Arc<MemTable>>>,
     pub(crate) block_cache: Option<BlockCache>,
     pub(crate) index_cache: Option<IndexCache>,
     pub(crate) level_controller: Option<LevelsController>,
     pub(crate) oracle: Arc<Oracle>,
     pub(crate) send_write_req: Sender<WriteReq>,
+    pub(crate) flush_memtable: Sender<Arc<MemTable>>,
     pub(crate) vlog: ValueLog,
     banned_namespaces: RwLock<HashSet<u64>>,
     is_closed: AtomicBool,
@@ -110,9 +108,9 @@ impl DBInner {
 
         let manifest_file = open_create_manifestfile()?;
         let imm = Vec::<MemTable>::with_capacity(Options::num_memtables());
-        let (sender, receiver) = mpsc::channel::<MemTable>(Options::num_memtables());
+        let (flush_sender, receiver) = mpsc::channel::<MemTable>(Options::num_memtables());
         let p = mpsc::channel::<WriteReq>(KV_WRITES_ENTRIES_CHANNEL_CAPACITY);
-
+        // mpsc::channel(buffer);
         // let mut closer = Closer::new();
         // let threshold = VlogThreshold::new(&opt, closer.sem_clone());
 
@@ -208,7 +206,4 @@ impl DBInner {
         let v = ValueStruct::default();
         Ok(v)
     }
-}
-impl Options {
-  
 }

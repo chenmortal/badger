@@ -67,7 +67,6 @@ impl SkipListInner {
             arena,
         }
     }
-    fn push() {}
 }
 #[derive(Debug)]
 pub(crate) struct SkipList {
@@ -79,5 +78,9 @@ impl SkipList {
             skip_list: Arc::new(SkipListInner::new(arena_size)),
         }
     }
-}
 
+    #[inline]
+    pub(crate) fn mem_size(&self) -> usize {
+        self.skip_list.arena.len()
+    }
+}

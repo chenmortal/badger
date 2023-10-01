@@ -4,8 +4,10 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::ptr::{self, NonNull, Unique};
 use std::sync::atomic::AtomicPtr;
 
+use crate::default::{self, DEFAULT_PAGE_SIZE};
+
 const CHUNK_ALIGN: usize = 16;
-const PAGE_CUTOFF: usize = 4096;
+// const PAGE_CUTOFF: usize = 4096;
 const DEFAULT_ALIGN: usize = 8;
 #[derive(Debug)]
 pub(crate) struct ArenaSlice<T> {
@@ -37,8 +39,8 @@ impl Arena {
     pub(crate) fn new(size: usize) -> Arena {
         let chunk_align = CHUNK_ALIGN;
         let mut request_size = Self::round_up_to(size, chunk_align).unwrap();
-        if request_size >= PAGE_CUTOFF {
-            request_size = Self::round_up_to(request_size, PAGE_CUTOFF).unwrap();
+        if request_size >= DEFAULT_PAGE_SIZE.to_owned() {
+            request_size = Self::round_up_to(request_size, DEFAULT_PAGE_SIZE.to_owned()).unwrap();
         }
         // debug_assert_eq!(chunk_align % CHUNK_ALIGN, 0);
         debug_assert_eq!(request_size % CHUNK_ALIGN, 0);
@@ -91,7 +93,7 @@ impl Arena {
         let alloc_size = Self::round_up_to(layout.size(), layout.align()).unwrap();
         let old_ptr = self
             .ptr
-            .fetch_ptr_add(alloc_size, std::sync::atomic::Ordering::SeqCst);
+            .fetch_ptr_add(alloc_size, std::sync::atomic::Ordering::AcqRel);
         debug_assert_eq!(old_ptr as usize % 8, 0);
         unsafe {
             let new_ptr = old_ptr.add(alloc_size);
@@ -118,6 +120,14 @@ impl Arena {
         ArenaSlice {
             ptr: atomic,
             len: src.len(),
+        }
+    }
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        unsafe {
+            self.ptr
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .sub_ptr(self.start.as_ptr())
         }
     }
     #[inline(always)]

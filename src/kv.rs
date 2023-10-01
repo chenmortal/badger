@@ -113,8 +113,6 @@ impl Ord for KeyTsBorrow<'_> {
     }
 }
 
-
-
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub(crate) struct ValueInner {
     meta: u8,
@@ -125,15 +123,37 @@ pub(crate) struct ValueInner {
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ValuePointer {
     fid: u32,
-    len: usize,
-    offset: usize,
+    len: u32,
+    offset: u32,
 }
 impl ValuePointer {
+    const SIZE: usize = mem::size_of::<ValuePointer>();
     pub(crate) fn new(fid: u32, len: usize, offset: usize) -> Self {
-        Self { fid, len, offset }
+        Self {
+            fid,
+            len: len as u32,
+            offset: offset as u32,
+        }
     }
+
     pub(crate) fn is_empty(&self) -> bool {
         *self == ValuePointer::default()
+    }
+
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let mut res = Vec::with_capacity(Self::SIZE);
+        res.put_u32(self.fid);
+        res.put_u32(self.len);
+        res.put_u32(self.offset);
+        res
+    }
+    pub(crate) fn decode(bytes: &[u8]) -> Self {
+        let mut p = bytes.as_ref();
+        Self {
+            fid: p.get_u32(),
+            len: p.get_u32(),
+            offset: p.get_u32(),
+        }
     }
 }
 #[derive(Debug, Default)]

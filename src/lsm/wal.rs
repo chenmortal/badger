@@ -197,4 +197,8 @@ impl LogFile {
     pub(crate) fn fid(&self) -> u32 {
         self.fid
     }
+
+    pub(crate) fn write_at(&self) -> usize {
+        self.write_at
+    }
 }
