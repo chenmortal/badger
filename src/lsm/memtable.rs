@@ -7,6 +7,7 @@ use crate::{
     key_registry::KeyRegistry,
     options::Options,
     skl::skip_list::{SkipList, SKL_MAX_NODE_SIZE},
+    txn::entry::Entry,
     util::{dir_join_id_suffix, parse_file_id},
 };
 use anyhow::Result;
@@ -19,7 +20,7 @@ pub(crate) struct MemTable {
     skip_list: SkipList,
     wal: LogFile,
     max_version: usize,
-    buf: BytesMut,
+    // buf: BytesMut,
 }
 
 pub(crate) async fn open_mem_tables(
@@ -71,7 +72,7 @@ async fn open_mem_table(
         skip_list,
         wal: log_file,
         max_version: 0,
-        buf: BytesMut::new(),
+        // buf: BytesMut::new(),
     };
     if is_new {
         return Ok((mem_table, true));
@@ -101,5 +102,20 @@ impl Options {
         Options::memtable_size()
             + Options::max_batch_size()
             + Options::max_batch_count() * (SKL_MAX_NODE_SIZE)
+    }
+}
+
+impl MemTable {
+    #[inline]
+    pub(crate) fn is_full(&self) -> bool {
+        if self.skip_list.mem_size() >= Options::memtable_size() {
+            return true;
+        }
+        self.wal.write_at() >= Options::memtable_size()
+    }
+
+    #[inline]
+    pub(crate) fn put(&mut self, entry: &Entry) {
+        
     }
 }

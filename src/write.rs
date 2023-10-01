@@ -9,20 +9,19 @@ use std::{
 use log::{debug, error};
 use tokio::{
     select,
-    sync::{
-        mpsc::{error::TrySendError, Receiver},
-        oneshot, Notify, Semaphore,
-    },
+    sync::{mpsc::Receiver, oneshot, Notify, Semaphore},
 };
 
 use crate::{
-    db::{DBInner, DB},
+    db::DB,
     default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
     errors::DBError,
     kv::ValuePointer,
+    lsm::memtable::new_mem_table,
     metrics::{add_num_bytes_written_user, add_num_puts, set_pending_writes},
     options::Options,
     txn::entry::DecEntry,
+    vlog::BIT_VALUE_POINTER,
 };
 use anyhow::anyhow;
 use anyhow::bail;
@@ -46,10 +45,12 @@ impl WriteReq {
         }
     }
 
+    #[inline]
     pub(crate) fn entries_vptrs_mut(&mut self) -> &mut Vec<(DecEntry, ValuePointer)> {
         &mut self.entries_vptrs
     }
 
+    #[inline]
     pub(crate) fn entries_vptrs(&self) -> &[(DecEntry, ValuePointer)] {
         self.entries_vptrs.as_ref()
     }
@@ -142,11 +143,20 @@ impl DB {
 
         debug!("Writing to memtable");
         let mut count = 0;
+        let mut err = None;
         for req in reqs.iter() {
             if req.entries_vptrs().len() == 0 {
                 continue;
             }
             count += req.entries_vptrs().len();
+            if let Err(e) = self.ensure_boom_for_write().await {
+                err = e.into();
+                break;
+            };
+        }
+        if let Some(e) = err {
+            done_err(&e, reqs)?;
+            bail!(e);
         }
         // for ele in reqs.iter_mut() {
         //     ele.send_result.send(result);
@@ -154,33 +164,42 @@ impl DB {
         // reqs.iter().for_each(|req|req.send_result.send(result.clone()));
         Ok(())
     }
-}
-#[tokio::test]
-async fn test_recv() {
-    let p = tokio::sync::RwLock::new(String::from("a"));
-    let mut w = p.write().await;
+    async fn ensure_boom_for_write(&self) -> anyhow::Result<()> {
+        let memtable_r = self.memtable.read().await;
+        if !memtable_r.is_full() {
+            drop(memtable_r);
+            return Ok(());
+        }
+        drop(memtable_r);
 
-    let k = replace(&mut *w, String::from("b"));
-    dbg!(k);
-    dbg!(w);
-    // replace(dest, src)
-    let (sender, receiver) = tokio::sync::mpsc::channel::<String>(1);
-    let a = sender.try_send(String::from("a"));
-    dbg!(a);
-    let b = sender.try_send(String::from("b"));
-    match b {
-        Ok(_) => {}
-        Err(e) => match e {
-            TrySendError::Full(f) => {
-                dbg!(f);
-            }
-            TrySendError::Closed(e) => {
-                println!("err")
-            }
-        },
+        debug!("Making room for writes");
+
+        let new_memtable = new_mem_table(&self.key_registry, &self.next_mem_fid).await?;
+
+        let mut memtable_w = self.memtable.write().await;
+        let old_memtable = replace(&mut *memtable_w, new_memtable);
+        drop(memtable_w);
+
+        let old_memtable = Arc::new(old_memtable);
+        self.flush_memtable.send(old_memtable.clone()).await?;
+        let mut immut_memtables_w = self.immut_memtable.write().await;
+        immut_memtables_w.push(old_memtable);
+        drop(immut_memtables_w);
+
+        Ok(())
     }
-    // once_cell::sync::OnceCell::new();
-
-    // tokio::sync::OnceCell::const_new();
-    // dbg!(b);
+    async fn write_to_memtable(&self, req: &mut WriteReq) {
+        let mut memtable_w = self.memtable.write().await;
+        for (dec_entry, vptr) in req.entries_vptrs_mut() {
+            if vptr.is_empty() {
+                dec_entry.clean_meta_bit(BIT_VALUE_POINTER);
+            } else {
+                dec_entry.add_meta_bit(BIT_VALUE_POINTER);
+                dec_entry.set_value(vptr.encode());
+            }
+        }
+    }
+    fn p(){
+        // memmap2::MmapRaw::map_raw(file)
+    }
 }
