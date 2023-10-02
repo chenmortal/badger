@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, io};
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -130,7 +130,7 @@ vs
         }
         Ok(())
     }
-    pub(crate) async fn sync_mmap(&self) -> anyhow::Result<()> {
+    pub(crate) async fn sync_mmap(&self) -> io::Result<()> {
         let mut err = None;
         let tables_r = self.0.handler_tables.read().await;
         for table in tables_r.tables.iter() {

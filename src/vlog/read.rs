@@ -5,14 +5,14 @@ use std::{
 
 use crate::{
     kv::ValuePointer,
-    lsm::wal::LogFile,
+    lsm::log_file::LogFile,
     txn::{entry::Entry, TxnTs},
 };
 
 use super::{header::EntryHeader, BIT_FIN_TXN, BIT_TXN};
 use anyhow::bail;
 use bytes::Buf;
-
+#[derive(Debug)]
 pub(crate) struct LogFileIter<'a> {
     log_file: &'a LogFile,
     record_offset: usize,
@@ -22,7 +22,7 @@ pub(crate) struct LogFileIter<'a> {
 }
 impl<'a> LogFileIter<'a> {
     pub(crate) fn new(log_file: &'a LogFile, offset: usize) -> Self {
-        let buf_reader = BufReader::new(&log_file.mmap[offset..]);
+        let buf_reader = BufReader::new(&log_file.as_ref()[offset..]);
         Self {
             log_file,
             record_offset: offset,
@@ -85,7 +85,7 @@ impl<'a> LogFileIter<'a> {
         self.record_offset += size;
         Ok((entry, v_ptr))
     }
-
+    #[tracing::instrument]
     pub(crate) fn next(&mut self) -> anyhow::Result<Option<&Vec<(Entry, ValuePointer)>>> {
         let mut last_commit = TxnTs::default();
         self.entries_vptrs.clear();

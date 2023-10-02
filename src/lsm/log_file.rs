@@ -1,5 +1,7 @@
 use std::{
     fs::{remove_file, OpenOptions},
+    io::{self},
+    ops::{Deref, DerefMut},
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -7,35 +9,47 @@ use std::{
 use crate::{
     default::DEFAULT_IS_SIV,
     key_registry::{AesCipher, KeyRegistry},
-    lsm::mmap::{open_mmap_file, MmapFile},
+    lsm::mmap::MmapFile,
     pb::badgerpb4::DataKey,
-    vlog::{MAX_HEADER_SIZE, VLOG_HEADER_SIZE},
+    vlog::VLOG_HEADER_SIZE,
 };
 use anyhow::{anyhow, bail};
 use bytes::{Buf, BufMut};
+
 #[derive(Debug)]
 pub(crate) struct LogFile {
     fid: u32,
     key_registry: KeyRegistry,
     datakey: Option<DataKey>,
     cipher: Option<AesCipher>,
-    pub(crate) mmap: MmapFile,
+    mmap: MmapFile,
     size: AtomicUsize,
     base_nonce: Vec<u8>,
-    write_at: usize,
+    // write_at: usize,
 }
 
+impl Deref for LogFile {
+    type Target = MmapFile;
+
+    fn deref(&self) -> &Self::Target {
+        &self.mmap
+    }
+}
+impl DerefMut for LogFile {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.mmap
+    }
+}
 impl LogFile {
     pub(crate) async fn open(
         fid: u32,
         file_path: &PathBuf,
-        read_only: bool,
         fp_open_opt: OpenOptions,
         fsize: usize,
         key_registry: KeyRegistry,
     ) -> anyhow::Result<(LogFile, bool)> {
-        let (mmap, is_new) = open_mmap_file(&file_path, fp_open_opt, read_only, fsize)
-            .map_err(|e| anyhow!("while opening file: {:?} for {}", &file_path, e))?;
+        let (mmap, is_new) = MmapFile::open(file_path, fp_open_opt, fsize)?;
+
         let mut log_file = Self {
             fid,
             key_registry,
@@ -43,7 +57,7 @@ impl LogFile {
             mmap,
             size: AtomicUsize::new(0),
             base_nonce: Vec::new(),
-            write_at: VLOG_HEADER_SIZE,
+            // write_at: VLOG_HEADER_SIZE,
             cipher: None,
         };
 
@@ -53,18 +67,14 @@ impl LogFile {
                     log_file.set_size(VLOG_HEADER_SIZE);
                 }
                 Err(e) => {
-                    match remove_file(&log_file.mmap.file_path) {
+                    match remove_file(&log_file.path()) {
                         Ok(_) => {
-                            bail!(
-                                "Cannot logfile.boostrap {:?} for {}",
-                                &log_file.mmap.file_path,
-                                e
-                            );
+                            bail!("Cannot logfile.boostrap {:?} for {}", &log_file.path(), e);
                         }
                         Err(error) => {
                             bail!(
                                 "Cannot boostrap {:?} for {} and failed to remove this mmap_file  for {}",
-                                &log_file.mmap.file_path,
+                                &log_file.path(),
                                 e,
                                 error
                             )
@@ -80,7 +90,7 @@ impl LogFile {
         }
 
         let mut buf = Vec::with_capacity(VLOG_HEADER_SIZE);
-        buf.put(&log_file.mmap[0..VLOG_HEADER_SIZE]);
+        buf.put(&log_file.mmap.as_ref()[0..VLOG_HEADER_SIZE]);
         debug_assert_eq!(buf.len(), VLOG_HEADER_SIZE);
 
         let mut buf_ref: &[u8] = buf.as_ref();
@@ -97,26 +107,24 @@ impl LogFile {
 
         Ok((log_file, is_new))
     }
-    pub(crate) fn delete(&self) -> anyhow::Result<()> {
+    #[tracing::instrument]
+    pub(crate) fn delete(&self) -> io::Result<()> {
         self.mmap.delete()
     }
-    pub(crate) fn truncate(&mut self, end_offset: usize) -> anyhow::Result<()> {
-        let metadata =
-            self.mmap.file_handle.metadata().map_err(|e| {
-                anyhow!("cannot get metadata file:{:?} :{}", self.mmap.file_path, e)
-            })?;
-        let file_size = metadata.len() as usize;
+    pub(crate) fn truncate(&mut self, end_offset: usize) -> io::Result<()> {
+        let file_size = self.mmap.get_file_size()? as usize;
         if file_size == end_offset {
             return Ok(());
         }
         self.set_size(end_offset);
-        self.mmap.truncate(end_offset)
+        self.mmap.set_len(end_offset)
     }
     // bootstrap will initialize the log file with key id and baseIV.
     // The below figure shows the layout of log file.
     // +----------------+------------------+------------------+
     // | keyID(8 bytes) |  baseIV(12 bytes)|	 entry...     |
     // +----------------+------------------+------------------+
+    #[tracing::instrument]
     async fn bootstrap(&mut self) -> anyhow::Result<()> {
         let mut key_registry_w = self.key_registry.write().await;
         let datakey = key_registry_w
@@ -135,8 +143,9 @@ impl LogFile {
         buf.put(self.base_nonce.as_ref());
 
         debug_assert_eq!(buf.len(), VLOG_HEADER_SIZE);
-        self.mmap[0..buf.len()].copy_from_slice(&buf);
-        self.zero_next_entry();
+        self.mmap.write_slice(0, &buf);
+        // self.mmap[0..buf.len()].copy_from_slice(&buf);
+        // self.zero_next_entry();
         Ok(())
     }
     #[inline]
@@ -174,16 +183,21 @@ impl LogFile {
     }
     #[inline]
     fn zero_next_entry(&mut self) {
-        let start = self.write_at;
-        let mut end = self.write_at + MAX_HEADER_SIZE;
-        let len = self.mmap.len();
-        if start >= len {
-            return;
-        }
-        if end >= len {
-            end = len;
-        }
-        self.mmap[start..end].fill(0);
+        // if let Some(s) = &mut self.mmap.right() {
+        //     s.write([0 as u8; MAX_HEADER_SIZE].as_slice());
+        //     s.seek(io::SeekFrom::Current(0 - MAX_HEADER_SIZE as i64));
+        // }
+        // let k=try_right!(self.mmap);
+        // let start = self.write_at;
+        // let mut end = self.write_at + MAX_HEADER_SIZE;
+        // let len = self.mmap.len();
+        // if start >= len {
+        //     return;
+        // }
+        // if end >= len {
+        //     end = len;
+        // }
+        // self.mmap[start..end].fill(0);
     }
     #[inline]
     pub(crate) fn get_size(&self) -> usize {
@@ -196,9 +210,5 @@ impl LogFile {
 
     pub(crate) fn fid(&self) -> u32 {
         self.fid
-    }
-
-    pub(crate) fn write_at(&self) -> usize {
-        self.write_at
     }
 }
