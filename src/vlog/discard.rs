@@ -1,12 +1,11 @@
-use crate::{
-    lsm::mmap::{open_mmap_file, MmapFile},
-    options::Options,
-};
+use crate::{lsm::mmap::MmapFile, options::Options};
 use anyhow::anyhow;
 use bytes::Buf;
 use log::info;
+// use core::slice::SlicePattern;
 use std::{fs::OpenOptions, sync::Arc};
 use tokio::sync::Mutex;
+use tracing::Instrument;
 const DISCARD_FILE_NAME: &str = "DISCARD";
 const DISCARD_FILE_SIZE: usize = 1 << 20; //1MB
 const DISCARD_MAX_SLOT: usize = DISCARD_FILE_SIZE / 16; //1MB file can store 65536 discard entries. Each entry is 16 bytes;
@@ -28,16 +27,16 @@ impl DiscardStatsInner {
         let mut fp_open_opt = OpenOptions::new();
         fp_open_opt.read(true).write(true).create(true);
 
-        let (mmap_f, is_new) =
-            open_mmap_file(&file_path, fp_open_opt, Options::read_only(), DISCARD_FILE_SIZE)
-                .map_err(|e| anyhow!("while openint file: {} for {} \n", DISCARD_FILE_NAME, e))?;
+        let (mmap_f, is_new) = MmapFile::open(&file_path, fp_open_opt, DISCARD_FILE_SIZE)?;
+        // let (mmap_f, is_new) = open_mmap_file(&file_path, fp_open_opt, DISCARD_FILE_SIZE)
+        //     .map_err(|e| anyhow!("while openint file: {} for {} \n", DISCARD_FILE_NAME, e))?;
         let mut discard_stats = Self {
             mmap_f,
             next_empty_slot: 0,
         };
 
         if is_new {
-            discard_stats.zero_out();
+            // discard_stats.zero_out();
         }
         for slot in 0..DISCARD_MAX_SLOT {
             if discard_stats.get(slot * 16) == 0 {
@@ -55,22 +54,24 @@ impl DiscardStatsInner {
     #[inline(always)]
     pub(crate) fn set(&mut self, offset: usize, val: u64) {
         let big_endian = val.to_be_bytes();
-        self.mmap_f[offset..offset + 8].copy_from_slice(&big_endian);
+        self.mmap_f.write_slice(offset, big_endian.as_slice());
+        // self.mmap_f[offset..offset + 8].copy_from_slice(&big_endian);
     }
     #[inline(always)]
     pub(crate) fn get(&self, offset: usize) -> u64 {
-        let mut p = &self.mmap_f[offset..offset + 8];
+        let mut p = &self.mmap_f.as_ref()[offset..offset + 8];
         // p.sort();
         p.get_u64()
     }
-    #[inline]
-    pub(crate) fn zero_out(&mut self) {
-        let next_offset = self.next_empty_slot * 16;
-        self.mmap_f[next_offset..next_offset + 16].fill(0);
-    }
+    // #[inline]
+    // pub(crate) fn zero_out(&mut self) {
+    //     let next_offset = self.next_empty_slot * 16;
+
+    //     self.mmap_f[next_offset..next_offset + 16].fill(0);
+    // }
     #[inline]
     pub(crate) fn sort(&mut self) {
-        let slice = &mut self.mmap_f[..self.next_empty_slot * 8 * 2];
+        let slice = &mut self.mmap_f.as_mut()[..self.next_empty_slot * 8 * 2];
         let chunks = unsafe { slice.as_chunks_unchecked_mut::<16>() };
         chunks.sort_unstable_by(|a, b| a.as_ref().get_u64().cmp(&b.as_ref().get_u64()));
     }

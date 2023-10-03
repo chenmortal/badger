@@ -5,7 +5,7 @@ use bytes::BufMut;
 use crate::{
     default::DEFAULT_PAGE_SIZE,
     kv::ValuePointer,
-    lsm::wal::LogFile,
+    lsm::log_file::LogFile,
     metrics::{add_num_bytes_vlog_written, add_num_writes_vlog},
     options::Options,
     txn::{entry::DecEntry, TxnTs},
@@ -72,10 +72,11 @@ impl ValueLog {
                     let buf_len = buf.len();
                     let start_offset = self.writable_log_offset_fetch_add(buf_len);
                     let end_offset = start_offset + buf_len;
-                    if end_offset >= cur_logfile_w.mmap.len() {
+                    if end_offset >= cur_logfile_w.len() {
                         cur_logfile_w.truncate(end_offset)?;
                     };
-                    cur_logfile_w.mmap[start_offset..end_offset].copy_from_slice(&buf);
+                    cur_logfile_w.write_slice(start_offset, &buf);
+                    // cur_logfile_w.mmap[start_offset..end_offset].copy_from_slice(&buf);
                 }
                 written += 1;
                 bytes_written += buf.len();
@@ -90,7 +91,7 @@ impl ValueLog {
                 || self.num_entries_written.load(Ordering::SeqCst) > Options::vlog_max_entries()
             {
                 if Options::sync_writes() {
-                    cur_logfile_w.mmap.flush()?;
+                    cur_logfile_w.sync_all()?;
                 }
                 cur_logfile_w.truncate(w_offset)?;
                 let new = self.create_vlog_file().await?; //new logfile will be latest logfile
@@ -105,7 +106,7 @@ impl ValueLog {
             || self.num_entries_written.load(Ordering::SeqCst) > Options::vlog_max_entries()
         {
             if Options::sync_writes() {
-                cur_logfile_w.mmap.flush()?;
+                cur_logfile_w.sync_all()?;
             }
             cur_logfile_w.truncate(w_offset)?;
             let _ = self.create_vlog_file().await?; //new logfile will be latest logfile

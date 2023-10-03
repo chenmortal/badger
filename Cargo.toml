@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 log="0.4"
-tracing="0.1"
+tracing="0.1.37"
 # tracing-subscriber = "0.2.0"
 tokio = { version = "1", features = ["full"] }
 anyhow="*"
@@ -34,8 +34,10 @@ rand = "0.8.5"
 integer-encoding = "4.0.0"
 # hashbrown="*"
 ahash="*"
-
+either = "1.9.0"
 memmap2 = "0.8"
+smallvec = "1.11.1"
+# tracing = "0.1.37"
 # bumpalo = {version="3.13.0",features=["boxed","collections"]}
 # generational-arena = "0.2.9"
 [build-dependencies]

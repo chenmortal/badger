@@ -22,7 +22,7 @@ use crate::{
     db::{BlockCache, IndexCache},
     default::SSTABLE_FILE_EXT,
     key_registry::KeyRegistry,
-    lsm::{compaction::LevelCompactStatus, mmap::open_mmap_file},
+    lsm::{compaction::LevelCompactStatus, mmap::MmapFile},
     manifest::Manifest,
     metrics::{add_num_compaction_tables, sub_num_compaction_tables},
     options::Options,
@@ -177,8 +177,9 @@ impl LevelsController {
                 table_opt.compression = tm.compression;
                 let mut fp_open_opt = OpenOptions::new();
                 fp_open_opt.read(true).write(!read_only);
-                let (mmap_f, _is_new) = open_mmap_file(&path, fp_open_opt, read_only, 0)
-                    .map_err(|e| anyhow!("Opening file: {:?} for {}", path, e))?;
+
+                let (mmap_f,_is_new)=MmapFile::open(&path, fp_open_opt,0)?;
+                
                 match Table::open(mmap_f, table_opt).await {
                     Ok(table) => {
                         let mut tables_m = tables_clone.lock().await;

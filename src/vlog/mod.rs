@@ -17,7 +17,7 @@ use crate::{
     default::VLOG_FILE_EXT,
     errors::err_file,
     key_registry::KeyRegistry,
-    lsm::wal::LogFile,
+    lsm::log_file::LogFile,
     options::Options,
     util::{dir_join_id_suffix, parse_file_id},
     vlog::read::LogFileIter,
@@ -102,13 +102,7 @@ impl ValueLog {
         let mut last_logfile_w = last_logfile.write().await;
         let mut last_log_file_iter = LogFileIter::new(&last_logfile_w, VLOG_HEADER_SIZE);
         loop {
-            if let Some(_) = last_log_file_iter.next().map_err(|e| {
-                anyhow!(
-                    "While iterating over: {:?} for {}",
-                    last_logfile_w.mmap.file_path,
-                    e
-                )
-            })? {
+            if let Some(_) = last_log_file_iter.next()? {
                 continue;
             };
             break;
@@ -141,7 +135,6 @@ impl ValueLog {
                 let (log_file, _) = LogFile::open(
                     fid,
                     &path,
-                    read_only,
                     fp_open_opt.clone(),
                     2 * Options::vlog_file_size(),
                     key_registry.clone(),
@@ -171,7 +164,6 @@ impl ValueLog {
         let (log_file, _) = LogFile::open(
             fid,
             &file_path,
-            true,
             fp_open_opt,
             2 * Options::vlog_file_size(),
             self.key_registry.clone(),

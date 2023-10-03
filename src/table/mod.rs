@@ -165,12 +165,12 @@ impl Table {
         if opt.block_size == 0 && opt.compression != CompressionType::None {
             bail!("Block size cannot be zero");
         }
-        let id = parse_file_id(&mmap_f.file_path, SSTABLE_FILE_EXT).ok_or(anyhow!(
+        let id = parse_file_id(&mmap_f.path(), SSTABLE_FILE_EXT).ok_or(anyhow!(
             "Invalid filename: {:?} for mmap_file",
-            &mmap_f.file_path
+            &mmap_f.path()
         ))?;
 
-        let table_size = mmap_f.get_file_size()?;
+        let table_size = mmap_f.get_file_size()? as usize;
         let created_at = mmap_f.get_modified_time()?;
 
         let mut cipher = None;
@@ -232,7 +232,7 @@ impl Table {
 
     #[inline]
     pub(crate) fn sync_mmap(&self) -> io::Result<()> {
-        self.0.mmap_f.flush()
+        self.0.mmap_f.sync_all()
     }
 
     #[inline]
@@ -355,7 +355,7 @@ impl TableInner {
         checksum.verify(data).map_err(|e| {
             anyhow!(
                 "failed to verify checksum for table:{:?} for {}",
-                &mmap_f.file_path,
+                &mmap_f.path(),
                 e
             )
         })?;
@@ -390,7 +390,7 @@ impl TableInner {
             .map_err(|e| {
                 anyhow!(
                     "Failed to read from file: {:?} at offset: {}, len: {} for {}",
-                    &self.mmap_f.file_path,
+                    &self.mmap_f.path(),
                     blk_offset.offset(),
                     blk_offset.len(),
                     e
@@ -401,7 +401,7 @@ impl TableInner {
         let raw_data = self.decompress(de_raw_data).map_err(|e| {
             anyhow!(
                 "Failed to decode compressed data in file: {:?} at offset: {}, len: {} for {}",
-                &self.mmap_f.file_path,
+                &self.mmap_f.path(),
                 blk_offset.offset(),
                 blk_offset.len(),
                 e
@@ -440,7 +440,7 @@ impl TableInner {
     }
     #[inline]
     fn get_file_path(&self) -> &PathBuf {
-        &self.mmap_f.file_path
+        &self.mmap_f.path()
     }
     #[inline]
     fn decompress(&self, block_data: Vec<u8>) -> anyhow::Result<Vec<u8>> {

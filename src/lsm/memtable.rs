@@ -12,9 +12,8 @@ use crate::{
 };
 use anyhow::Result;
 use anyhow::{anyhow, bail};
-use bytes::BytesMut;
 
-use super::wal::LogFile;
+use super::log_file::LogFile;
 #[derive(Debug)]
 pub(crate) struct MemTable {
     skip_list: SkipList,
@@ -37,7 +36,7 @@ pub(crate) async fn open_mem_tables(
         .collect::<Vec<_>>();
     mem_file_fids.sort();
     for fid in &mem_file_fids {
-        let mut fp_open_opt = OpenOptions::new();
+        let mut fp_open_opt: OpenOptions = OpenOptions::new();
         fp_open_opt.read(true).write(!Options::read_only());
         open_mem_table(key_registry, *fid as u32, fp_open_opt).await;
     }
@@ -60,7 +59,6 @@ async fn open_mem_table(
     let (log_file, is_new) = LogFile::open(
         mem_file_fid,
         &mem_file_path,
-        Options::read_only(),
         fp_open_opt,
         2 * Options::memtable_size(),
         key_registry.clone(),
@@ -92,7 +90,7 @@ pub(crate) async fn new_mem_table(
         .await
         .map_err(|e| anyhow!("Gor error: {} for id {}", e, mem_file_fid))?;
     if !is_new {
-        bail!("File {:?} already exists", &memtable.wal.mmap.file_path);
+        bail!("File {:?} already exists", &memtable.wal.path());
     }
     Ok(memtable)
 }
@@ -111,11 +109,9 @@ impl MemTable {
         if self.skip_list.mem_size() >= Options::memtable_size() {
             return true;
         }
-        self.wal.write_at() >= Options::memtable_size()
+        self.wal.write_offset() >= Options::memtable_size()
     }
 
     #[inline]
-    pub(crate) fn put(&mut self, entry: &Entry) {
-        
-    }
+    pub(crate) fn put(&mut self, entry: &Entry) {}
 }
