@@ -1,10 +1,11 @@
 use bytes::BufMut;
-use core::slice;
+
 use log::error;
 use memmap2::MmapRaw;
 use std::fs::{remove_file, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref, DerefMut, Range};
+use std::slice;
 use std::time::SystemTime;
 use std::{fs::OpenOptions, path::PathBuf};
 
@@ -282,42 +283,31 @@ impl MmapFile {
 }
 impl Read for MmapFile {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        // BufReader
         if self.r_buf_pos == self.r_buf.len() {
             if buf.len() >= self.r_buf.capacity() {
-                self.r_buf_pos = 0;
                 self.r_buf.clear();
+                self.r_buf_pos = 0;
 
-                if self.r_pos + buf.len() <= self.raw.len() {
-                    unsafe {
-                        Self::raw_read(&self.raw, self.r_pos, buf);
-                    };
-                    self.r_pos += buf.len();
-                    return Ok(buf.len());
-                } else {
-                    let buf_len = self.raw.len() - self.r_pos;
-                    unsafe {
-                        Self::raw_read(&self.raw, self.r_pos, &mut buf[..buf_len]);
-                    }
-                    self.r_pos += buf_len;
-                    return Ok(buf_len);
-                }
-            } else {
-                let remain = self.raw.len() - self.r_pos;
-                if remain >= self.r_buf.capacity() {
-                    unsafe {
-                        Self::raw_read(&self.raw, self.r_pos, &mut self.r_buf);
-                    }
-                    // self.r_pos+=self.
-                } else {
-                    unsafe {
-                        Self::raw_read(&self.raw, self.r_pos, &mut self.r_buf[..remain]);
-                    }
-                }
+                let size = unsafe { Self::raw_read(&self.raw, self.r_pos, buf) };
+                self.r_pos += size;
+                return Ok(size);
             }
-        }
 
-        todo!()
+            let remain = (self.raw.len() - self.r_pos).min(self.r_buf.capacity());
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    self.raw.as_ptr().add(self.r_pos),
+                    self.r_buf.as_mut_ptr(),
+                    remain,
+                );
+                self.r_buf.set_len(remain);
+            }
+            self.r_pos += remain;
+            self.r_buf_pos = 0;
+        }
+        let size = self.r_buf[self.r_buf_pos..].as_ref().read(buf)?;
+        self.r_buf_pos += size;
+        Ok(size)
     }
 }
 impl Write for MmapFile {
@@ -353,36 +343,74 @@ impl MmapFile {
     #[inline]
     unsafe fn raw_write(raw: &MmapRaw, offset: usize, data: &[u8]) {
         std::ptr::copy_nonoverlapping(data.as_ptr(), raw.as_mut_ptr().add(offset), data.len());
+        // raw.flush_async_range(offset, len);
     }
+
     #[inline]
-    unsafe fn raw_read(raw: &MmapRaw, offset: usize, buf: &mut [u8]) {
-        std::ptr::copy_nonoverlapping(raw.as_ptr().add(offset), buf.as_mut_ptr(), buf.len());
+    unsafe fn raw_read(raw: &MmapRaw, offset: usize, buf: &mut [u8]) -> usize {
+        let buf_len = buf.len().min(raw.len() - offset);
+        let s = slice::from_raw_parts(raw.as_mut_ptr().add(offset) as _, buf_len);
+        if buf_len == 1 {
+            buf[0] = s[0];
+        } else {
+            buf[..buf_len].copy_from_slice(s);
+        }
+        buf_len
     }
+
     #[inline]
-    pub(crate) fn write_slice(&mut self, offset: usize, data: &[u8]) -> io::Result<()> {
+    pub(crate) fn write_slice(&mut self, mut offset: usize, mut data: &[u8]) -> io::Result<()> {
         let buf_offset = self.w_pos + self.w_buf.len();
         if offset == buf_offset {
-            self.write(data);
-        } else if offset < self.w_pos || offset > buf_offset {
+            self.write(data)?;
+        } else if offset > buf_offset || data.len() >= self.w_buf.capacity() {
             self.check_len_satisfied(data.len())?;
             unsafe {
                 Self::raw_write(&self.raw, offset, data);
             };
         } else {
-            unsafe {
-                self.w_buf.set_len(offset - self.w_pos);
+            if offset < self.w_pos {
+                let s = self.w_pos - offset;
+                let (l_data, r_data) = data.split_at(s);
+                unsafe {
+                    Self::raw_write(&self.raw, offset, l_data);
+                }
+                data = r_data;
+                offset += s;
             }
-            self.write(data);
+            let end_offset = offset + data.len();
+            if buf_offset < end_offset {
+                let s = end_offset - buf_offset;
+                let (l_data, r_data) = data.split_at(s);
+                unsafe {
+                    Self::raw_write(&self.raw, offset, r_data);
+                }
+                data = l_data;
+            }
+            let start_offset = offset - self.w_pos;
+            let end_offset = start_offset + data.len();
+            self.w_buf[start_offset..end_offset].copy_from_slice(data);
         };
         Ok(())
     }
+    // #[inline]
+    // pub(crate) fn read_slice(&mut self, offset: usize, data: &mut [u8]) -> io::Result<()> {
+    //     if self.read_offset() == offset {
+    //         self.read_exact(data)?;
+    //     } else {
+    //         let buf_start_offset = self.r_pos - self.r_buf.len();
+    //         // if buf_start_offset<= offset && offset
+    //     }
+
+    //     Ok(())
+    // }
 }
 impl Drop for MmapFile {
     fn drop(&mut self) {
         if !self.panicked {
             let _r = self.flush_buf();
         }
-        self.sync_all();
+        let _ = self.sync_all();
     }
 }
 #[inline]
@@ -399,6 +427,8 @@ unsafe fn write_to_buffer_unchecked(buffer: &mut Vec<u8>, buf: &[u8]) {
 #[tokio::test]
 async fn test_raw() {
     // BufWriter;
+    let p = (1..2);
+
     let file_path = PathBuf::from("tmp/a.x");
     let mut fp_open_opt = OpenOptions::new();
     fp_open_opt.create(true).read(true).write(true);
@@ -411,12 +441,15 @@ async fn test_raw() {
     // let mut buf: Vec<u8> = Vec::with_capacity(10);
     let mut buf = vec![0 as u8; 10];
     buf.clear();
-    let mut buffer=&mut buf;
+    let mut buffer = buf.as_mut_slice();
     unsafe {
         // write_to_buffer_unchecked(&mut buffer, data);
-        std::ptr::copy_nonoverlapping(data.as_ptr(), buffer.as_mut_ptr().add(buffer.len()), data.len());
-        buffer.set_len(data.len());
+        std::ptr::copy_nonoverlapping(data.as_ptr(), buffer.as_mut_ptr(), data.len());
+
+        // buffer.set_len(data.len());
     }
+    // buffer.len()
+
     // buf.put_slice();
     // unsafe{
 
@@ -427,7 +460,6 @@ async fn test_raw() {
     // unsafe {
     // MmapFile::raw_read(&mmap.raw, 0, buf);
     // };
-    dbg!(buffer);
 }
 #[test]
 fn test_a() {
@@ -437,11 +469,20 @@ fn test_a() {
     let k = v.as_mut_slice();
     let s = String::from("abc");
     let a = s.as_bytes();
+    let (left, right) = a.split_at(4);
+    dbg!(left.len());
+    dbg!(right.len());
     // let a=a.as_ptr();
     // dbg!(p[..8].len());
-    unsafe {
-        std::ptr::copy_nonoverlapping(a.as_ptr(), k.as_mut_ptr(), a.len());
-    };
-    dbg!(v);
+    // unsafe {
+    //     std::ptr::copy_nonoverlapping(a.as_ptr(), k.as_mut_ptr(), a.len());
+    // };
+    // dbg!(v);
     // dbg!(String::from_utf8_lossy(v.as_ref()));
+}
+#[test]
+fn test_range() {
+    let mut a = (0..2);
+    let mut b = (2..3);
+    let k = a.chain(b);
 }
