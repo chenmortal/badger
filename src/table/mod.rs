@@ -161,7 +161,7 @@ impl TableOption {
 }
 
 impl Table {
-    pub(crate) async fn open(mmap_f: MmapFile, opt: TableOption) -> anyhow::Result<Self> {
+    pub(crate) async fn open(mut mmap_f: MmapFile, opt: TableOption) -> anyhow::Result<Self> {
         if opt.block_size == 0 && opt.compression != CompressionType::None {
             bail!("Block size cannot be zero");
         }
@@ -177,7 +177,7 @@ impl Table {
         if let Some(data_key) = opt.datakey.clone() {
             cipher = AesCipher::new(data_key.data.as_ref(), true)?.into();
         }
-        let (index_buf, cheap_index) = TableInner::init_index(table_size, &mmap_f, &cipher)?;
+        let (index_buf, cheap_index) = TableInner::init_index(table_size, &mut mmap_f, &cipher)?;
 
         let mut inner = TableInner {
             lock: Default::default(),
@@ -331,26 +331,34 @@ impl TableInner {
 
         //read checksum len from the last 4 bytes
         read_pos -= 4;
-        let mut buf = mmap_f.read_slice(read_pos as usize, 4)?;
+        // let mut buf = [0; 4];
+        // mmap_f.read_slice(read_pos, &mut buf[..])?;
+        let mut buf = mmap_f.read_slice_ref(read_pos as usize, 4)?;
         let checksum_len = buf.get_u32() as i32;
         if checksum_len < 0 {
             bail!("checksum length less than zero. Data corrupted");
         }
-
+        let checksum_len = checksum_len as usize;
         //read checksum
         read_pos -= checksum_len as usize;
-        let buf = mmap_f.read_slice(read_pos, checksum_len as usize)?;
+        // let mut buf = vec![0; checksum_len];
+        // mmap_f.read_slice_ref(read_pos, &mut buf)?;
+        let buf = mmap_f.read_slice_ref(read_pos, checksum_len as usize)?;
         let checksum = Checksum::decode(buf)?;
 
         //read index size from the footer
         read_pos -= 4;
-        let mut buf = mmap_f.read_slice(read_pos, 4)?;
+        // let mut buf = [0; 4];
+        // mmap_f.read_slice(read_pos, &mut buf);
+        let mut buf = mmap_f.read_slice_ref(read_pos, 4)?;
         let index_len = buf.get_u32() as usize;
 
         //read index
         read_pos -= index_len;
         // let index_start = read_pos;
-        let data = mmap_f.read_slice(read_pos, index_len)?;
+        // let mut data = vec![0; index_len];
+        // mmap_f.read_slice(read_pos, &mut data);
+        let data = mmap_f.read_slice_ref(read_pos, index_len)?;
 
         checksum.verify(data).map_err(|e| {
             anyhow!(
@@ -359,7 +367,7 @@ impl TableInner {
                 e
             )
         })?;
-        let index_buf = TableIndexBuf::from_vec(try_decrypt(cipher, data)?)?;
+        let index_buf = TableIndexBuf::from_vec(try_decrypt(cipher, data.as_ref())?)?;
 
         let cheap_index = CheapIndex::new(&index_buf);
 
@@ -386,7 +394,7 @@ impl TableInner {
 
         let raw_data_ref = self
             .mmap_f
-            .read_slice(blk_offset.offset() as usize, blk_offset.len() as usize)
+            .read_slice_ref(blk_offset.offset() as usize, blk_offset.len() as usize)
             .map_err(|e| {
                 anyhow!(
                     "Failed to read from file: {:?} at offset: {}, len: {} for {}",

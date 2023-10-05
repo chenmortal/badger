@@ -126,7 +126,8 @@ impl MmapFile {
     pub(crate) fn read_offset(&self) -> usize {
         self.r_pos - (self.r_buf.len() - self.r_buf_pos)
     }
-    pub(crate) fn read_slice(&self, offset: usize, len: usize) -> Result<&[u8], io::Error> {
+
+    pub(crate) fn read_slice_ref(&self, offset: usize, len: usize) -> Result<&[u8], io::Error> {
         let p = self.as_ref();
         if p[offset..].len() < len {
             return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
@@ -247,7 +248,7 @@ impl MmapFile {
             }
             // self.as_mut()[self.w_pos as usize..].copy_from_slice(&buf);
             unsafe {
-                Self::raw_write(&self.raw, self.w_pos, buf);
+                Self::raw_write(&self.raw, self.w_pos, buf)?;
             };
 
             self.w_pos += buf.len();
@@ -261,11 +262,6 @@ impl MmapFile {
     fn flush_buf(&mut self) -> io::Result<()> {
         self.panicked = true;
         let r = self.check_len_satisfied(self.w_buf.len());
-
-        unsafe {
-            Self::raw_write(&self.raw, self.w_pos, &self.w_buf);
-        }
-
         self.panicked = false;
         if let Err(e) = r {
             match e.kind() {
@@ -275,6 +271,18 @@ impl MmapFile {
                 }
             }
         }
+        self.panicked = true;
+        let r = unsafe { Self::raw_write(&self.raw, self.w_pos, &self.w_buf) };
+        self.panicked = false;
+        if let Err(e) = r {
+            match e.kind() {
+                io::ErrorKind::Interrupted => {}
+                _ => {
+                    return Err(e);
+                }
+            }
+        }
+
         self.w_pos += self.w_buf.len();
         self.w_buf.clear();
 
@@ -340,10 +348,11 @@ impl Write for MmapFile {
     }
 }
 impl MmapFile {
-    #[inline]
-    unsafe fn raw_write(raw: &MmapRaw, offset: usize, data: &[u8]) {
+    #[inline(always)]
+    unsafe fn raw_write(raw: &MmapRaw, offset: usize, data: &[u8]) -> io::Result<()> {
         std::ptr::copy_nonoverlapping(data.as_ptr(), raw.as_mut_ptr().add(offset), data.len());
-        // raw.flush_async_range(offset, len);
+        raw.flush_async_range(offset, data.len())?;
+        Ok(())
     }
 
     #[inline]
@@ -364,17 +373,22 @@ impl MmapFile {
         if offset == buf_offset {
             self.write(data)?;
         } else if offset > buf_offset || data.len() >= self.w_buf.capacity() {
-            self.check_len_satisfied(data.len())?;
-            unsafe {
-                Self::raw_write(&self.raw, offset, data);
-            };
+            self.panicked = true;
+            let r = self.check_len_satisfied(data.len());
+            self.panicked = false;
+            r?;
+            self.panicked = true;
+            let r = unsafe { Self::raw_write(&self.raw, offset, data) };
+            self.panicked = false;
+            r?;
         } else {
             if offset < self.w_pos {
                 let s = self.w_pos - offset;
                 let (l_data, r_data) = data.split_at(s);
-                unsafe {
-                    Self::raw_write(&self.raw, offset, l_data);
-                }
+                self.panicked = true;
+                let r = unsafe { Self::raw_write(&self.raw, offset, l_data) };
+                self.panicked = false;
+                r?;
                 data = r_data;
                 offset += s;
             }
@@ -382,9 +396,14 @@ impl MmapFile {
             if buf_offset < end_offset {
                 let s = end_offset - buf_offset;
                 let (l_data, r_data) = data.split_at(s);
-                unsafe {
-                    Self::raw_write(&self.raw, offset, r_data);
-                }
+                self.panicked = true;
+                let r = self.check_len_satisfied(end_offset);
+                self.panicked = false;
+                r?;
+                self.panicked = true;
+                let r = unsafe { Self::raw_write(&self.raw, offset, r_data) };
+                self.panicked = false;
+                r?;
                 data = l_data;
             }
             let start_offset = offset - self.w_pos;
@@ -393,17 +412,68 @@ impl MmapFile {
         };
         Ok(())
     }
-    // #[inline]
-    // pub(crate) fn read_slice(&mut self, offset: usize, data: &mut [u8]) -> io::Result<()> {
-    //     if self.read_offset() == offset {
-    //         self.read_exact(data)?;
-    //     } else {
-    //         let buf_start_offset = self.r_pos - self.r_buf.len();
-    //         // if buf_start_offset<= offset && offset
-    //     }
-
-    //     Ok(())
-    // }
+    #[inline]
+    pub(crate) fn read_slice(&mut self, mut offset: usize, mut data: &mut [u8]) -> io::Result<()> {
+        let buf_end_offset = self.read_offset();
+        if buf_end_offset == offset {
+            self.read_exact(data)?; //sequential reading
+        } else if offset > self.r_pos || data.len() >= self.r_buf.capacity() {
+            let read_size = unsafe { Self::raw_read(&self.raw, offset, data) };
+            if read_size < data.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "failed to read whole data, only read {}, need read {}",
+                        read_size,
+                        data.len()
+                    ),
+                ));
+            }
+        } else {
+            //random reading
+            let mut read_size = 0;
+            let need_size = data.len();
+            let buf_start_offset = self.r_pos - self.r_buf.len();
+            if offset < buf_start_offset {
+                let (l_data, r_data) = data.split_at_mut(buf_start_offset - offset);
+                read_size = unsafe { Self::raw_read(&self.raw, offset, l_data) };
+                if read_size < l_data.len() {
+                    // return Ok(read_size);
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        format!(
+                            "failed to read whole data, only read {}, need read {}",
+                            read_size, need_size
+                        ),
+                    ));
+                }
+                data = r_data;
+                offset += read_size;
+            }
+            let end_offset = offset + data.len();
+            if self.r_pos >= end_offset {
+                data.copy_from_slice(
+                    &self.r_buf[offset - buf_start_offset..end_offset - buf_start_offset],
+                );
+                read_size += data.len();
+            } else {
+                let (l_data, r_data) = data.split_at_mut(self.r_pos - offset);
+                l_data.copy_from_slice(&self.r_buf[offset - buf_start_offset..]);
+                read_size += l_data.len();
+                read_size += unsafe { Self::raw_read(&self.raw, self.r_pos, r_data) };
+            }
+            if read_size < need_size {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "failed to read whole data, only read {}, need read {}",
+                        read_size, need_size
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 impl Drop for MmapFile {
     fn drop(&mut self) {
