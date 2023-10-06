@@ -8,8 +8,10 @@ use crate::{
     lsm::log_file::LogFile,
     metrics::{add_num_bytes_vlog_written, add_num_writes_vlog},
     options::Options,
-    txn::{entry::DecEntry, TxnTs},
-    vlog::{BIT_FIN_TXN, BIT_TXN},
+    txn::{
+        entry::{Entry, EntryMeta},
+        TxnTs,
+    },
     write::WriteReq,
 };
 
@@ -61,8 +63,8 @@ impl ValueLog {
                 let offset = self.writable_log_offset();
 
                 let tmp_meta = dec_entry.meta();
-                dec_entry.clean_meta_bit(BIT_TXN | BIT_FIN_TXN);
-
+                dec_entry.meta_mut().remove(EntryMeta::TXN);
+                dec_entry.meta_mut().remove(EntryMeta::FIN_TXN);
                 let len = cur_logfile_w.encode_entry(&mut buf, &dec_entry, offset);
 
                 dec_entry.set_meta(tmp_meta);
@@ -151,7 +153,7 @@ impl ValueLog {
     }
 }
 impl LogFile {
-    fn encode_entry(&self, buf: &mut Vec<u8>, entry: &DecEntry, offset: usize) -> usize {
+    pub(crate) fn encode_entry(&self, buf: &mut Vec<u8>, entry: &Entry, offset: usize) -> usize {
         let header = EntryHeader::new(&entry);
         let mut hash_writer = HashWriter {
             writer: buf,

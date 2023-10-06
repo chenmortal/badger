@@ -3,12 +3,14 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
 };
 
+use serde::{Deserialize, Serialize};
+
+use super::TxnTs;
 use crate::{
     kv::KeyTs,
     vlog::{header::EntryHeader, BIT_FIN_TXN, BIT_TXN},
 };
-
-use super::TxnTs;
+use std::fmt::Debug;
 #[derive(Debug, Default, Clone)]
 pub struct Entry {
     key_ts: KeyTs,
@@ -16,8 +18,30 @@ pub struct Entry {
     expires_at: u64,
     offset: usize,
     user_meta: u8,
-    meta: u8,
+    meta: EntryMeta,
     header_len: usize,
+}
+#[derive(Default, Clone, Copy, Serialize, Deserialize)]
+pub struct EntryMeta(u8);
+bitflags::bitflags! {
+    impl EntryMeta: u8 {
+        const DELETE = 1<<0;
+        const VALUE_POINTER = 1 << 1;
+        const DISCARD_EARLIER_VERSIONS = 1 << 2;
+        const MERGE_ENTRY=1<<3;
+        const TXN=1<<6;
+        const FIN_TXN=1<<7;
+    }
+}
+impl std::fmt::Debug for EntryMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        bitflags::parser::to_writer(self, f)
+    }
+}
+impl std::fmt::Display for EntryMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        bitflags::parser::to_writer(self, f)
+    }
 }
 
 impl Entry {
@@ -29,7 +53,7 @@ impl Entry {
             expires_at: 0,
             offset: 0,
             user_meta: 0,
-            meta: 0,
+            meta: EntryMeta::default(),
             header_len: 0,
         }
     }
@@ -87,11 +111,11 @@ impl Entry {
         self.user_meta
     }
 
-    pub fn meta(&self) -> u8 {
+    pub fn meta(&self) -> EntryMeta {
         self.meta
     }
 
-    pub(crate) fn set_meta(&mut self, meta: u8) {
+    pub(crate) fn set_meta(&mut self, meta: EntryMeta) {
         self.meta = meta;
     }
 
@@ -99,7 +123,7 @@ impl Entry {
         self.key_ts.set_txn_ts(version)
     }
 
-    pub fn meta_mut(&mut self) -> &mut u8 {
+    pub fn meta_mut(&mut self) -> &mut EntryMeta {
         &mut self.meta
     }
 
@@ -129,12 +153,12 @@ impl Entry {
             self.key().len() + 12 + 2
         }
     }
-    pub(crate) fn clean_meta_bit(&mut self, clean_meta: u8) {
-        self.meta = self.meta & (!clean_meta);
-    }
-    pub(crate) fn add_meta_bit(&mut self, add_meta: u8) {
-        self.meta |= add_meta;
-    }
+    // pub(crate) fn clean_meta_bit(&mut self, clean_meta: u8) {
+    //     self.meta = self.meta & (!clean_meta);
+    // }
+    // pub(crate) fn add_meta_bit(&mut self, add_meta: u8) {
+    //     self.meta |= add_meta;
+    // }
 }
 
 // decorated entry with val_threshold

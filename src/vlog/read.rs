@@ -6,10 +6,13 @@ use std::{
 use crate::{
     kv::ValuePointer,
     lsm::log_file::LogFile,
-    txn::{entry::Entry, TxnTs},
+    txn::{
+        entry::{Entry, EntryMeta},
+        TxnTs,
+    },
 };
 
-use super::{header::EntryHeader, BIT_FIN_TXN, BIT_TXN};
+use super::header::EntryHeader;
 use anyhow::bail;
 use bytes::Buf;
 #[derive(Debug)]
@@ -92,7 +95,7 @@ impl<'a> LogFileIter<'a> {
         loop {
             match self.read_entry() {
                 Ok((entry, v_ptr)) => {
-                    if entry.meta() & BIT_TXN > 0 {
+                    if entry.meta().contains(EntryMeta::TXN) {
                         let txn_ts = entry.version();
                         if last_commit == TxnTs::default() {
                             last_commit = txn_ts;
@@ -101,7 +104,7 @@ impl<'a> LogFileIter<'a> {
                             break;
                         }
                         self.entries_vptrs.push((entry, v_ptr));
-                    } else if entry.meta() & BIT_FIN_TXN > 0 {
+                    } else if entry.meta().contains(EntryMeta::FIN_TXN) {
                         let txn_ts = entry.version();
                         if last_commit != txn_ts {
                             break;

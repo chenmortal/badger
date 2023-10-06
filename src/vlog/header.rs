@@ -1,16 +1,17 @@
 use std::io::Read;
 
+use bitflags::Flags;
 use bytes::{Buf, BufMut};
 use integer_encoding::{VarInt, VarIntReader};
 
-use crate::txn::entry::Entry;
+use crate::txn::entry::{Entry, EntryMeta};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct EntryHeader {
     key_len: u32,
     value_len: u32,
     expires_at: u64,
-    meta: u8,
+    meta: EntryMeta,
     user_meta: u8,
 }
 pub(crate) const MAX_HEADER_SIZE: usize = 22;
@@ -29,7 +30,7 @@ impl EntryHeader {
     // +------+----------+------------+--------------+-----------+
     pub(crate) fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(22);
-        out.put_u8(self.meta);
+        out.put_u8(self.meta.bits());
         out.put_u8(self.user_meta);
         out.put_slice(self.key_len.encode_var_vec().as_ref());
         out.put_slice(self.value_len.encode_var_vec().as_ref());
@@ -37,7 +38,7 @@ impl EntryHeader {
         out
     }
     pub(crate) fn decode(mut buf: &[u8]) -> (EntryHeader, usize) {
-        let meta = buf.get_u8();
+        let meta = EntryMeta::from_bits_retain(buf.get_u8());
         let user_meta = buf.get_u8();
         let mut index = 2;
 
@@ -63,7 +64,7 @@ impl EntryHeader {
     pub(super) fn decode_from<R: Read>(reader: &mut R) -> std::io::Result<Self> {
         let meta: u8 = 0;
         reader.read_exact(&mut [meta])?;
-
+        let meta=EntryMeta::from_bits_retain(meta);
         let user_meta: u8 = 0;
         reader.read_exact(&mut [user_meta])?;
 
@@ -88,7 +89,7 @@ impl EntryHeader {
         self.value_len
     }
 
-    pub(crate) fn meta(&self) -> u8 {
+    pub(crate) fn meta(&self) -> EntryMeta {
         self.meta
     }
 

@@ -14,11 +14,10 @@ use crate::{
     options::Options,
     txn::{BADGER_PREFIX, HASH},
     util::now_since_unix,
-    vlog::{BIT_DELETE, BIT_FIN_TXN, BIT_TXN},
 };
 
 use super::{
-    entry::{DecEntry, Entry},
+    entry::{DecEntry, Entry, EntryMeta},
     item::{Item, ItemInner, PRE_FETCH_STATUS},
     TxnTs, TXN_KEY,
 };
@@ -110,7 +109,7 @@ impl Txn {
             .await
             .map_err(|e| anyhow!("DB::Get key: {:?} for {}", &key, e))?;
 
-        if value_struct.value().is_empty() && value_struct.meta() == 0 {
+        if value_struct.value().is_empty() && value_struct.meta().bits() == 0 {
             bail!(DBError::KeyNotFound)
         }
         if is_deleted_or_expired(value_struct.meta(), value_struct.expires_at()) {
@@ -132,7 +131,7 @@ impl Txn {
     pub async fn delete(&mut self, key: &[u8]) -> anyhow::Result<()> {
         let mut e = Entry::default();
         e.set_key(key.to_vec());
-        e.set_meta(BIT_DELETE);
+        e.set_meta(EntryMeta::DELETE);
         self.set_entry(e).await
     }
     pub async fn set_entry(&mut self, e: Entry) -> anyhow::Result<()> {
@@ -261,7 +260,7 @@ impl Txn {
         let mut entries = Vec::with_capacity(pending_wirtes_len + duplicate_writes_len + 1);
         let mut process_entry = |mut e: DecEntry| {
             if keep_together {
-                *e.meta_mut() |= BIT_TXN;
+                e.meta_mut().insert(EntryMeta::TXN)
             }
             entries.push(e);
         };
@@ -280,7 +279,7 @@ impl Txn {
             debug_assert!(commit_ts != TxnTs::default());
             let mut entry = Entry::new(TXN_KEY, commit_ts.to_u64().to_string().as_bytes());
             entry.set_version(commit_ts);
-            entry.set_meta(BIT_FIN_TXN);
+            entry.set_meta(EntryMeta::FIN_TXN);
             entries.push(entry.into())
         }
 
@@ -301,10 +300,11 @@ impl Txn {
 }
 
 #[inline]
-fn is_deleted_or_expired(meta: u8, expires_at: u64) -> bool {
-    if meta & BIT_DELETE > 0 {
+fn is_deleted_or_expired(meta: EntryMeta, expires_at: u64) -> bool {
+    if meta.contains(EntryMeta::DELETE) {
         return true;
-    }
+    };
+
     if expires_at == 0 {
         return false;
     }
