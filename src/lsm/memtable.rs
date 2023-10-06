@@ -2,7 +2,7 @@ use std::fs::{read_dir, OpenOptions};
 
 use crate::{
     db::NextId,
-    default::MEM_FILE_EXT,
+    default::{DEFAULT_PAGE_SIZE, MEM_FILE_EXT},
     errors::err_file,
     key_registry::KeyRegistry,
     options::Options,
@@ -17,9 +17,9 @@ use super::log_file::LogFile;
 #[derive(Debug)]
 pub(crate) struct MemTable {
     skip_list: SkipList,
-    wal: LogFile,
+    pub(super) wal: LogFile,
     max_version: usize,
-    // buf: BytesMut,
+    pub(super) buf: Vec<u8>, // buf: BytesMut,
 }
 
 pub(crate) async fn open_mem_tables(
@@ -70,7 +70,7 @@ async fn open_mem_table(
         skip_list,
         wal: log_file,
         max_version: 0,
-        // buf: BytesMut::new(),
+        buf: Vec::with_capacity(DEFAULT_PAGE_SIZE.to_owned()),
     };
     if is_new {
         return Ok((mem_table, true));
@@ -112,6 +112,8 @@ impl MemTable {
         self.wal.write_offset() >= Options::memtable_size()
     }
 
-    #[inline]
-    pub(crate) fn put(&mut self, entry: &Entry) {}
+    // #[inline]
+    // pub(crate) fn put(&mut self, entry: &Entry) {
+
+    // }
 }

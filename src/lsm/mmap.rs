@@ -1,10 +1,8 @@
-use bytes::BufMut;
-
 use log::error;
 use memmap2::MmapRaw;
 use std::fs::{remove_file, File};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
-use std::ops::{Deref, DerefMut, Range};
+use std::io::{self, Read, Write};
+use std::ops::{Deref, DerefMut};
 use std::slice;
 use std::time::SystemTime;
 use std::{fs::OpenOptions, path::PathBuf};
@@ -493,66 +491,4 @@ unsafe fn write_to_buffer_unchecked(buffer: &mut Vec<u8>, buf: &[u8]) {
     std::ptr::copy_nonoverlapping(src, dst, buf_len);
 
     buffer.set_len(old_len + buf_len);
-}
-#[tokio::test]
-async fn test_raw() {
-    // BufWriter;
-    let p = (1..2);
-
-    let file_path = PathBuf::from("tmp/a.x");
-    let mut fp_open_opt = OpenOptions::new();
-    fp_open_opt.create(true).read(true).write(true);
-    let mut mmap = MmapFile::open(&file_path, fp_open_opt, 10).unwrap().0;
-    let s = String::from("abc");
-    let data = s.as_bytes();
-    unsafe {
-        MmapFile::raw_write(&mmap.raw, 0, data);
-    }
-    // let mut buf: Vec<u8> = Vec::with_capacity(10);
-    let mut buf = vec![0 as u8; 10];
-    buf.clear();
-    let mut buffer = buf.as_mut_slice();
-    unsafe {
-        // write_to_buffer_unchecked(&mut buffer, data);
-        std::ptr::copy_nonoverlapping(data.as_ptr(), buffer.as_mut_ptr(), data.len());
-
-        // buffer.set_len(data.len());
-    }
-    // buffer.len()
-
-    // buf.put_slice();
-    // unsafe{
-
-    // std::ptr::write_bytes(buf.as_mut_ptr(), mmap.raw.as_ptr(), 3);
-    // std::ptr::write_volatile(dst, src)
-    // }
-    // let buf = buf.as_mut_slice();
-    // unsafe {
-    // MmapFile::raw_read(&mmap.raw, 0, buf);
-    // };
-}
-#[test]
-fn test_a() {
-    let mut v: Vec<u8> = Vec::with_capacity(10);
-    // let p: &mut [u8] = &mut v;
-    // let p=v.as_mut_ptr();
-    let k = v.as_mut_slice();
-    let s = String::from("abc");
-    let a = s.as_bytes();
-    let (left, right) = a.split_at(4);
-    dbg!(left.len());
-    dbg!(right.len());
-    // let a=a.as_ptr();
-    // dbg!(p[..8].len());
-    // unsafe {
-    //     std::ptr::copy_nonoverlapping(a.as_ptr(), k.as_mut_ptr(), a.len());
-    // };
-    // dbg!(v);
-    // dbg!(String::from_utf8_lossy(v.as_ref()));
-}
-#[test]
-fn test_range() {
-    let mut a = (0..2);
-    let mut b = (2..3);
-    let k = a.chain(b);
 }

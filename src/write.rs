@@ -20,7 +20,7 @@ use crate::{
     lsm::memtable::new_mem_table,
     metrics::{add_num_bytes_written_user, add_num_puts, set_pending_writes},
     options::Options,
-    txn::entry::DecEntry,
+    txn::entry::{DecEntry, EntryMeta},
     vlog::BIT_VALUE_POINTER,
 };
 use anyhow::anyhow;
@@ -192,14 +192,14 @@ impl DB {
         let mut memtable_w = self.memtable.write().await;
         for (dec_entry, vptr) in req.entries_vptrs_mut() {
             if vptr.is_empty() {
-                dec_entry.clean_meta_bit(BIT_VALUE_POINTER);
+                dec_entry.meta_mut().remove(EntryMeta::VALUE_POINTER);
             } else {
-                dec_entry.add_meta_bit(BIT_VALUE_POINTER);
+                dec_entry.meta_mut().insert(EntryMeta::VALUE_POINTER);
                 dec_entry.set_value(vptr.encode());
             }
         }
     }
-    fn p(){
+    fn p() {
         // memmap2::MmapRaw::map_raw(file)
     }
 }

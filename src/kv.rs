@@ -1,4 +1,4 @@
-use crate::txn::TxnTs;
+use crate::txn::{entry::EntryMeta, TxnTs};
 use bincode::{DefaultOptions, Options};
 use bytes::{Buf, BufMut};
 use serde::{Deserialize, Serialize};
@@ -115,7 +115,7 @@ impl Ord for KeyTsBorrow<'_> {
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub(crate) struct ValueInner {
-    meta: u8,
+    meta: EntryMeta,
     user_meta: u8,
     expires_at: u64,
     value: Vec<u8>,
@@ -170,7 +170,7 @@ impl ValueStruct {
     pub(crate) fn value(&self) -> &Vec<u8> {
         &self.inner.value
     }
-    pub(crate) fn meta(&self) -> u8 {
+    pub(crate) fn meta(&self) -> EntryMeta {
         self.inner.meta
     }
     pub(crate) fn user_meta(&self) -> u8 {

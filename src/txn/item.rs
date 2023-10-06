@@ -2,7 +2,7 @@ use std::{ops::Deref, sync::Arc};
 
 use crate::db::DB;
 
-use super::TxnTs;
+use super::{TxnTs, entry::EntryMeta};
 
 pub(crate) const PRE_FETCH_STATUS: u8 = 1;
 #[derive(Debug)]
@@ -26,7 +26,7 @@ pub struct ItemInner {
     pub(crate) val: Vec<u8>,
     pub(crate) version: TxnTs,
     pub(crate) expires_at: u64,
-    pub(crate) meta: u8,
+    pub(crate) meta: EntryMeta,
     pub(crate) user_meta: u8,
     pub(crate) status: u8,
     pub(crate) db: Option<DB>,
@@ -38,7 +38,7 @@ impl ItemInner {
         self.version
     }
 
-    pub fn meta(&self) -> u8 {
+    pub fn meta(&self) -> EntryMeta {
         self.meta
     }
 }
