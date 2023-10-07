@@ -16,11 +16,11 @@ pub(crate) struct ArenaSlice<T> {
 }
 impl<T> ArenaSlice<T> {
     pub(crate) fn get(&self) -> &[T] {
-        let ptr_raw = self.ptr.load(std::sync::atomic::Ordering::SeqCst);
+        let ptr_raw = self.ptr.load(std::sync::atomic::Ordering::Acquire);
         unsafe { slice::from_raw_parts(ptr_raw, self.len) }
     }
     pub(crate) fn get_mut(&mut self) -> &mut [T] {
-        let ptr_raw = self.ptr.load(std::sync::atomic::Ordering::SeqCst);
+        let ptr_raw = self.ptr.load(std::sync::atomic::Ordering::Acquire);
         unsafe { slice::from_raw_parts_mut(ptr_raw, self.len) }
     }
 }

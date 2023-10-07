@@ -21,7 +21,6 @@ use crate::{
     metrics::{add_num_bytes_written_user, add_num_puts, set_pending_writes},
     options::Options,
     txn::entry::{DecEntry, EntryMeta},
-    vlog::BIT_VALUE_POINTER,
 };
 use anyhow::anyhow;
 use anyhow::bail;
@@ -198,8 +197,5 @@ impl DB {
                 dec_entry.set_value(vptr.encode());
             }
         }
-    }
-    fn p() {
-        // memmap2::MmapRaw::map_raw(file)
     }
 }

@@ -1,5 +1,5 @@
 use std::{
-    mem::size_of,
+    mem::{size_of, ManuallyDrop},
     sync::{
         atomic::{AtomicPtr, AtomicUsize, Ordering},
         Arc,
@@ -28,6 +28,11 @@ impl Node {
         node.value = value.and_then(|src| Some(arena.alloc_slice_copy(src)));
         node.height = height;
         AtomicPtr::new(arena.alloc(node))
+        // let p=arena.alloc(node);
+        // let k=p as *mut Node;
+        // k.read()
+        
+        // ManuallyDrop::new(value)
     }
 }
 #[derive(Debug)]

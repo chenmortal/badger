@@ -1,15 +1,9 @@
-use std::{
-    ops::{Deref, DerefMut},
-    sync::{atomic::AtomicUsize, Arc},
-};
+use std::ops::{Deref, DerefMut};
 
 use serde::{Deserialize, Serialize};
 
 use super::TxnTs;
-use crate::{
-    kv::KeyTs,
-    vlog::{header::EntryHeader, BIT_FIN_TXN, BIT_TXN},
-};
+use crate::{kv::KeyTs, vlog::header::EntryHeader};
 use std::fmt::Debug;
 #[derive(Debug, Default, Clone)]
 pub struct Entry {
