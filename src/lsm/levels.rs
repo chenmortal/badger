@@ -450,7 +450,7 @@ impl LevelsController {
         let mut table_size = Options::base_table_size();
         for i in 0..levels_len {
             targets.file_size[i] = if i == 0 {
-                Options::memtable_size()
+                Options::memtable_size() as usize
             } else if i <= targets.base_level {
                 table_size
             } else {
