@@ -1,4 +1,4 @@
-use crate::txn::entry::Entry;
+use crate::txn::entry::{Entry, EntryMeta};
 
 use super::{log_file::LogFile, memtable::MemTable};
 
@@ -10,6 +10,9 @@ impl MemTable {
         // let log = self.wal_mut();
         // log.write_entry(buf, entry);
         self.wal.write_entry(&mut self.buf, entry)?;
+        if entry.meta().contains(EntryMeta::FIN_TXN) {
+            return Ok(());
+        }
         Ok(())
         // self.wal_mut().write_entry(buf, entry);
     }

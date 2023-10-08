@@ -7,7 +7,6 @@ use crate::{
     key_registry::KeyRegistry,
     options::Options,
     skl::skip_list::{SkipList, SKL_MAX_NODE_SIZE},
-    txn::entry::Entry,
     util::{dir_join_id_suffix, parse_file_id},
 };
 use anyhow::Result;
@@ -60,7 +59,7 @@ async fn open_mem_table(
         mem_file_fid,
         &mem_file_path,
         fp_open_opt,
-        2 * Options::memtable_size(),
+        2 * Options::memtable_size() as usize,
         key_registry.clone(),
     )
     .await
@@ -96,7 +95,7 @@ pub(crate) async fn new_mem_table(
 }
 
 impl Options {
-    fn arena_size() -> usize {
+    fn arena_size() -> u32 {
         Options::memtable_size()
             + Options::max_batch_size()
             + Options::max_batch_count() * (SKL_MAX_NODE_SIZE)
@@ -109,7 +108,7 @@ impl MemTable {
         if self.skip_list.mem_size() >= Options::memtable_size() {
             return true;
         }
-        self.wal.write_offset() >= Options::memtable_size()
+        self.wal.write_offset() as u32 >= Options::memtable_size()
     }
 
     // #[inline]

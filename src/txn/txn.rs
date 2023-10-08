@@ -154,7 +154,7 @@ impl Txn {
             let count = self.count + 1;
             e.try_set_value_threshold(threshold);
             let size = self.size + e.estimate_size() + 10;
-            if count >= Options::max_batch_count() || size >= Options::max_batch_size() {
+            if count >= Options::max_batch_count() as usize || size >= Options::max_batch_size() as usize {
                 bail!(DBError::TxnTooBig)
             }
             self.count = count;

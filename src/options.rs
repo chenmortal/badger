@@ -52,7 +52,7 @@ pub struct Options {
     num_goroutines: usize,
 
     // Fine tuning options.
-    memtable_size: usize,
+    memtable_size: u32,
     base_table_size: usize,
     base_level_size: usize,
     level_size_multiplier: usize,
@@ -60,7 +60,7 @@ pub struct Options {
     max_levels: usize,
 
     vlog_percentile: f64,
-    value_threshold: usize,
+    value_threshold: u32,
     num_memtables: usize,
     // Changing BlockSize across DB runs will not break badger. The block size is
     // read from the block index stored at the end of the table.
@@ -114,8 +114,8 @@ pub struct Options {
 
     // 4. Flags for testing purposes
     // ------------------------------
-    max_batch_count: usize, // max entries in batch
-    max_batch_size: usize,  // max batch size in bytes
+    max_batch_count: u32, // max entries in batch
+    max_batch_size: u32,  // max batch size in bytes
 
     max_value_threshold: f64,
 }
@@ -215,7 +215,7 @@ impl Options {
         self.max_levels = max_levels;
         self
     }
-    pub fn set_value_threshold(mut self, value_threshold: usize) -> Self {
+    pub fn set_value_threshold(mut self, value_threshold: u32) -> Self {
         self.value_threshold = value_threshold;
         self
     }
@@ -227,7 +227,7 @@ impl Options {
         self.num_memtables = num_memtables;
         self
     }
-    pub fn set_memtable_size(mut self, memtable_size: usize) -> Self {
+    pub fn set_memtable_size(mut self, memtable_size: u32) -> Self {
         self.memtable_size = memtable_size;
         self
     }
@@ -443,7 +443,7 @@ impl Options {
         Self::get_static().metrics_enabled
     }
 
-    pub(crate) fn memtable_size() -> usize {
+    pub(crate) fn memtable_size() -> u32 {
         Self::get_static().memtable_size
     }
 
@@ -468,7 +468,7 @@ impl Options {
     }
 
     pub(crate) fn value_threshold() -> usize {
-        Self::get_static().value_threshold
+        Self::get_static().value_threshold as _
     }
 
     pub(crate) fn num_memtables() -> usize {
@@ -551,11 +551,11 @@ impl Options {
         Self::get_static().managed_txns
     }
 
-    pub(crate) fn max_batch_count() -> usize {
+    pub(crate) fn max_batch_count() -> u32 {
         Self::get_static().max_batch_count
     }
 
-    pub(crate) fn max_batch_size() -> usize {
+    pub(crate) fn max_batch_size() -> u32 {
         Self::get_static().max_batch_size
     }
 

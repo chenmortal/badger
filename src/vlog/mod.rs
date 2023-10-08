@@ -36,12 +36,12 @@ pub(crate) mod write;
 // +----------------+------------------+
 pub(crate) const VLOG_HEADER_SIZE: usize = 20;
 pub(crate) const MAX_HEADER_SIZE: usize = 22;
-pub(crate) const BIT_DELETE: u8 = 1 << 0;
-pub(crate) const BIT_VALUE_POINTER: u8 = 1 << 1;
-pub(crate) const BIT_DISCARD_EARLIER_VERSIONS: u8 = 1 << 2;
-pub(crate) const BIT_MERGE_ENTRY: u8 = 1 << 3;
-pub(crate) const BIT_TXN: u8 = 1 << 6;
-pub(crate) const BIT_FIN_TXN: u8 = 1 << 7;
+// pub(crate) const BIT_DELETE: u8 = 1 << 0;
+// pub(crate) const BIT_VALUE_POINTER: u8 = 1 << 1;
+// pub(crate) const BIT_DISCARD_EARLIER_VERSIONS: u8 = 1 << 2;
+// pub(crate) const BIT_MERGE_ENTRY: u8 = 1 << 3;
+// pub(crate) const BIT_TXN: u8 = 1 << 6;
+// pub(crate) const BIT_FIN_TXN: u8 = 1 << 7;
 
 pub(crate) const MAX_VLOG_FILE_SIZE: usize = u32::MAX as usize;
 #[derive(Debug, Error)]
