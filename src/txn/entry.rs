@@ -1,5 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
+use bincode::{DefaultOptions, Options};
 use serde::{Deserialize, Serialize};
 
 use super::TxnTs;
@@ -8,14 +9,39 @@ use std::fmt::Debug;
 #[derive(Debug, Default, Clone)]
 pub struct Entry {
     key_ts: KeyTs,
-    value: Vec<u8>,
-    expires_at: u64,
+    value_meta: ValueMeta,
     offset: usize,
-    user_meta: u8,
-    meta: EntryMeta,
     header_len: usize,
 }
-#[derive(Default, Clone, Copy, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Clone)]
+pub(crate) struct ValueMeta {
+    value: Vec<u8>,
+    expires_at: u64,
+    user_meta: u8,
+    meta: EntryMeta,
+}
+lazy_static! {
+    static ref BINCODE_OPT: DefaultOptions = DefaultOptions::new();
+}
+impl ValueMeta {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
+        BINCODE_OPT.serialize(&self)
+    }
+    pub(crate) fn decode(data: &[u8]) -> Result<ValueMeta, Box<bincode::ErrorKind>> {
+        BINCODE_OPT.deserialize::<Self>(data)
+    }
+}
+#[test]
+fn test_encode() {
+    let mut v = ValueMeta::default();
+    v.value = String::from("abc").as_bytes().to_vec();
+    v.expires_at = 11111111;
+    let ve = v.encode().unwrap();
+    dbg!(ve.len());
+    let vd = ValueMeta::decode(&ve).unwrap();
+    assert_eq!(vd, v);
+}
+#[derive(Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EntryMeta(u8);
 bitflags::bitflags! {
     impl EntryMeta: u8 {
@@ -41,14 +67,21 @@ impl std::fmt::Display for EntryMeta {
 impl Entry {
     pub fn new(key: &[u8], value: &[u8]) -> Self {
         let key_ts = KeyTs::new(key, TxnTs::default());
-        Self {
-            key_ts,
+        let value_meta = ValueMeta {
             value: value.to_vec(),
             expires_at: 0,
-            offset: 0,
             user_meta: 0,
             meta: EntryMeta::default(),
+        };
+        Self {
+            key_ts,
+            // value: value.to_vec(),
+            // expires_at: 0,
+            offset: 0,
+            // user_meta: 0,
+            // meta: EntryMeta::default(),
             header_len: 0,
+            value_meta,
         }
     }
 
@@ -61,14 +94,21 @@ impl Entry {
         header_len: usize,
     ) -> Self {
         let k: KeyTs = key_ts.into();
+        let value_meta = ValueMeta {
+            value: value.to_vec(),
+            expires_at: 0,
+            user_meta: 0,
+            meta: EntryMeta::default(),
+        };
         Self {
             key_ts: k,
-            value: value.to_vec(),
-            expires_at: header.expires_at(),
+            // value: value.to_vec(),
+            // expires_at: header.expires_at(),
             offset,
-            user_meta: header.user_meta(),
-            meta: header.meta(),
+            // user_meta: header.user_meta(),
+            // meta: header.meta(),
             header_len,
+            value_meta,
         }
     }
     pub fn set_key(&mut self, key: Vec<u8>) {
@@ -76,7 +116,7 @@ impl Entry {
     }
 
     pub fn set_value(&mut self, value: Vec<u8>) {
-        self.value = value;
+        self.value_meta.value = value;
     }
 
     pub fn key(&self) -> &[u8] {
@@ -84,11 +124,11 @@ impl Entry {
     }
 
     pub fn value(&self) -> &[u8] {
-        self.value.as_ref()
+        self.value_meta.value.as_ref()
     }
 
     pub fn expires_at(&self) -> u64 {
-        self.expires_at
+        self.value_meta.expires_at
     }
 
     pub fn version(&self) -> TxnTs {
@@ -102,15 +142,15 @@ impl Entry {
     }
 
     pub fn user_meta(&self) -> u8 {
-        self.user_meta
+        self.value_meta.user_meta
     }
 
     pub fn meta(&self) -> EntryMeta {
-        self.meta
+        self.value_meta.meta
     }
 
     pub(crate) fn set_meta(&mut self, meta: EntryMeta) {
-        self.meta = meta;
+        self.value_meta.meta = meta;
     }
 
     pub(crate) fn set_version(&mut self, version: TxnTs) {
@@ -118,15 +158,15 @@ impl Entry {
     }
 
     pub fn meta_mut(&mut self) -> &mut EntryMeta {
-        &mut self.meta
+        &mut self.value_meta.meta
     }
 
     pub(crate) fn set_user_meta(&mut self, user_meta: u8) {
-        self.user_meta = user_meta;
+        self.value_meta.user_meta = user_meta;
     }
 
     pub(crate) fn set_expires_at(&mut self, expires_at: u64) {
-        self.expires_at = expires_at;
+        self.value_meta.expires_at = expires_at;
     }
 
     pub(crate) fn set_offset(&mut self, offset: usize) {
@@ -147,12 +187,17 @@ impl Entry {
             self.key().len() + 12 + 2
         }
     }
+
     // pub(crate) fn clean_meta_bit(&mut self, clean_meta: u8) {
     //     self.meta = self.meta & (!clean_meta);
     // }
     // pub(crate) fn add_meta_bit(&mut self, add_meta: u8) {
     //     self.meta |= add_meta;
     // }
+
+    pub fn value_meta(&self) -> &ValueMeta {
+        &self.value_meta
+    }
 }
 
 // decorated entry with val_threshold

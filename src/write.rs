@@ -1,4 +1,5 @@
 use std::{
+    io::Write,
     mem::replace,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -126,24 +127,36 @@ impl DB {
         }
         debug!("write_requests called. Writing to value log");
 
-        fn done_err(e: &anyhow::Error, reqs: Vec<WriteReq>) -> anyhow::Result<()> {
-            let e = e.to_string();
-            for ele in reqs {
-                if let Err(e) = ele.send_result.send(Err(anyhow!(e.clone()))) {
-                    return e;
-                };
+        fn done_err(r: Option<&anyhow::Error>, reqs: Vec<WriteReq>) -> anyhow::Result<()> {
+            match r {
+                Some(e) => {
+                    let e = e.to_string();
+                    for ele in reqs {
+                        if let Err(e) = ele.send_result.send(Err(anyhow!(e.clone()))) {
+                            return e;
+                        };
+                    }
+                }
+                None => {
+                    for ele in reqs {
+                        if let Err(e) = ele.send_result.send(Ok(())) {
+                            return e;
+                        };
+                    }
+                }
             }
+
             Ok(())
         }
         if let Err(e) = self.vlog.write(&mut reqs).await {
-            done_err(&e, reqs)?;
+            done_err((&e).into(), reqs)?;
             bail!(e);
         };
 
         debug!("Writing to memtable");
         let mut count = 0;
         let mut err = None;
-        for req in reqs.iter() {
+        for req in reqs.iter_mut() {
             if req.entries_vptrs().len() == 0 {
                 continue;
             }
@@ -152,11 +165,18 @@ impl DB {
                 err = e.into();
                 break;
             };
+            if let Err(e) = self.write_to_memtable(req).await {
+                err = e.into();
+                break;
+            };
         }
         if let Some(e) = err {
-            done_err(&e, reqs)?;
+            done_err((&e).into(), reqs)?;
             bail!(e);
         }
+        debug!("Sending updates to subscribers");
+
+        debug!("{} entries written", count);
         // for ele in reqs.iter_mut() {
         //     ele.send_result.send(result);
         // }
@@ -187,7 +207,7 @@ impl DB {
 
         Ok(())
     }
-    async fn write_to_memtable(&self, req: &mut WriteReq) {
+    async fn write_to_memtable(&self, req: &mut WriteReq) -> anyhow::Result<()> {
         let mut memtable_w = self.memtable.write().await;
         for (dec_entry, vptr) in req.entries_vptrs_mut() {
             if vptr.is_empty() {
@@ -196,6 +216,13 @@ impl DB {
                 dec_entry.meta_mut().insert(EntryMeta::VALUE_POINTER);
                 dec_entry.set_value(vptr.encode());
             }
+            memtable_w.push(&dec_entry)?;
         }
+
+        if Options::sync_writes() {
+            memtable_w.wal_mut().flush()?;
+        }
+        drop(memtable_w);
+        Ok(())
     }
 }

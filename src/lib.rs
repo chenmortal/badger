@@ -4,6 +4,9 @@ extern crate lazy_static;
 pub mod db;
 pub(crate) mod default;
 pub mod errors;
+#[allow(dead_code, unused_imports)]
+#[path = "./fb/flatbuffer_generated.rs"]
+mod fb;
 mod iter;
 mod key_registry;
 mod kv;
@@ -13,14 +16,12 @@ mod manifest;
 mod metrics;
 pub mod options;
 mod pb;
+mod publisher;
 mod skl;
 mod sys;
 mod table;
+mod tire;
 pub mod txn;
 mod util;
 mod vlog;
 mod write;
-
-#[allow(dead_code, unused_imports)]
-#[path = "./fb/flatbuffer_generated.rs"]
-mod fb;

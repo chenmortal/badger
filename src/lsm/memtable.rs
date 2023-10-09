@@ -7,7 +7,7 @@ use crate::{
     key_registry::KeyRegistry,
     options::Options,
     skl::skip_list::{SkipList, SKL_MAX_NODE_SIZE},
-    util::{dir_join_id_suffix, parse_file_id},
+    util::{dir_join_id_suffix, parse_file_id}, txn::TxnTs,
 };
 use anyhow::Result;
 use anyhow::{anyhow, bail};
@@ -15,9 +15,9 @@ use anyhow::{anyhow, bail};
 use super::log_file::LogFile;
 #[derive(Debug)]
 pub(crate) struct MemTable {
-    skip_list: SkipList,
+    pub(super) skip_list: SkipList,
     pub(super) wal: LogFile,
-    max_version: usize,
+    pub(super) max_version: TxnTs,
     pub(super) buf: Vec<u8>, // buf: BytesMut,
 }
 
@@ -68,7 +68,7 @@ async fn open_mem_table(
     let mem_table = MemTable {
         skip_list,
         wal: log_file,
-        max_version: 0,
+        max_version: TxnTs::default(),
         buf: Vec::with_capacity(DEFAULT_PAGE_SIZE.to_owned()),
     };
     if is_new {
@@ -115,4 +115,12 @@ impl MemTable {
     // pub(crate) fn put(&mut self, entry: &Entry) {
 
     // }
+
+    pub(crate) fn wal(&self) -> &LogFile {
+        &self.wal
+    }
+
+    pub(crate) fn wal_mut(&mut self) -> &mut LogFile {
+        &mut self.wal
+    }
 }

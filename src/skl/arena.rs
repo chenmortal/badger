@@ -91,21 +91,21 @@ impl Arena {
         }
     }
     pub(crate) unsafe fn get_mut<T>(&self, offset: u32) -> Option<&mut T> {
-        if offset == 0 {
+        if offset < 8 {
             None
         } else {
             Some(&mut *(self.start.as_ptr().add(offset as usize) as *mut T))
         }
     }
     pub(crate) fn get<T>(&self, offset: u32) -> Option<&T> {
-        if offset == 0 {
+        if offset < 8 {
             None
         } else {
             unsafe { &*(self.start.as_ptr().add(offset as usize) as *const T) }.into()
         }
     }
     pub(crate) fn get_slice<T>(&self, offset: u32, len: u32) -> Option<&[T]> {
-        if offset == 0 {
+        if offset < 8 {
             None
         } else {
             unsafe {
@@ -115,11 +115,14 @@ impl Arena {
             .into()
         }
     }
-    pub(crate) fn offset<N>(&self, ptr: *const N) -> u32 {
+    pub(crate) fn offset<N>(&self, ptr: *const N) -> Option<u32> {
+        if ptr.is_null() {
+            return None;
+        }
         let ptr_addr = ptr as usize;
         let start_addr = self.start.as_ptr() as usize;
         debug_assert!(ptr_addr > start_addr);
-        (ptr_addr - start_addr) as u32
+        Some((ptr_addr - start_addr) as u32)
     }
     fn alloc_layout(&self, layout: Layout) -> NonNull<u8> {
         debug_assert!(DEFAULT_ALIGN.is_power_of_two());
@@ -251,7 +254,7 @@ mod tests {
         let k = p as *const KeyTs;
         let offset = arena.offset(k);
         dbg!(&offset);
-        let p = unsafe { arena.get_mut::<KeyTs>(offset) }.unwrap();
+        let p = unsafe { arena.get_mut::<KeyTs>(offset.unwrap()) }.unwrap();
         dbg!(p);
 
         // Arena::offset(&self, ptr)
@@ -277,7 +280,7 @@ mod tests {
                 let k = KeyTs::new(s.as_bytes(), i.into());
                 let k_clone = k.clone();
                 let offset = arena_clone.offset(arena_clone.alloc(k) as _);
-                let p = unsafe { arena_clone.get_mut::<KeyTs>(offset) }.unwrap();
+                let p = unsafe { arena_clone.get_mut::<KeyTs>(offset.unwrap()) }.unwrap();
                 assert_eq!(*p, k_clone);
             }));
         }
@@ -297,7 +300,7 @@ mod tests {
                 let k = KeyTs::new(s.as_bytes(), i.into());
                 let k_clone = k.clone();
                 let offset = arena_clone.offset(arena_clone.alloc(k) as _);
-                let p = unsafe { arena_clone.get_mut::<KeyTs>(offset) }.unwrap();
+                let p = unsafe { arena_clone.get_mut::<KeyTs>(offset.unwrap()) }.unwrap();
                 assert_eq!(*p, k_clone);
             }));
         }
