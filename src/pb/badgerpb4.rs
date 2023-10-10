@@ -22,15 +22,6 @@ pub struct Kv {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct KvList {
-    #[prost(message, repeated, tag = "1")]
-    pub kv: ::prost::alloc::vec::Vec<Kv>,
-    /// alloc_ref used internally for memory management.
-    #[prost(uint64, tag = "10")]
-    pub alloc_ref: u64,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ManifestChangeSet {
     /// A set of changes that are applied atomically.
     #[prost(message, repeated, tag = "1")]
