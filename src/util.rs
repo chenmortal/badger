@@ -17,10 +17,12 @@ use std::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::default::SSTABLE_FILE_EXT;
+#[derive(Debug, Clone)]
 pub(crate) struct Closer {
     semaphore: Arc<Semaphore>,
-    wait: usize,
+    wait: u32,
 }
+
 impl Closer {
     pub(crate) fn sem_clone(&mut self) -> Arc<Semaphore> {
         self.wait += 1;
@@ -32,8 +34,17 @@ impl Closer {
             wait: 0,
         }
     }
-    pub(crate) fn close_all(&self) {
-        self.semaphore.add_permits(self.wait);
+    pub(crate) fn done_all(&self) {
+        self.semaphore.add_permits(self.wait as usize);
+    }
+    pub(crate) fn done_one(&self) {
+        self.semaphore.add_permits(1);
+    }
+    #[inline]
+    pub(crate) async fn wait_all(
+        &self,
+    ) -> Result<tokio::sync::SemaphorePermit<'_>, tokio::sync::AcquireError> {
+        self.semaphore.acquire_many(self.wait).await
     }
 }
 

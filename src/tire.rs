@@ -47,7 +47,7 @@ impl Trie {
         Self::remove_empty(&mut self.root);
         Ok(())
     }
-    fn push_match(&mut self, m: &mut Match, id: u64) -> Result<(), TrieError> {
+    pub(crate) fn push_match(&mut self, m: &Match, id: u64) -> Result<(), TrieError> {
         self.fix(m, id, Operation::Set)
     }
     fn get_iter(&self, cur_node: &TrieNode, key: &[u8]) -> HashSet<u64> {
@@ -81,7 +81,7 @@ impl Trie {
         cur_node.children = children;
         cur_node.is_empty()
     }
-    fn fix(&mut self, m: &mut Match, id: u64, op: Operation) -> Result<(), TrieError> {
+    fn fix(&mut self, m: &Match, id: u64, op: Operation) -> Result<(), TrieError> {
         let mut cur_node = &mut self.root;
         let mut ignore = Self::parse_ignore_bytes(&m.ignore_bytes)?;
         while ignore.len() < m.prefix.len() {
