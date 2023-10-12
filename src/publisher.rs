@@ -23,7 +23,7 @@ use tokio::{
 use crate::{
     pb::badgerpb4::{Kv, Match},
     tire::{Trie, TrieError},
-    util::Closer,
+    util::{Closer, OneShotClose, OneShotCloseRecv, OneShotCloseSend},
     write::WriteReq,
 };
 #[derive(Debug)]
@@ -60,12 +60,22 @@ impl PublisherInner {
             indexer: Trie::default().into(),
         }
     }
+    pub(crate) fn cleanup_subscribers(&mut self) -> Result<(), TrieError> {
+        for (id, sub) in self.subscribers.drain() {
+            for m in sub.matches.iter() {
+                self.indexer.delete_match(m, id)?;
+            }
+            // sub.sub_closer.
+        }
+        Ok(())
+    }
 }
 impl Publisher {
     pub(crate) fn new(close_sem: Arc<Semaphore>) {
         let (sender, recv) = tokio::sync::mpsc::channel::<Vec<WriteReq>>(1000);
         let s = Self(Mutex::new(PublisherInner::new(sender)).into());
-        tokio::spawn(s.clone().listen_for_updates(close_sem, recv));
+
+        let handle = tokio::spawn(s.clone().listen_for_updates(close_sem, recv));
     }
 
     pub(crate) async fn publish_updates(
@@ -119,12 +129,12 @@ impl Publisher {
     }
     pub(crate) async fn listen_for_updates(
         self,
-        close_sem: Arc<Semaphore>,
+        close_recv: Arc<Semaphore>,
         mut recv: Receiver<Vec<WriteReq>>,
     ) -> anyhow::Result<()> {
         loop {
             select! {
-             _=close_sem.acquire()=>{
+             _=close_recv.acquire()=>{
                  return Ok(());
              },
              Some(s)=recv.recv()=>{
@@ -143,6 +153,25 @@ impl Publisher {
             }
         }
     }
+    // pub(crate) async fn cleanup_subscribers(&self){
+    //     let mut s = self.lock().await;
+    //     let p = s.subscribers_mut();
+    //     let k = s.indexer_mut();
+    //     for (id,sub) in p {
+    //         for m in sub.matches.iter() {
+    //             // s.indexer.delete_match(m, *id);
+    //         }
+    //     }
+    //     // for (id,sub) in s.subscribers.iter_mut() {
+    //     //     for m in sub.matches.iter() {
+    //     //         s.indexer.delete_match(m, *id);
+    //     //     }
+    //     // }
+    //     // let s = self.lock().await;
+
+    //     // std::sync::Mutex::new(0);
+    //     // self.lock_owned();
+    // }
 }
 impl Subscriber {
     async fn new(

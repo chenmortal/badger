@@ -42,7 +42,7 @@ impl Trie {
     pub(crate) fn get(&self, key: &[u8]) -> HashSet<u64> {
         self.get_iter(&self.root, key)
     }
-    pub(crate) fn delete_match(&mut self, m: &mut Match, id: u64) -> Result<(), TrieError> {
+    pub(crate) fn delete_match(&mut self, m: & Match, id: u64) -> Result<(), TrieError> {
         self.fix(m, id, Operation::Del)?;
         Self::remove_empty(&mut self.root);
         Ok(())

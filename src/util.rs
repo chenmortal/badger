@@ -4,6 +4,7 @@ use bytes::BufMut;
 use tokio::select;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::oneshot;
 
 use std::cmp::Ordering;
 use std::future::Future;
@@ -44,7 +45,30 @@ impl Closer {
     pub(crate) async fn wait_all(
         &self,
     ) -> Result<tokio::sync::SemaphorePermit<'_>, tokio::sync::AcquireError> {
+        let (a, b) = tokio::sync::oneshot::channel::<()>();
+        a.send(());
+        let p = b.await;
         self.semaphore.acquire_many(self.wait).await
+    }
+}
+pub(crate) struct OneShotClose;
+impl OneShotClose {
+    pub(crate) fn new() -> (OneShotCloseSend, OneShotCloseRecv) {
+        let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
+        (OneShotCloseSend(sender), OneShotCloseRecv(receiver))
+    }
+}
+
+pub(crate) struct OneShotCloseSend(oneshot::Sender<()>);
+impl OneShotCloseSend {
+    pub(crate) fn send(self) {
+        let _ = self.0.send(());
+    }
+}
+pub(crate) struct OneShotCloseRecv(oneshot::Receiver<()>);
+impl OneShotCloseRecv {
+    pub(crate) async fn recv(self) -> Result<(), oneshot::error::RecvError> {
+        self.0.await
     }
 }
 
@@ -211,3 +235,4 @@ pub(crate) fn key_with_ts(key: Option<&[u8]>, ts: u64) -> Vec<u8> {
         }
     }
 }
+
