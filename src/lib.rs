@@ -25,3 +25,4 @@ pub mod txn;
 mod util;
 mod vlog;
 mod write;
+mod closer;

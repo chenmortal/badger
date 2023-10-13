@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::bail;
+use log::error;
 use tokio::{
     select,
     sync::{
@@ -16,14 +17,15 @@ use tokio::{
             error::{SendError, TryRecvError},
             Receiver, Sender,
         },
-        Mutex, Semaphore,
+        Mutex,
     },
 };
 
 use crate::{
+    closer::{CloseNotify, Closer},
+    db::DBInner,
     pb::badgerpb4::{Kv, Match},
     tire::{Trie, TrieError},
-    util::{Closer, OneShotClose, OneShotCloseRecv, OneShotCloseSend},
     write::WriteReq,
 };
 #[derive(Debug)]
@@ -31,18 +33,18 @@ struct Subscriber {
     id: u64,
     matches: Vec<Match>,
     sender: Sender<Vec<Arc<Kv>>>,
-    sub_closer: Closer,
+    closer: Closer,
     active: AtomicU64,
 }
 #[derive(Debug, Clone)]
-struct Publisher(Arc<Mutex<PublisherInner>>);
-impl Deref for Publisher {
-    type Target = Arc<Mutex<PublisherInner>>;
+pub(crate) struct Publisher(Arc<Mutex<PublisherInner>>);
+// impl Deref for Publisher {
+//     type Target = Arc<Mutex<PublisherInner>>;
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+//     fn deref(&self) -> &Self::Target {
+//         &self.0
+//     }
+// }
 #[derive(Debug)]
 struct PublisherInner {
     sender: Sender<Vec<WriteReq>>,
@@ -60,22 +62,28 @@ impl PublisherInner {
             indexer: Trie::default().into(),
         }
     }
-    pub(crate) fn cleanup_subscribers(&mut self) -> Result<(), TrieError> {
+    pub(crate) async fn cleanup_subscribers(&mut self) {
+        let mut subs = HashMap::new();
         for (id, sub) in self.subscribers.drain() {
             for m in sub.matches.iter() {
-                self.indexer.delete_match(m, id)?;
+                if let Err(e) = self.indexer.delete_match(m, id) {
+                    error!("{}", e);
+                };
             }
-            // sub.sub_closer.
+            sub.closer.signal();
+            let r = sub.closer.wait().await;
+            if let Err(_) = r {
+                subs.insert(id, sub.clone());
+            }
         }
-        Ok(())
     }
 }
 impl Publisher {
-    pub(crate) fn new(close_sem: Arc<Semaphore>) {
+    pub(crate) fn new(close_notify: CloseNotify) {
         let (sender, recv) = tokio::sync::mpsc::channel::<Vec<WriteReq>>(1000);
         let s = Self(Mutex::new(PublisherInner::new(sender)).into());
 
-        let handle = tokio::spawn(s.clone().listen_for_updates(close_sem, recv));
+        let handle = tokio::spawn(s.clone().listen_for_updates(close_notify, recv));
     }
 
     pub(crate) async fn publish_updates(
@@ -83,7 +91,7 @@ impl Publisher {
         reqs_vec: Vec<Vec<WriteReq>>,
     ) -> Result<(), SendError<Vec<Arc<Kv>>>> {
         let mut batch_updates = HashMap::<u64, Vec<Arc<Kv>>>::new();
-        let s = self.lock().await;
+        let s = self.0.lock().await;
 
         for reqs in reqs_vec {
             for req in reqs {
@@ -129,12 +137,15 @@ impl Publisher {
     }
     pub(crate) async fn listen_for_updates(
         self,
-        close_recv: Arc<Semaphore>,
+        close_notify: CloseNotify,
         mut recv: Receiver<Vec<WriteReq>>,
     ) -> anyhow::Result<()> {
         loop {
             select! {
-             _=close_recv.acquire()=>{
+             _=close_notify.notified()=>{
+                let mut s = self.0.lock().await;
+                s.cleanup_subscribers().await;
+                close_notify.notify();
                  return Ok(());
              },
              Some(s)=recv.recv()=>{
@@ -153,34 +164,15 @@ impl Publisher {
             }
         }
     }
-    // pub(crate) async fn cleanup_subscribers(&self){
-    //     let mut s = self.lock().await;
-    //     let p = s.subscribers_mut();
-    //     let k = s.indexer_mut();
-    //     for (id,sub) in p {
-    //         for m in sub.matches.iter() {
-    //             // s.indexer.delete_match(m, *id);
-    //         }
-    //     }
-    //     // for (id,sub) in s.subscribers.iter_mut() {
-    //     //     for m in sub.matches.iter() {
-    //     //         s.indexer.delete_match(m, *id);
-    //     //     }
-    //     // }
-    //     // let s = self.lock().await;
-
-    //     // std::sync::Mutex::new(0);
-    //     // self.lock_owned();
-    // }
 }
 impl Subscriber {
     async fn new(
         publisher: &Publisher,
-        sub_closer: Closer,
+        closer: Closer,
         matches: Vec<Match>,
     ) -> Result<Arc<Subscriber>, TrieError> {
         let (sender, receiver) = mpsc::channel::<Vec<Arc<Kv>>>(1000);
-        let mut publisher = publisher.lock().await;
+        let mut publisher = publisher.0.lock().await;
         let id = publisher.next_id;
         publisher.next_id += 1;
         let sub: Arc<Self> = Self {
@@ -188,7 +180,7 @@ impl Subscriber {
             active: AtomicU64::new(1),
             id,
             matches,
-            sub_closer,
+            closer,
         }
         .into();
         publisher.subscribers.insert(id, sub.clone());
@@ -197,5 +189,11 @@ impl Subscriber {
             publisher.indexer.push_match(m, id)?;
         }
         Ok(sub)
+    }
+}
+use std::future::Future;
+impl DBInner {
+    pub(crate) async fn subscribe(fun: Box<dyn Future<Output = ()>>) {
+        Closer::new(1);
     }
 }

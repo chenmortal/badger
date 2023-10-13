@@ -4,7 +4,6 @@ use bytes::BufMut;
 use tokio::select;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
-use tokio::sync::oneshot;
 
 use std::cmp::Ordering;
 use std::future::Future;
@@ -18,59 +17,41 @@ use std::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::default::SSTABLE_FILE_EXT;
-#[derive(Debug, Clone)]
-pub(crate) struct Closer {
-    semaphore: Arc<Semaphore>,
-    wait: u32,
-}
 
-impl Closer {
-    pub(crate) fn sem_clone(&mut self) -> Arc<Semaphore> {
-        self.wait += 1;
-        self.semaphore.clone()
-    }
-    pub(crate) fn new() -> Self {
-        Self {
-            semaphore: Arc::new(Semaphore::new(0)),
-            wait: 0,
-        }
-    }
-    pub(crate) fn done_all(&self) {
-        self.semaphore.add_permits(self.wait as usize);
-    }
-    pub(crate) fn done_one(&self) {
-        self.semaphore.add_permits(1);
-    }
-    #[inline]
-    pub(crate) async fn wait_all(
-        &self,
-    ) -> Result<tokio::sync::SemaphorePermit<'_>, tokio::sync::AcquireError> {
-        let (a, b) = tokio::sync::oneshot::channel::<()>();
-        a.send(());
-        let p = b.await;
-        self.semaphore.acquire_many(self.wait).await
-    }
-}
-pub(crate) struct OneShotClose;
-impl OneShotClose {
-    pub(crate) fn new() -> (OneShotCloseSend, OneShotCloseRecv) {
-        let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
-        (OneShotCloseSend(sender), OneShotCloseRecv(receiver))
-    }
-}
+// #[derive(Debug, Clone)]
+// pub(crate) struct Closer {
+//     semaphore: Arc<Semaphore>,
+//     wait: u32,
+// }
 
-pub(crate) struct OneShotCloseSend(oneshot::Sender<()>);
-impl OneShotCloseSend {
-    pub(crate) fn send(self) {
-        let _ = self.0.send(());
-    }
-}
-pub(crate) struct OneShotCloseRecv(oneshot::Receiver<()>);
-impl OneShotCloseRecv {
-    pub(crate) async fn recv(self) -> Result<(), oneshot::error::RecvError> {
-        self.0.await
-    }
-}
+// impl Closer {
+//     pub(crate) fn sem_clone(&mut self) -> Arc<Semaphore> {
+//         self.wait += 1;
+//         self.semaphore.clone()
+//     }
+//     pub(crate) fn new() -> Self {
+//         Self {
+//             semaphore: Arc::new(Semaphore::new(0)),
+//             wait: 0,
+//         }
+//     }
+//     pub(crate) fn done_all(&self) {
+//         self.semaphore.add_permits(self.wait as usize);
+//     }
+//     pub(crate) fn done_one(&self) {
+//         self.semaphore.add_permits(1);
+//     }
+//     #[inline]
+//     pub(crate) async fn wait_all(
+//         &self,
+//     ) -> Result<tokio::sync::SemaphorePermit<'_>, tokio::sync::AcquireError> {
+//         Notify::new();
+//         let (a, b) = tokio::sync::oneshot::channel::<()>();
+//         a.send(());
+//         let p = b.await;
+//         self.semaphore.acquire_many(self.wait).await
+//     }
+// }
 
 pub(crate) struct Throttle {
     semaphore: Arc<Semaphore>,
@@ -235,4 +216,3 @@ pub(crate) fn key_with_ts(key: Option<&[u8]>, ts: u64) -> Vec<u8> {
         }
     }
 }
-
