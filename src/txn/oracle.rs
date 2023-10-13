@@ -3,7 +3,7 @@ use std::{collections::HashSet, ops::Deref};
 use anyhow::{bail, Ok};
 use tokio::sync::{Mutex, MutexGuard};
 
-use crate::{errors::DBError, options::Options, util::Closer};
+use crate::{closer::Closer, errors::DBError, options::Options};
 
 use super::{
     txn::Txn,
@@ -37,11 +37,11 @@ struct CommittedTxn {
     conflict_keys: HashSet<u64>,
 }
 impl Oracle {
-    pub(crate) fn new(closer: &mut Closer) -> Self {
+    pub(crate) fn new(closer: Closer) -> Self {
         Self {
             inner: Mutex::new(OracleInner::default()),
-            read_mark: WaterMark::new("badger.PendingReads", closer.sem_clone()),
-            txn_mark: WaterMark::new("badger.TxnTimestamp", closer.sem_clone()),
+            read_mark: WaterMark::new("badger.PendingReads", closer.clone()),
+            txn_mark: WaterMark::new("badger.TxnTimestamp", closer.clone()),
             send_write_req: Mutex::new(()),
         }
     }

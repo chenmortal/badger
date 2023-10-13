@@ -22,6 +22,7 @@ lazy_static! {
     static ref NUM_WRITES_VLOG: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_BYTES_VLOG_WRITTEN: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_PUTS: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_BYTES_WRITTEN_TO_L0: AtomicUsize = AtomicUsize::new(0);
 }
 #[inline]
 pub(crate) fn set_metrics_enabled(enabled: bool) {
@@ -94,6 +95,13 @@ pub(crate) fn add_num_puts(len: usize) {
         return;
     }
     NUM_PUTS.fetch_add(len, std::sync::atomic::Ordering::SeqCst);
+}
+#[inline]
+pub(crate) fn add_num_bytes_written_to_l0(size: usize) {
+    if !get_metrics_enabled() {
+        return;
+    }
+    NUM_BYTES_WRITTEN_TO_L0.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[inline]

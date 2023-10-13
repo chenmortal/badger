@@ -18,12 +18,12 @@ message KV {
   bool stream_done = 11;
 }
 
-message KVList {
-  repeated KV kv = 1;
+// message KVList {
+//   repeated KV kv = 1;
 
-  // alloc_ref used internally for memory management.
-  uint64 alloc_ref = 10;
-}
+//   // alloc_ref used internally for memory management.
+//   uint64 alloc_ref = 10;
+// }
 
 message ManifestChangeSet {
   // A set of changes that are applied atomically.

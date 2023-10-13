@@ -19,6 +19,7 @@ use tokio::{
 };
 
 use crate::{
+    closer::Closer,
     db::{BlockCache, IndexCache},
     default::SSTABLE_FILE_EXT,
     key_registry::KeyRegistry,
@@ -34,9 +35,7 @@ use crate::{
         Table, TableOption,
     },
     txn::oracle::Oracle,
-    util::{
-        compare_key, dir_join_id_suffix, get_sst_id_set, key_with_ts, parse_key, Closer, Throttle,
-    },
+    util::{compare_key, dir_join_id_suffix, get_sst_id_set, key_with_ts, parse_key, Throttle},
 };
 
 use super::{
@@ -178,8 +177,8 @@ impl LevelsController {
                 let mut fp_open_opt = OpenOptions::new();
                 fp_open_opt.read(true).write(!read_only);
 
-                let (mmap_f,_is_new)=MmapFile::open(&path, fp_open_opt,0)?;
-                
+                let (mmap_f, _is_new) = MmapFile::open(&path, fp_open_opt, 0)?;
+
                 match Table::open(mmap_f, table_opt).await {
                     Ok(table) => {
                         let mut tables_m = tables_clone.lock().await;
@@ -296,13 +295,13 @@ impl LevelsController {
     ) {
         let num = Options::num_compactors();
         for task_id in 0..num {
-            let sem = closer.sem_clone();
+            let closer_c = closer.clone();
             let opt_clone = opt.clone();
             let oracle_clone = oracle.clone();
             let level_controller_clone = level_controller.clone();
             tokio::spawn(async move {
                 level_controller_clone
-                    .run_compact(task_id, sem, opt_clone, &oracle_clone)
+                    .run_compact(task_id, closer_c, opt_clone, &oracle_clone)
                     .await;
             });
         }
@@ -311,7 +310,8 @@ impl LevelsController {
     pub(crate) async fn run_compact(
         &self,
         task_id: usize,
-        sem: Arc<Semaphore>,
+        closer: Closer,
+        // sem: Arc<Semaphore>,
         opt: Arc<Options>,
         oracle: &Arc<Oracle>,
     ) {
@@ -319,7 +319,7 @@ impl LevelsController {
             tokio::time::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..1000)));
         select! {
             _=sleep=>{},
-            _=sem.acquire()=>{return ;}
+            _=closer.captured()=>{return ;}
         }
         let mut count = 0;
         let mut ticker = tokio::time::interval(Duration::from_millis(50));
@@ -349,7 +349,7 @@ impl LevelsController {
 
                     // }
                 }
-                _=sem.acquire()=>{return ;}
+                _=closer.captured()=>{return ;}
             }
         }
     }

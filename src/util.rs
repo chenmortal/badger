@@ -17,25 +17,41 @@ use std::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::default::SSTABLE_FILE_EXT;
-pub(crate) struct Closer {
-    semaphore: Arc<Semaphore>,
-    wait: usize,
-}
-impl Closer {
-    pub(crate) fn sem_clone(&mut self) -> Arc<Semaphore> {
-        self.wait += 1;
-        self.semaphore.clone()
-    }
-    pub(crate) fn new() -> Self {
-        Self {
-            semaphore: Arc::new(Semaphore::new(0)),
-            wait: 0,
-        }
-    }
-    pub(crate) fn close_all(&self) {
-        self.semaphore.add_permits(self.wait);
-    }
-}
+
+// #[derive(Debug, Clone)]
+// pub(crate) struct Closer {
+//     semaphore: Arc<Semaphore>,
+//     wait: u32,
+// }
+
+// impl Closer {
+//     pub(crate) fn sem_clone(&mut self) -> Arc<Semaphore> {
+//         self.wait += 1;
+//         self.semaphore.clone()
+//     }
+//     pub(crate) fn new() -> Self {
+//         Self {
+//             semaphore: Arc::new(Semaphore::new(0)),
+//             wait: 0,
+//         }
+//     }
+//     pub(crate) fn done_all(&self) {
+//         self.semaphore.add_permits(self.wait as usize);
+//     }
+//     pub(crate) fn done_one(&self) {
+//         self.semaphore.add_permits(1);
+//     }
+//     #[inline]
+//     pub(crate) async fn wait_all(
+//         &self,
+//     ) -> Result<tokio::sync::SemaphorePermit<'_>, tokio::sync::AcquireError> {
+//         Notify::new();
+//         let (a, b) = tokio::sync::oneshot::channel::<()>();
+//         a.send(());
+//         let p = b.await;
+//         self.semaphore.acquire_many(self.wait).await
+//     }
+// }
 
 pub(crate) struct Throttle {
     semaphore: Arc<Semaphore>,

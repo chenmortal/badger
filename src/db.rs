@@ -20,9 +20,9 @@ use crate::{
     manifest::open_create_manifestfile,
     metrics::{calculate_size, set_metrics_enabled, update_size},
     options::Options,
+    publisher::Publisher,
     table::block::{self, Block},
     txn::oracle::Oracle,
-    util::Closer,
     vlog::{discard, ValueLog},
     write::WriteReq,
 };
@@ -79,6 +79,7 @@ pub struct DBInner {
     pub(crate) flush_memtable: Sender<Arc<MemTable>>,
     pub(crate) vlog: ValueLog,
     banned_namespaces: RwLock<HashSet<u64>>,
+    pub(crate) publisher: Publisher,
     is_closed: AtomicBool,
     pub(crate) block_writes: AtomicU32,
 }
@@ -152,8 +153,8 @@ impl DBInner {
         set_metrics_enabled(Options::metrics_enabled());
 
         calculate_size().await;
-        let mut update_size_closer = Closer::new();
-        let update_size_handle = tokio::spawn(update_size(update_size_closer.sem_clone()));
+        // let mut update_size_closer = Closer::new();
+        // let update_size_handle = tokio::spawn(update_size(update_size_closer.sem_clone()));
 
         let next_mem_fid = NextId::new();
         let mut memtable = None;

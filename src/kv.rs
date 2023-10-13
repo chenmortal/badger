@@ -101,18 +101,26 @@ impl PartialOrd for KeyTsBorrow<'_> {
 }
 impl Ord for KeyTsBorrow<'_> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let self_split = self.len() - 8;
-        let other_split = other.len() - 8;
-        match self[..self_split].cmp(&other[..other_split]) {
-            std::cmp::Ordering::Equal => {}
-            ord => {
-                return ord;
+        if self.len() > 8 && other.len() > 8 {
+            let self_split = self.len() - 8;
+            let other_split = other.len() - 8;
+            match self[..self_split].cmp(&other[..other_split]) {
+                std::cmp::Ordering::Equal => {}
+                ord => {
+                    return ord;
+                }
             }
+            other[other_split..].cmp(&self[self_split..])
+        } else {
+            self.0.cmp(other.0)
         }
-        other[other_split..].cmp(&self[self_split..])
     }
 }
-
+impl<'a> From<&'a [u8]> for KeyTsBorrow<'a> {
+    fn from(value: &'a [u8]) -> Self {
+        Self(value)
+    }
+}
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub(crate) struct ValueInner {
     meta: EntryMeta,

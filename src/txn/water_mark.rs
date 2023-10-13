@@ -15,6 +15,8 @@ use tokio::{
     task::JoinHandle,
 };
 
+use crate::closer::Closer;
+
 use super::TxnTs;
 #[derive(Debug)]
 pub(crate) struct WaterMark {
@@ -41,14 +43,14 @@ impl Mark {
         }
     }
 }
-struct Closer {
-    waiting: Vec<JoinHandle<()>>,
-}
+// struct Closer {
+//     waiting: Vec<JoinHandle<()>>,
+// }
 impl WaterMark {
-    pub(crate) fn new(name: &str, close_sem: Arc<Semaphore>) -> Self {
+    pub(crate) fn new(name: &str, close: Closer) -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel::<Mark>(100);
         let done_until = Arc::new(AtomicU64::new(0));
-        tokio::spawn(Self::process(close_sem, receiver, done_until.clone()));
+        tokio::spawn(Self::process(close, receiver, done_until.clone()));
         WaterMark {
             done_until,
             last_index: AtomicU64::new(0),
@@ -84,7 +86,8 @@ impl WaterMark {
         Ok(())
     }
     async fn process(
-        close_sem: Arc<Semaphore>,
+        // close_sem: Arc<Semaphore>,
+        closer: Closer,
         mut receiver: Receiver<Mark>,
         done_util: Arc<AtomicU64>,
     ) {
@@ -130,9 +133,10 @@ impl WaterMark {
             }
             None => if mark.txn_ts > TxnTs::default() {},
         };
+
         loop {
             select! {
-                _=close_sem.acquire()=>{
+                _=closer.captured()=>{
                     return ;
                 }
                 Some(mark)=receiver.recv()=>{
@@ -186,4 +190,36 @@ async fn test_a() {
     // });
     // sender.send(Mark::new(TxnTs::default(), true)).await;
     // h.await;
+}
+
+#[tokio::test]
+async fn test_b() {
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
+    // tokio::sync::futures::Notified;
+    let mut handles = Vec::with_capacity(10);
+    let barrier = Arc::new(Barrier::new(10));
+    for _ in 0..10 {
+        let c = barrier.clone();
+        // The same messages will be printed together.
+        // You will NOT see any interleaving.
+        handles.push(tokio::spawn(async move {
+            println!("before wait");
+            let wait_result = c.wait().await;
+            println!("after wait");
+            wait_result
+        }));
+    }
+
+    // Will not resolve until all "after wait" messages have been printed
+    let mut num_leaders = 0;
+    for handle in handles {
+        let wait_result = handle.await.unwrap();
+        if wait_result.is_leader() {
+            num_leaders += 1;
+        }
+    }
+
+    // Exactly one barrier will resolve as the "leader"
+    assert_eq!(num_leaders, 1);
 }
