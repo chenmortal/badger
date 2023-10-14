@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    ops::Deref,
+    pin::Pin,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -19,6 +19,7 @@ use tokio::{
         },
         Mutex,
     },
+    task::JoinHandle,
 };
 
 use crate::{
@@ -72,20 +73,47 @@ impl PublisherInner {
             }
             sub.closer.signal();
             let r = sub.closer.wait().await;
-            if let Err(_) = r {
+            if let Err(e) = r {
+                error!("{}", e);
                 subs.insert(id, sub.clone());
             }
         }
+        self.subscribers = subs;
+    }
+    pub(crate) async fn delete_subscribers(&mut self, id: u64) {
+        if let Some(s) = self.subscribers.get(&id) {
+            for m in s.matches.iter() {
+                if let Err(e) = self.indexer.delete_match(m, id) {
+                    error!("{}", e);
+                };
+            }
+        }
+        let _ = self.subscribers.remove(&id);
     }
 }
 impl Publisher {
-    pub(crate) fn new(close_notify: CloseNotify) {
+    pub(crate) fn new(close_notify: CloseNotify) -> JoinHandle<anyhow::Result<()>> {
         let (sender, recv) = tokio::sync::mpsc::channel::<Vec<WriteReq>>(1000);
         let s = Self(Mutex::new(PublisherInner::new(sender)).into());
-
         let handle = tokio::spawn(s.clone().listen_for_updates(close_notify, recv));
+        handle
     }
-
+    pub(crate) async fn send_updates(&self, reqs_vec: Vec<WriteReq>) {
+        let s = self.0.lock().await;
+        let sub_len = s.subscribers.len();
+        if sub_len != 0 {
+            if let Err(e) = s.sender.send(reqs_vec).await {
+                error!("{}", e);
+            };
+        }
+        drop(s);
+    }
+    pub(crate) async fn subscribers_len(&self) -> usize {
+        let s = self.0.lock().await;
+        let sub_len = s.subscribers.len();
+        drop(s);
+        sub_len
+    }
     pub(crate) async fn publish_updates(
         &self,
         reqs_vec: Vec<Vec<WriteReq>>,
@@ -145,6 +173,7 @@ impl Publisher {
              _=close_notify.notified()=>{
                 let mut s = self.0.lock().await;
                 s.cleanup_subscribers().await;
+                drop(s);
                 close_notify.notify();
                  return Ok(());
              },
@@ -170,7 +199,7 @@ impl Subscriber {
         publisher: &Publisher,
         closer: Closer,
         matches: Vec<Match>,
-    ) -> Result<Arc<Subscriber>, TrieError> {
+    ) -> Result<(Arc<Subscriber>, Receiver<Vec<Arc<Kv>>>), TrieError> {
         let (sender, receiver) = mpsc::channel::<Vec<Arc<Kv>>>(1000);
         let mut publisher = publisher.0.lock().await;
         let id = publisher.next_id;
@@ -188,12 +217,55 @@ impl Subscriber {
         for m in sub.matches.iter() {
             publisher.indexer.push_match(m, id)?;
         }
-        Ok(sub)
+        Ok((sub, receiver))
     }
 }
 use std::future::Future;
 impl DBInner {
-    pub(crate) async fn subscribe(fun: Box<dyn Future<Output = ()>>) {
-        Closer::new(1);
+    pub(crate) async fn subscribe_async<F>(&self, fun: F, matches: Vec<Match>) -> anyhow::Result<()>
+    where
+        F: Fn(Vec<Arc<Kv>>) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>>,
+    {
+        let closer = Closer::new(1);
+        let (subscriber, mut receiver) =
+            Subscriber::new(&self.publisher, closer.clone(), matches).await?;
+
+        loop {
+            select! {
+                _=closer.captured()=>{
+                    let mut kvs=Vec::with_capacity(100);
+                    loop {
+                        if let Some(s) = receiver.try_recv().ok() {
+                            kvs.extend(s);
+                        }else{
+                            if kvs.len()>0{
+                                let res=fun(kvs).await;
+                                closer.done();
+                                return res;
+                            }else{
+                                return Ok(());
+                            }
+                        }
+                    }
+                },
+                Some(mut kvs)=receiver.recv()=>{
+                    loop {
+                        if let Some(s) = receiver.try_recv().ok() {
+                            kvs.extend(s);
+                        }else{
+                            if kvs.len()>0{
+                                if let Err(e) = fun(kvs).await {
+                                    closer.done();
+                                    subscriber.active.store(0, Ordering::SeqCst);
+                                    self.publisher.0.lock().await.delete_subscribers(subscriber.id).await;
+                                    bail!(e);
+                                };
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
