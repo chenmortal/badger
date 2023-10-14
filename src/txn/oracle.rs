@@ -13,6 +13,7 @@ use super::{
 #[derive(Debug)]
 pub(crate) struct Oracle {
     inner: Mutex<OracleInner>,
+    closer: Closer,
     read_mark: WaterMark,
     txn_mark: WaterMark,
     pub(super) send_write_req: Mutex<()>,
@@ -22,6 +23,11 @@ impl Deref for Oracle {
 
     fn deref(&self) -> &Self::Target {
         &self.inner
+    }
+}
+impl Default for Oracle {
+    fn default() -> Self {
+        Oracle::new()
     }
 }
 #[derive(Debug, Default)]
@@ -37,12 +43,14 @@ struct CommittedTxn {
     conflict_keys: HashSet<u64>,
 }
 impl Oracle {
-    pub(crate) fn new(closer: Closer) -> Self {
+    pub(crate) fn new() -> Self {
+        let closer = Closer::new(2);
         Self {
             inner: Mutex::new(OracleInner::default()),
             read_mark: WaterMark::new("badger.PendingReads", closer.clone()),
             txn_mark: WaterMark::new("badger.TxnTimestamp", closer.clone()),
             send_write_req: Mutex::new(()),
+            closer,
         }
     }
 

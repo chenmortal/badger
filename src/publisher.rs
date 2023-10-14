@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::bail;
 use log::error;
+use scopeguard::defer;
 use tokio::{
     select,
     sync::{
@@ -24,7 +25,7 @@ use tokio::{
 
 use crate::{
     closer::{CloseNotify, Closer},
-    db::DBInner,
+    db::{DBInner, DB},
     pb::badgerpb4::{Kv, Match},
     tire::{Trie, TrieError},
     write::WriteReq,
@@ -64,7 +65,7 @@ impl PublisherInner {
         }
     }
     pub(crate) async fn cleanup_subscribers(&mut self) {
-        let mut subs = HashMap::new();
+        let mut subs: HashMap<u64, Arc<Subscriber>> = HashMap::new();
         for (id, sub) in self.subscribers.drain() {
             for m in sub.matches.iter() {
                 if let Err(e) = self.indexer.delete_match(m, id) {
@@ -92,11 +93,11 @@ impl PublisherInner {
     }
 }
 impl Publisher {
-    pub(crate) fn new(close_notify: CloseNotify) -> JoinHandle<anyhow::Result<()>> {
+    pub(crate) fn new(closer: Closer) -> Self {
         let (sender, recv) = tokio::sync::mpsc::channel::<Vec<WriteReq>>(1000);
         let s = Self(Mutex::new(PublisherInner::new(sender)).into());
-        let handle = tokio::spawn(s.clone().listen_for_updates(close_notify, recv));
-        handle
+        tokio::spawn(s.clone().listen_for_updates(closer, recv));
+        s
     }
     pub(crate) async fn send_updates(&self, reqs_vec: Vec<WriteReq>) {
         let s = self.0.lock().await;
@@ -165,30 +166,26 @@ impl Publisher {
     }
     pub(crate) async fn listen_for_updates(
         self,
-        close_notify: CloseNotify,
+        closer: Closer,
         mut recv: Receiver<Vec<WriteReq>>,
-    ) -> anyhow::Result<()> {
+    ) {
         loop {
             select! {
-             _=close_notify.notified()=>{
+             _=closer.captured()=>{
                 let mut s = self.0.lock().await;
                 s.cleanup_subscribers().await;
                 drop(s);
-                close_notify.notify();
-                 return Ok(());
+                closer.done();
+                return ;
              },
              Some(s)=recv.recv()=>{
                 let mut v = vec![s];
-                match recv.try_recv() {
-                    Ok(s) => {
-                        v.push(s);
-                    }
-                    Err(e) => match e {
-                        TryRecvError::Empty => {}
-                        TryRecvError::Disconnected => bail!(e),
-                    },
+                if let Ok(s) = recv.try_recv() {
+                    v.push(s);
                 }
-                self.publish_updates(v).await?;
+                if let Err(e) = self.publish_updates(v).await {
+                    error!("{}",e);
+                };
              }
             }
         }
@@ -221,7 +218,7 @@ impl Subscriber {
     }
 }
 use std::future::Future;
-impl DBInner {
+impl DB {
     pub(crate) async fn subscribe_async<F>(&self, fun: F, matches: Vec<Match>) -> anyhow::Result<()>
     where
         F: Fn(Vec<Arc<Kv>>) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>>,

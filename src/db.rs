@@ -8,6 +8,7 @@ use std::{
 };
 
 use crate::{
+    closer::Closer,
     default::{KV_WRITES_ENTRIES_CHANNEL_CAPACITY, LOCK_FILE},
     errors::DBError,
     key_registry::KeyRegistry,
@@ -23,7 +24,11 @@ use crate::{
     publisher::Publisher,
     table::block::{self, Block},
     txn::oracle::Oracle,
-    vlog::{discard, ValueLog},
+    vlog::{
+        discard,
+        threshold::{self, VlogThreshold},
+        ValueLog,
+    },
     write::WriteReq,
 };
 use anyhow::anyhow;
@@ -65,11 +70,11 @@ impl Deref for DB {
 }
 #[derive(Debug)]
 pub struct DBInner {
-    lock: RwLock<()>,
+    // lock: RwLock<()>,
     // pub(crate) opt: Arc<Options>,
     pub(crate) next_mem_fid: NextId,
     pub(crate) key_registry: KeyRegistry,
-    pub(crate) memtable: Arc<RwLock<MemTable>>,
+    pub(crate) memtable: Option<Arc<RwLock<MemTable>>>,
     pub(crate) immut_memtable: RwLock<Vec<Arc<MemTable>>>,
     pub(crate) block_cache: Option<BlockCache>,
     pub(crate) index_cache: Option<IndexCache>,
@@ -81,7 +86,7 @@ pub struct DBInner {
     banned_namespaces: RwLock<HashSet<u64>>,
     pub(crate) publisher: Publisher,
     is_closed: AtomicBool,
-    pub(crate) block_writes: AtomicU32,
+    pub(crate) block_writes: AtomicBool,
 }
 impl DBInner {
     pub async fn open(opt: Options) -> anyhow::Result<()> {
@@ -108,9 +113,9 @@ impl DBInner {
         // }
 
         let manifest_file = open_create_manifestfile()?;
-        let imm = Vec::<MemTable>::with_capacity(Options::num_memtables());
+
         let (flush_sender, receiver) = mpsc::channel::<MemTable>(Options::num_memtables());
-        let p = mpsc::channel::<WriteReq>(KV_WRITES_ENTRIES_CHANNEL_CAPACITY);
+
         // mpsc::channel(buffer);
         // let mut closer = Closer::new();
         // let threshold = VlogThreshold::new(&opt, closer.sem_clone());
@@ -159,20 +164,47 @@ impl DBInner {
         let next_mem_fid = NextId::new();
         let mut memtable = None;
         if !Options::read_only() {
-            memtable = new_mem_table(&key_registry, &next_mem_fid)
-                .await
-                .map_err(|e| anyhow!("Cannot create memtable {}", e))?
-                .into();
+            memtable = Arc::new(RwLock::new(
+                new_mem_table(&key_registry, &next_mem_fid)
+                    .await
+                    .map_err(|e| anyhow!("Cannot create memtable {}", e))?,
+            ))
+            .into();
         }
 
-        let levels_controller = LevelsController::new(
+        let level_controller = LevelsController::new(
             &manifest_file.manifest,
             key_registry.clone(),
             &block_cache,
             &index_cache,
         )
-        .await?;
-        let discard = discard::DiscardStats::new()?;
+        .await?
+        .into();
+        let threshold = VlogThreshold::new();
+
+        let vlog = ValueLog::new(threshold, key_registry.clone())?;
+        let closer = Closer::new(1);
+        let publisher = Publisher::new(closer.clone());
+        let (send_write_req, receiver) = mpsc::channel(KV_WRITES_ENTRIES_CHANNEL_CAPACITY);
+        let (flush_memtable, _) = mpsc::channel(Options::num_memtables());
+        let db: DB = DB(Arc::new(Self {
+            next_mem_fid,
+            key_registry,
+            memtable,
+            immut_memtable: Vec::with_capacity(Options::num_memtables()).into(),
+            block_cache,
+            index_cache,
+            level_controller,
+            oracle: Default::default(),
+            send_write_req,
+            flush_memtable,
+            vlog,
+            banned_namespaces: Default::default(),
+            publisher,
+            is_closed: AtomicBool::new(false),
+            block_writes: AtomicBool::new(false),
+        }));
+        
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);
         Ok(())
