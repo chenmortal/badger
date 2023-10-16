@@ -13,7 +13,7 @@ use tokio::{
     },
 };
 
-use crate::options::Options;
+use crate::{closer::Closer, options::Options};
 #[derive(Debug, Clone)]
 pub(crate) struct VlogThreshold(Arc<VlogThresholdInner>);
 #[derive(Debug)]
@@ -21,14 +21,13 @@ pub(crate) struct VlogThresholdInner {
     percentile: f64,
     value_threshold: AtomicUsize,
     vlog_metrics: Histogram,
-    close_sem: Arc<Semaphore>,
+    closer: Closer,
     sender: Sender<Vec<usize>>,
     clear_notify: Arc<Notify>,
 }
 impl VlogThresholdInner {
     pub(crate) fn new(
-        // opt: &Options,
-        close_sem: Arc<Semaphore>,
+        closer: Closer,
         sender: Sender<Vec<usize>>,
         clear_notify: Arc<Notify>,
     ) -> Self {
@@ -55,7 +54,7 @@ impl VlogThresholdInner {
             percentile: Options::vlog_percentile(),
             value_threshold: AtomicUsize::new(Options::value_threshold()),
             vlog_metrics: histogram_data,
-            close_sem,
+            closer,
             sender,
             clear_notify,
         }
@@ -86,12 +85,13 @@ impl Deref for VlogThreshold {
     }
 }
 impl VlogThreshold {
-    pub(crate) fn new(close_sem: Arc<Semaphore>) -> Self {
+    pub(crate) fn new() -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel::<Vec<usize>>(1000);
         let clear_notify = Arc::new(Notify::new());
         let clear_notified = clear_notify.clone();
+        let closer = Closer::new(1);
         let vlog_threshold = VlogThreshold(Arc::new(VlogThresholdInner::new(
-            close_sem,
+            closer,
             sender,
             clear_notify,
         )));
@@ -106,7 +106,7 @@ impl VlogThreshold {
     ) {
         loop {
             select! {
-                _=self.close_sem.acquire()=>{
+                _=self.closer.captured()=>{
                     return ;
                 }
                 Some(v)=receiver.recv()=>{

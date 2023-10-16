@@ -64,11 +64,7 @@ pub(crate) struct ValueLog {
     key_registry: KeyRegistry,
 }
 impl ValueLog {
-    pub(crate) fn new(
-        // opt: Arc<Options>,
-        threshold: VlogThreshold,
-        key_registry: KeyRegistry,
-    ) -> anyhow::Result<Self> {
+    pub(crate) fn new(threshold: VlogThreshold, key_registry: KeyRegistry) -> anyhow::Result<Self> {
         Ok(Self {
             fid_logfile: Default::default(),
             max_fid: Default::default(),
@@ -77,7 +73,6 @@ impl ValueLog {
             writable_log_offset: Default::default(),
             num_entries_written: Default::default(),
             discard_stats: discard::DiscardStats::new()?,
-            // opt,
             threshold,
             key_registry,
         })

@@ -8,12 +8,18 @@ use std::{
 };
 
 use log::{debug, error};
+use scopeguard::defer;
 use tokio::{
     select,
-    sync::{mpsc::Receiver, oneshot, Notify, Semaphore},
+    sync::{
+        mpsc::Receiver,
+        oneshot::{self},
+        Notify, Semaphore,
+    },
 };
 
 use crate::{
+    closer::Closer,
     db::DB,
     default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
     errors::DBError,
@@ -27,7 +33,8 @@ use anyhow::anyhow;
 use anyhow::bail;
 pub(crate) struct WriteReq {
     entries_vptrs: Vec<(DecEntry, ValuePointer)>,
-    send_result: oneshot::Sender<anyhow::Result<()>>,
+    result: anyhow::Result<()>,
+    send_result: Option<oneshot::Sender<anyhow::Result<()>>>,
 }
 
 impl WriteReq {
@@ -41,7 +48,8 @@ impl WriteReq {
             .collect::<Vec<_>>();
         Self {
             entries_vptrs: p,
-            send_result,
+            send_result: send_result.into(),
+            result: Ok(()),
         }
     }
 
@@ -54,6 +62,17 @@ impl WriteReq {
     pub(crate) fn entries_vptrs(&self) -> &[(DecEntry, ValuePointer)] {
         self.entries_vptrs.as_ref()
     }
+    pub(crate) fn set_result(&mut self, result: anyhow::Result<()>) {
+        self.result = result;
+    }
+}
+impl Drop for WriteReq {
+    fn drop(&mut self) {
+        let old = replace(&mut self.result, Ok(()));
+        if let Some(s) = self.send_result.take() {
+            let _ = s.send(old);
+        };
+    }
 }
 impl DB {
     #[inline]
@@ -62,7 +81,7 @@ impl DB {
         entries: Vec<DecEntry>,
         entries_size: usize,
     ) -> anyhow::Result<oneshot::Receiver<anyhow::Result<()>>> {
-        if self.block_writes.load(Ordering::SeqCst) == 1 {
+        if self.block_writes.load(Ordering::SeqCst) {
             bail!(DBError::BlockedWrites)
         };
         let entires_len = entries.len();
@@ -74,21 +93,17 @@ impl DB {
         Ok(receiver)
     }
     #[inline]
-    pub(crate) async fn do_writes(
-        &self,
-        mut recv_write_req: Receiver<WriteReq>,
-        close_sem: Arc<Semaphore>,
-    ) {
+    pub(crate) async fn do_writes(&self, mut recv_write_req: Receiver<WriteReq>, closer: Closer) {
+        defer!(
+          closer.done();
+        );
         let notify_send = Arc::new(Notify::new());
         let notify_recv = notify_send.clone();
         let mut write_reqs = Vec::with_capacity(10);
         async fn write_requests(db: DB, write_reqs: Vec<WriteReq>, notify_send: Arc<Notify>) {
-            match db.write_requests(write_reqs).await {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("write Requests: {}", e);
-                }
-            };
+            if let Err(e) = db.write_requests(write_reqs).await {
+                error!("write Requests: {}", e);
+            }
             notify_send.notify_one();
         }
         let req_len = Arc::new(AtomicUsize::new(0));
@@ -110,7 +125,7 @@ impl DB {
                     write_reqs=Vec::with_capacity(10);
                     req_len.store(write_reqs.len(), Ordering::Relaxed);
                 }
-                _= close_sem.acquire()=>{
+                _= closer.captured()=>{
                     while let Some(w) = recv_write_req.recv().await {
                         write_reqs.push(w);
                     }
@@ -126,31 +141,14 @@ impl DB {
             return Ok(());
         }
         debug!("write_requests called. Writing to value log");
-
-        fn done_err(r: Option<&anyhow::Error>, reqs: Vec<WriteReq>) -> anyhow::Result<()> {
-            match r {
-                Some(e) => {
-                    let e = e.to_string();
-                    for ele in reqs {
-                        if let Err(e) = ele.send_result.send(Err(anyhow!(e.clone()))) {
-                            return e;
-                        };
-                    }
-                }
-                None => {
-                    for ele in reqs {
-                        if let Err(e) = ele.send_result.send(Ok(())) {
-                            return e;
-                        };
-                    }
-                }
-            }
-
-            Ok(())
-        }
+        let handle_err = |e: anyhow::Error, reqs: &mut Vec<WriteReq>| {
+            let e = Arc::new(e);
+            reqs.iter_mut()
+                .for_each(|x| x.set_result(Err(anyhow!(e.clone()))));
+            e
+        };
         if let Err(e) = self.vlog.write(&mut reqs).await {
-            done_err((&e).into(), reqs)?;
-            bail!(e);
+            bail!(handle_err(e, &mut reqs));
         };
 
         debug!("Writing to memtable");
@@ -171,20 +169,16 @@ impl DB {
             };
         }
         if let Some(e) = err {
-            done_err((&e).into(), reqs)?;
-            bail!(e);
+            bail!(handle_err(e, &mut reqs));
         }
         debug!("Sending updates to subscribers");
-
+        self.publisher.send_updates(reqs).await;
         debug!("{} entries written", count);
-        // for ele in reqs.iter_mut() {
-        //     ele.send_result.send(result);
-        // }
-        // reqs.iter().for_each(|req|req.send_result.send(result.clone()));
         Ok(())
     }
     async fn ensure_boom_for_write(&self) -> anyhow::Result<()> {
-        let memtable_r = self.memtable.read().await;
+        let memtable = unsafe { self.memtable.as_ref().unwrap_unchecked() };
+        let memtable_r = memtable.read().await;
         if !memtable_r.is_full() {
             drop(memtable_r);
             return Ok(());
@@ -195,7 +189,7 @@ impl DB {
 
         let new_memtable = new_mem_table(&self.key_registry, &self.next_mem_fid).await?;
 
-        let mut memtable_w = self.memtable.write().await;
+        let mut memtable_w = memtable.write().await;
         let old_memtable = replace(&mut *memtable_w, new_memtable);
         drop(memtable_w);
 
@@ -208,7 +202,8 @@ impl DB {
         Ok(())
     }
     async fn write_to_memtable(&self, req: &mut WriteReq) -> anyhow::Result<()> {
-        let mut memtable_w = self.memtable.write().await;
+        let memtable = unsafe { self.memtable.as_ref().unwrap_unchecked() };
+        let mut memtable_w = memtable.write().await;
         for (dec_entry, vptr) in req.entries_vptrs_mut() {
             if vptr.is_empty() {
                 dec_entry.meta_mut().remove(EntryMeta::VALUE_POINTER);
