@@ -119,6 +119,7 @@ impl Arena {
         if ptr.is_null() {
             return None;
         }
+        
         let ptr_addr = ptr as usize;
         let start_addr = self.start.as_ptr() as usize;
         debug_assert!(ptr_addr > start_addr);

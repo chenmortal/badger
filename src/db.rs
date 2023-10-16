@@ -34,8 +34,11 @@ use crate::{
 use anyhow::anyhow;
 use bytes::Buf;
 use stretto::AsyncCache;
-use tokio::sync::mpsc;
 use tokio::sync::{mpsc::Sender, RwLock};
+use tokio::sync::{
+    mpsc::{self, Receiver},
+    Mutex,
+};
 
 pub(crate) type BlockCache = AsyncCache<Vec<u8>, Block>;
 pub(crate) type IndexCache = AsyncCache<u64, Vec<u8>>;
@@ -70,8 +73,6 @@ impl Deref for DB {
 }
 #[derive(Debug)]
 pub struct DBInner {
-    // lock: RwLock<()>,
-    // pub(crate) opt: Arc<Options>,
     pub(crate) next_mem_fid: NextId,
     pub(crate) key_registry: KeyRegistry,
     pub(crate) memtable: Option<Arc<RwLock<MemTable>>>,
@@ -82,6 +83,7 @@ pub struct DBInner {
     pub(crate) oracle: Arc<Oracle>,
     pub(crate) send_write_req: Sender<WriteReq>,
     pub(crate) flush_memtable: Sender<Arc<MemTable>>,
+    pub(crate) recv_memtable: Mutex<Receiver<Arc<MemTable>>>,
     pub(crate) vlog: ValueLog,
     banned_namespaces: RwLock<HashSet<u64>>,
     pub(crate) publisher: Publisher,
@@ -90,13 +92,9 @@ pub struct DBInner {
 }
 impl DBInner {
     pub async fn open(opt: Options) -> anyhow::Result<()> {
-        // opt.check_set_options()?;
-        Options::init(opt);
+        Options::init(opt)?;
         let mut dir_lock_guard = None;
         let mut value_dir_lock_guard = None;
-        // if !opt.in_memory {
-
-        // opt.create_dirs()?;
 
         if !Options::bypass_lock_guard() {
             dir_lock_guard =
@@ -114,13 +112,6 @@ impl DBInner {
 
         let manifest_file = open_create_manifestfile()?;
 
-        let (flush_sender, receiver) = mpsc::channel::<MemTable>(Options::num_memtables());
-
-        // mpsc::channel(buffer);
-        // let mut closer = Closer::new();
-        // let threshold = VlogThreshold::new(&opt, closer.sem_clone());
-
-        // let mut db = DB::default();
         let mut block_cache = None;
         if Options::block_cache_size() > 0 {
             let mut num_in_cache = Options::block_cache_size() / Options::block_size();
@@ -186,7 +177,8 @@ impl DBInner {
         let closer = Closer::new(1);
         let publisher = Publisher::new(closer.clone());
         let (send_write_req, receiver) = mpsc::channel(KV_WRITES_ENTRIES_CHANNEL_CAPACITY);
-        let (flush_memtable, _) = mpsc::channel(Options::num_memtables());
+        let (flush_memtable, recv_memtable) = mpsc::channel(Options::num_memtables());
+        // recv_memtable.recv();
         let db: DB = DB(Arc::new(Self {
             next_mem_fid,
             key_registry,
@@ -203,8 +195,9 @@ impl DBInner {
             publisher,
             is_closed: AtomicBool::new(false),
             block_writes: AtomicBool::new(false),
+            recv_memtable: recv_memtable.into(),
         }));
-        
+
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);
         Ok(())

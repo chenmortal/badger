@@ -1,6 +1,10 @@
+use aes_gcm::aead::rand_core::le;
 use rand::Rng;
 
-use crate::kv::KeyTsBorrow;
+use crate::{
+    iter::{SinkIter, SinkIterator},
+    kv::KeyTsBorrow,
+};
 
 /// <head> --> [1] --> [2] --> [3] --> [4] --> [5] --> [6] --> [7] --> [8] --> [9] --> [10] ->
 /// <head> ----------> [2] ----------> [4] ------------------> [7] ----------> [9] --> [10] ->
@@ -34,11 +38,12 @@ impl DerefMut for Tower {
 }
 #[derive(Debug, Default)]
 #[repr(C, align(8))]
-struct Node {
+pub(crate) struct Node {
     value_slice: AtomicU64,
     key_offset: u32,
     key_len: u16,
     height: u16,
+    prev: NodeOffset,
     tower: Tower,
 }
 
@@ -49,6 +54,7 @@ impl Node {
         node.key_offset = arena.offset_slice(key_p);
         node.key_len = key.len() as u16;
         node.height = height as u16;
+        node.prev = NodeOffset(AtomicU32::new(8));
         node.set_value(arena, value);
         node
     }
@@ -71,24 +77,18 @@ impl Node {
         arena.get_slice::<u8>(offset, len)
     }
     #[inline]
-    fn get_next_node<'a>(&self, arena: &'a Arena, height: usize) -> Option<&'a Node> {
-        self.tower[height].get_node(arena)
+    pub(crate) fn next<'a>(&self, arena: &'a Arena, level: usize) -> Option<&'a Node> {
+        self.tower[level].get_node(arena)
+    }
+    pub(crate) fn prev<'a>(&self, arena: &'a Arena) -> Option<&'a Node> {
+        self.prev.get_node(arena)
     }
     // #[inline]
     // fn get_key<'a>(&self, arena: &'a Arena) -> Option<&[u8]> {
     //     arena.get(self.key_offset)
     // }
 }
-#[test]
-fn test_v() {
-    let offset = 2;
-    let l = u32::MAX - 2;
-    let v = (offset as u64) << 32 | l as u64;
-    println!("{:064b}", v);
-    println!("{:032b}", v >> 32 as u32);
-    println!("{:032b}", v as u32);
-    // dbg!(((v >> 32) as u32, v as u32));
-}
+
 #[derive(Debug, Default)]
 struct NodeOffset(AtomicU32);
 impl Deref for NodeOffset {
@@ -120,7 +120,7 @@ pub(crate) struct SkipListInner {
 impl SkipListInner {
     fn new(arena_size: u32) -> Self {
         let arena = Arena::new(arena_size);
-        let head = arena.alloc_with(Node::default);
+        let head: &mut Node = arena.alloc_with(Node::default);
         head.height = SKL_MAX_HEIGHT as u16;
         let head = Unique::new(head as *mut _).unwrap();
         Self {
@@ -128,6 +128,10 @@ impl SkipListInner {
             head,
             arena,
         }
+    }
+    #[inline]
+    fn head_offset(&self) -> u32 {
+        self.arena.offset(self.head.as_ptr()).unwrap()
     }
 
     pub fn push(&self, key: &[u8], value: &[u8]) {
@@ -161,8 +165,9 @@ impl SkipListInner {
                 }
             };
         }
+        height = random_height;
         let node_offset = self.arena.offset(node).unwrap();
-        for h in 0..random_height {
+        for h in 0..height {
             loop {
                 let prev_node = match unsafe { prev[h].as_ref() } {
                     Some(prev_node) => prev_node,
@@ -175,8 +180,41 @@ impl SkipListInner {
                         unsafe { &*prev[h] }
                     }
                 };
-                let next_offset = self.arena.offset(next[h]).unwrap_or_default();
+                let mut next_offset = self.arena.offset(next[h]).unwrap_or_default();
                 node.tower[h].store(next_offset, Ordering::SeqCst);
+                if h == 0 {
+                    loop {
+                        let next_node = next[0];
+                        let prev_offset = self.arena.offset(prev[0]).unwrap_or(self.head_offset());
+                        node.prev.store(prev_offset, Ordering::SeqCst);
+                        if !next_node.is_null() {
+                            let next_node = unsafe { &*next_node };
+                            match next_node.prev.compare_exchange(
+                                prev_offset,
+                                node_offset,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            ) {
+                                Ok(_) => {
+                                    break;
+                                }
+                                Err(_) => {
+                                    let (p, n) = self.find_splice_for_level(key.into(), prev[0], 0);
+                                    if p == n {
+                                        self.try_set_value(prev[0], value);
+                                        return;
+                                    }
+                                    prev[0] = p;
+                                    next[0] = n;
+                                    next_offset = self.arena.offset(next[0]).unwrap_or_default();
+                                }
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
                 match prev_node.tower[h].compare_exchange(
                     next_offset,
                     node_offset,
@@ -208,7 +246,7 @@ impl SkipListInner {
     ) -> (*const Node, *const Node) {
         loop {
             if let Some(before) = unsafe { before_ptr.as_ref() } {
-                if let Some(next) = before.get_next_node(&self.arena, height) {
+                if let Some(next) = before.next(&self.arena, height) {
                     if let Some(next_key_slice) = next.get_key(&self.arena) {
                         let next_key: KeyTsBorrow = next_key_slice.into();
                         let next_ptr = next as *const _;
@@ -250,41 +288,78 @@ impl SkipListInner {
             unreachable!()
         }
     }
-}
-struct SkipListLevelIter {
-    skip_list: SkipList,
-    height: usize,
-    cursor: *const Node,
-}
-impl SkipListLevelIter {
-    fn new(skip_list: SkipList, height: usize) -> Self {
-        let cursor = skip_list.head.as_ptr();
-        Self {
-            skip_list,
-            height,
-            cursor,
-        }
-    }
-}
-impl Iterator for SkipListLevelIter {
-    type Item = *const Node;
-
-    fn next<'a>(&'a mut self) -> Option<Self::Item> {
-        if let Some(node) = unsafe { self.cursor.as_ref() } {
-            match node.tower[self.height].get_node(&self.skip_list.arena) {
+    fn find_next(&self, key: &[u8]) -> Option<&Node> {
+        let mut node = unsafe { self.head.as_ref() };
+        // let head_ptr = node as *const _;
+        let key_ref: KeyTsBorrow = key.into();
+        let mut level = self.height() - 1;
+        loop {
+            match node.next(&self.arena, level) {
                 Some(next) => {
-                    self.cursor = next;
+                    let next_key = next.get_key(&self.arena).unwrap();
+                    let next_key_ref: KeyTsBorrow = next_key.into();
+                    match key_ref.cmp(&next_key_ref) {
+                        std::cmp::Ordering::Less => {
+                            if level > 0 {
+                                level -= 1;
+                                continue;
+                            } else {
+                                return next.into();
+                            }
+                        }
+                        std::cmp::Ordering::Equal => {
+                            return next.next(&self.arena, 0);
+                        }
+                        std::cmp::Ordering::Greater => {
+                            node = next;
+                            continue;
+                        }
+                    }
                 }
                 None => {
-                    self.cursor = std::ptr::null();
+                    if level > 0 {
+                        level -= 1;
+                    } else {
+                        return None;
+                    }
                 }
-            };
-            Some(node as _)
-        } else {
-            None
+            }
+        }
+    }
+    fn find_prev(&self, key: &[u8]) -> Option<&Node> {
+        let mut node = unsafe { self.head.as_ref() };
+        let head_ptr = node as *const _;
+        let key_ref: KeyTsBorrow = key.into();
+        let mut level = self.height() - 1;
+        loop {
+            match node.next(&self.arena, level) {
+                Some(next) => {
+                    let next_key = next.get_key(&self.arena).unwrap();
+                    let next_key_ref: KeyTsBorrow = next_key.into();
+                    match key_ref.cmp(&next_key_ref) {
+                        std::cmp::Ordering::Greater => {
+                            //node.key <next.key < key
+                            node = next;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                None => {}
+            }
+            if level > 0 {
+                level -= 1;
+            } else {
+                if head_ptr == node as *const _ {
+                    return None;
+                } else {
+                    return node.into();
+                }
+            }
         }
     }
 }
+
 #[derive(Debug, Clone)]
 pub(crate) struct SkipList {
     skip_list: Arc<SkipListInner>,
@@ -308,47 +383,129 @@ impl SkipList {
         self.skip_list.arena.len() as u32
     }
 }
+pub(crate) struct SkipListIter<'a> {
+    inner: &'a SkipListInner,
+    node: Option<&'a Node>,
+}
+impl<'a> SkipListIter<'a> {
+    fn new(inner: &'a SkipListInner) -> Self {
+        let node = unsafe { inner.head.as_ref() }.into();
+        Self { inner, node }
+    }
+}
+impl<'a> SinkIter for SkipListIter<'a> {
+    type Item = Node;
+
+    fn item(&self) -> Option<&Self::Item> {
+        self.node
+    }
+}
+impl<'a> SinkIterator for SkipListIter<'a> {
+    fn next(&mut self) -> Result<(), anyhow::Error> {
+        todo!()
+    }
+
+    fn seek_to_first(&mut self) -> Result<(), anyhow::Error> {
+        self.node = unsafe { self.inner.head.as_ref() }.into();
+        Ok(())
+    }
+
+    fn seek_to_last(&mut self) -> Result<(), anyhow::Error> {
+        todo!()
+    }
+}
+pub(crate) struct OwnedSkipListIter {
+    inner: SkipList,
+    node: *const Node,
+}
 #[cfg(test)]
 mod tests {
+    use std::{alloc::System, time::SystemTime};
+
     use rand::Rng;
 
-    use super::{SkipList, SkipListLevelIter, SKL_MAX_HEIGHT};
+    use super::{Node, SkipList, SKL_MAX_HEIGHT};
 
+    struct SkipListLevelIter {
+        skip_list: SkipList,
+        height: usize,
+        cursor: *const Node,
+    }
+    impl SkipListLevelIter {
+        fn new(skip_list: SkipList, height: usize) -> Self {
+            let cursor = skip_list.head.as_ptr();
+            Self {
+                skip_list,
+                height,
+                cursor,
+            }
+        }
+    }
+    impl Iterator for SkipListLevelIter {
+        type Item = *const Node;
+
+        fn next<'a>(&'a mut self) -> Option<Self::Item> {
+            if let Some(node) = unsafe { self.cursor.as_ref() } {
+                match node.tower[self.height].get_node(&self.skip_list.arena) {
+                    Some(next) => {
+                        self.cursor = next;
+                    }
+                    None => {
+                        self.cursor = std::ptr::null();
+                    }
+                };
+                Some(node as _)
+            } else {
+                None
+            }
+        }
+    }
     #[test]
     fn test_init() {
-        let skip_list = SkipList::new(10000);
-        for i in 1..10 {
+        let skip_list = SkipList::new(100000000);
+        let start = SystemTime::now();
+        for i in 1..2 {
             skip_list.push(i.to_string().as_bytes(), (i.to_string() + "abc").as_bytes());
         }
+        let e = SystemTime::now().duration_since(start).unwrap();
+        dbg!(e);
 
-        for i in 0..SKL_MAX_HEIGHT {
-            let mut iter = SkipListLevelIter::new(skip_list.clone(), i);
-            print!("h{:<5}", i);
-            iter.next();
-            while let Some(node) = iter.next() {
-                let n = unsafe { &*node };
-                print!(
-                    "---{}:{}  ",
-                    String::from_utf8_lossy(n.get_key(&skip_list.arena).unwrap()),
-                    String::from_utf8_lossy(n.get_value(&skip_list.arena).unwrap())
-                );
-            }
-            println!()
-        }
+        // for i in 0..SKL_MAX_HEIGHT {
+        //     let mut iter = SkipListLevelIter::new(skip_list.clone(), i);
+        //     print!("h{:<5}", i);
+        //     iter.next();
+        //     while let Some(node) = iter.next() {
+        //         let n = unsafe { &*node };
+
+        //         print!(
+        //             "---{}:{}:prev{}  ",
+        //             String::from_utf8_lossy(n.get_key(&skip_list.arena).unwrap()),
+        //             String::from_utf8_lossy(n.get_value(&skip_list.arena).unwrap()),
+        //             String::from_utf8_lossy(
+        //                 if let Some(s) = n.prev(&skip_list.arena) {
+        //                     s.get_key(&skip_list.arena).unwrap_or_default()
+        //                 }else {
+        //                     b""
+        //                 }
+        //             ),
+        //         );
+        //     }
+        //     println!()
+        // }
         // skip_list.push(key, value)
     }
     #[test]
     fn test_rng() {
         let mut rng = rand::thread_rng();
-        let mut count:usize=0;
-        let mut c=1000;
+        let mut count: usize = 0;
+        let mut c = 1000;
         // let mut res = Vec::with_capacity(100);
         for i in 0..c {
-            if rng.gen_ratio(u32::MAX / 3, u32::MAX){
-                count+=1;
+            if rng.gen_ratio(u32::MAX / 3, u32::MAX) {
+                count += 1;
             }
         }
-        println!("{}",count);
-        println!("{}",count as f32/c as f32);
+        println!("{}", count);
+        println!("{}", count as f32 / c as f32);
     }
 }
