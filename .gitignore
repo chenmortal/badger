@@ -1,3 +1,6 @@
 /target
 /tmp
 /.cargo
+/tests
+
+.DS_Store
