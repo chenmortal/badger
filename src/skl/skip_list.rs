@@ -1,8 +1,10 @@
-use aes_gcm::aead::rand_core::le;
 use rand::Rng;
 
 use crate::{
-    iter::{SinkIter, SinkIterator},
+    iter::{
+        DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIterator,
+        SinkIter, SinkIterator,
+    },
     kv::KeyTsBorrow,
 };
 
@@ -22,6 +24,14 @@ use std::{
 };
 
 const SKL_MAX_HEIGHT: usize = 20; //<20 !=20
+
+///a probability of `numerator/denominator`.
+///for example,the probability of node.height==1 is 1/3
+///the probability of node.height==2 is (1/3)^2, node.height==3 is (1/3)^3;
+const RANDOM_HEIGHT_NUMERATOR: u32 = 1;
+const RANDOM_HEIGHT_DENOMINATOR: u32 = 3;
+
+//
 #[derive(Debug, Default)]
 struct Tower([NodeOffset; SKL_MAX_HEIGHT]);
 impl Deref for Tower {
@@ -83,10 +93,6 @@ impl Node {
     pub(crate) fn prev<'a>(&self, arena: &'a Arena) -> Option<&'a Node> {
         self.prev.get_node(arena)
     }
-    // #[inline]
-    // fn get_key<'a>(&self, arena: &'a Arena) -> Option<&[u8]> {
-    //     arena.get(self.key_offset)
-    // }
 }
 
 #[derive(Debug, Default)]
@@ -271,7 +277,8 @@ impl SkipListInner {
     fn random_height() -> usize {
         let mut rng = rand::thread_rng();
         let mut h = 1;
-        while h < SKL_MAX_HEIGHT && rng.gen_ratio(u32::MAX / 3, u32::MAX) {
+        while h < SKL_MAX_HEIGHT && rng.gen_ratio(RANDOM_HEIGHT_NUMERATOR, RANDOM_HEIGHT_NUMERATOR)
+        {
             h += 1;
         }
         return h;
@@ -358,6 +365,24 @@ impl SkipListInner {
             }
         }
     }
+    fn find_last(&self) -> Option<&Node> {
+        let mut node = unsafe { self.head.as_ref() };
+        let mut level = self.height() - 1;
+        loop {
+            match node.next(&self.arena, level) {
+                Some(next) => {
+                    node = next;
+                }
+                None => {
+                    if level > 0 {
+                        level -= 1;
+                    } else {
+                        return node.into();
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -382,50 +407,272 @@ impl SkipList {
     pub(crate) fn mem_size(&self) -> u32 {
         self.skip_list.arena.len() as u32
     }
+    #[inline]
+    pub(crate) fn iter(&self) -> SkipListIter<'_> {
+        SkipListIter::new(&self)
+    }
 }
 pub(crate) struct SkipListIter<'a> {
     inner: &'a SkipListInner,
     node: Option<&'a Node>,
+    node_back: Option<&'a Node>,
 }
 impl<'a> SkipListIter<'a> {
     fn new(inner: &'a SkipListInner) -> Self {
         let node = unsafe { inner.head.as_ref() }.into();
-        Self { inner, node }
+        let node_back = None;
+        Self {
+            inner,
+            node,
+            node_back,
+        }
     }
 }
 impl<'a> SinkIter for SkipListIter<'a> {
     type Item = Node;
 
     fn item(&self) -> Option<&Self::Item> {
+        if let Some(node) = self.node {
+            if node as *const _ == self.inner.head.as_ptr() {
+                return None;
+            };
+        }
         self.node
     }
 }
+impl<'a> DoubleEndedSinkIter for SkipListIter<'a> {
+    fn item_back(&self) -> Option<&<Self as SinkIter>::Item> {
+        self.node_back
+    }
+}
 impl<'a> SinkIterator for SkipListIter<'a> {
-    fn next(&mut self) -> Result<(), anyhow::Error> {
-        todo!()
-    }
-
-    fn seek_to_first(&mut self) -> Result<(), anyhow::Error> {
-        self.node = unsafe { self.inner.head.as_ref() }.into();
-        Ok(())
-    }
-
-    fn seek_to_last(&mut self) -> Result<(), anyhow::Error> {
-        todo!()
+    fn next(&mut self) -> Result<bool, anyhow::Error> {
+        if let Some(now) = self.node {
+            if let Some(new) = now.next(&self.inner.arena, 0) {
+                if let Some(back) = self.node_back {
+                    if new as *const _ == back as *const _ {
+                        return Ok(false);
+                    }
+                }
+                self.node = new.into();
+                return Ok(true);
+            };
+        }
+        Ok(false)
     }
 }
-pub(crate) struct OwnedSkipListIter {
-    inner: SkipList,
-    node: *const Node,
+impl<'a> DoubleEndedSinkIterator for SkipListIter<'a> {
+    fn next_back(&mut self) -> Result<bool, anyhow::Error> {
+        if let Some(now) = self.node_back {
+            if let Some(new) = now.prev(&self.inner.arena) {
+                if let Some(node) = self.node {
+                    if new as *const _ == node as *const _ {
+                        return Ok(false);
+                    }
+                }
+                self.node_back = new.into();
+                return Ok(true);
+            }
+        } else {
+            if let Some(last) = self.inner.find_last() {
+                if last as *const _ != self.inner.head.as_ptr() {
+                    self.node_back = last.into();
+                    return Ok(true);
+                }
+            };
+        }
+        Ok(false)
+    }
 }
+impl<'a> KvSinkIterator for SkipListIter<'a> {
+    type Key = &'a [u8];
+    type Value = &'a [u8];
+
+    fn key(&self) -> Option<Self::Key> {
+        if let Some(item) = self.item() {
+            item.get_key(&self.inner.arena)
+        } else {
+            None
+        }
+    }
+
+    fn value(&self) -> Option<Self::Value> {
+        if let Some(item) = self.item() {
+            item.get_value(&self.inner.arena)
+        } else {
+            None
+        }
+    }
+}
+impl<'a> KvDoubleEndedSinkIter for SkipListIter<'a> {
+    fn key_back(&self) -> Option<<Self as KvSinkIterator>::Key> {
+        if let Some(item) = self.item_back() {
+            item.get_key(&self.inner.arena)
+        } else {
+            None
+        }
+    }
+
+    fn value_back(&self) -> Option<<Self as KvSinkIterator>::Value> {
+        if let Some(item) = self.item_back() {
+            item.get_value(&self.inner.arena)
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{alloc::System, time::SystemTime};
+    use std::{mem::size_of, time::SystemTime};
 
-    use rand::Rng;
+    use crate::iter::{
+        DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIterator,
+        SinkIter, SinkIterator,
+    };
 
-    use super::{Node, SkipList, SKL_MAX_HEIGHT};
+    use super::{Node, SkipList, SkipListIter};
 
+    #[test]
+    fn test_iter_next() {
+        let end = 1000 as u32;
+        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
+        let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
+        let skip_list = SkipList::new(arena_size);
+        for i in 0..end {
+            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
+        }
+        let mut iter = SkipListIter::new(&skip_list);
+        assert!(iter.item().is_none());
+        for i in 0..end {
+            assert!(iter.next().unwrap());
+            assert_eq!(iter.key().unwrap(), i.to_be_bytes());
+        }
+        assert_eq!(iter.next().unwrap(), false);
+    }
+
+    #[test]
+    fn test_iter_next_back() {
+        let end = 1000 as u32;
+        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
+        let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
+        let skip_list = SkipList::new(arena_size);
+        for i in 0..end {
+            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
+        }
+        let mut iter = SkipListIter::new(&skip_list);
+        assert!(iter.item_back().is_none());
+        for i in (0..end).rev() {
+            assert!(iter.next_back().unwrap());
+            assert_eq!(iter.key_back().unwrap(), i.to_be_bytes())
+        }
+        assert_eq!(iter.next_back().unwrap(), false);
+    }
+    #[test]
+    fn test_iter_double_ended() {
+        let end = 1000 as u32;
+        let split = 500 as u32;
+        assert!(split < end);
+        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
+        let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
+        let skip_list = SkipList::new(arena_size);
+        for i in 0..end {
+            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
+        }
+        let mut iter = SkipListIter::new(&skip_list);
+        for i in 0..split {
+            assert!(iter.next().unwrap());
+            assert_eq!(iter.key().unwrap(), i.to_be_bytes());
+        }
+        for i in (split..end).rev() {
+            assert!(iter.next_back().unwrap());
+            assert_eq!(iter.key_back().unwrap(), i.to_be_bytes());
+        }
+        assert_eq!(iter.next().unwrap(), false);
+        assert_eq!(iter.next_back().unwrap(), false);
+    }
+    #[test]
+    fn test_iter_rev_next() {
+        let end = 1000 as u32;
+
+        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
+        let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
+        let skip_list = SkipList::new(arena_size);
+        for i in 0..end {
+            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
+        }
+        let iter = SkipListIter::new(&skip_list);
+        let mut iter_rev = iter.rev();
+
+        assert!(iter_rev.item().is_none());
+        for i in (0..end).rev() {
+            assert!(iter_rev.next().unwrap());
+            assert_eq!(iter_rev.key().unwrap(), i.to_be_bytes());
+        }
+        assert_eq!(iter_rev.next().unwrap(), false);
+    }
+    #[test]
+    fn test_iter_rev_next_back() {
+        let end = 1000 as u32;
+
+        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
+        let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
+        let skip_list = SkipList::new(arena_size);
+        for i in 0..end {
+            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
+        }
+        let iter = SkipListIter::new(&skip_list);
+        let mut iter_rev = iter.rev();
+
+        assert!(iter_rev.item().is_none());
+        for i in 0..end {
+            assert!(iter_rev.next_back().unwrap());
+            assert_eq!(iter_rev.key_back().unwrap(), i.to_be_bytes());
+        }
+        assert_eq!(iter_rev.next_back().unwrap(), false);
+    }
+    #[test]
+    fn test_iter_rev_double_ended() {
+        let end = 1000 as u32;
+        let split = 500 as u32;
+        assert!(split < end);
+        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
+        let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
+        let skip_list = SkipList::new(arena_size);
+        for i in 0..end {
+            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
+        }
+        let iter = SkipListIter::new(&skip_list);
+        let mut iter_rev = iter.rev();
+        for i in 0..split {
+            assert!(iter_rev.next_back().unwrap());
+            assert_eq!(iter_rev.key_back().unwrap(), i.to_be_bytes());
+        }
+        for i in (split..end).rev() {
+            assert!(iter_rev.next().unwrap());
+            assert_eq!(iter_rev.key().unwrap(), i.to_be_bytes());
+        }
+        assert_eq!(iter_rev.next().unwrap(), false);
+        assert_eq!(iter_rev.next_back().unwrap(), false);
+    }
+    #[test]
+    fn test_iter_rev_rev() {
+        let end = 1000 as u32;
+        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
+        let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
+        let skip_list = SkipList::new(arena_size);
+        for i in 0..end {
+            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
+        }
+        let iter = SkipListIter::new(&skip_list);
+        let mut iter = iter.rev().rev();
+        assert!(iter.item().is_none());
+        for i in 0..end {
+            assert!(iter.next().unwrap());
+            assert_eq!(iter.key().unwrap(), i.to_be_bytes());
+        }
+        assert_eq!(iter.next().unwrap(), false);
+    }
     struct SkipListLevelIter {
         skip_list: SkipList,
         height: usize,
@@ -493,19 +740,5 @@ mod tests {
         //     println!()
         // }
         // skip_list.push(key, value)
-    }
-    #[test]
-    fn test_rng() {
-        let mut rng = rand::thread_rng();
-        let mut count: usize = 0;
-        let mut c = 1000;
-        // let mut res = Vec::with_capacity(100);
-        for i in 0..c {
-            if rng.gen_ratio(u32::MAX / 3, u32::MAX) {
-                count += 1;
-            }
-        }
-        println!("{}", count);
-        println!("{}", count as f32 / c as f32);
     }
 }

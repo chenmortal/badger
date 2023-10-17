@@ -9,20 +9,20 @@ pub(crate) struct SinkIterRev<T> {
 }
 impl<T> SinkIter for SinkIterRev<T>
 where
-    T: SinkIter,
+    T: DoubleEndedSinkIter,
 {
     type Item = <T as SinkIter>::Item;
 
     fn item(&self) -> Option<&Self::Item> {
-        self.iter.item()
+        self.iter.item_back()
     }
 }
 impl<T> DoubleEndedSinkIter for SinkIterRev<T>
 where
-    T: DoubleEndedSinkIter,
+    T: SinkIter + DoubleEndedSinkIter,
 {
     fn item_back(&self) -> Option<&<Self as SinkIter>::Item> {
-        self.iter.item_back()
+        self.iter.item()
     }
 }
 impl<T> AsyncSinkIterator for SinkIterRev<T>
@@ -32,35 +32,20 @@ where
     async fn next(&mut self) -> Result<(), anyhow::Error> {
         self.iter.next_back().await
     }
-    async fn seek_to_last(&mut self) -> Result<(), anyhow::Error> {
-        self.iter.seek_to_first().await
-    }
-
-    async fn seek_to_first(&mut self) -> Result<(), anyhow::Error> {
-        self.iter.seek_to_last().await
-    }
 }
 impl<T> SinkIterator for SinkIterRev<T>
 where
     T: DoubleEndedSinkIterator,
 {
-    fn next(&mut self) -> Result<(), anyhow::Error> {
+    fn next(&mut self) -> Result<bool, anyhow::Error> {
         self.iter.next_back()
-    }
-
-    fn seek_to_first(&mut self) -> Result<(), anyhow::Error> {
-        self.iter.seek_to_last()
-    }
-
-    fn seek_to_last(&mut self) -> Result<(), anyhow::Error> {
-        self.iter.seek_to_first()
     }
 }
 impl<T> DoubleEndedSinkIterator for SinkIterRev<T>
 where
     T: DoubleEndedSinkIterator,
 {
-    fn next_back(&mut self) -> Result<(), anyhow::Error> {
+    fn next_back(&mut self) -> Result<bool, anyhow::Error> {
         self.iter.next()
     }
 }
@@ -72,7 +57,34 @@ where
         self.iter.next().await
     }
 }
+impl<T> KvSinkIterator for SinkIterRev<T>
+where
+    T: KvDoubleEndedSinkIter,
+{
+    type Key = <T as KvSinkIterator>::Key;
 
+    type Value = <T as KvSinkIterator>::Value;
+
+    fn key(&self) -> Option<Self::Key> {
+        self.iter.key_back()
+    }
+
+    fn value(&self) -> Option<Self::Value> {
+        self.iter.value_back()
+    }
+}
+impl<T> KvDoubleEndedSinkIter for SinkIterRev<T>
+where
+    T: KvSinkIterator + KvDoubleEndedSinkIter,
+{
+    fn key_back(&self) -> Option<<Self as KvSinkIterator>::Key> {
+        self.iter.key()
+    }
+
+    fn value_back(&self) -> Option<<Self as KvSinkIterator>::Value> {
+        self.iter.value()
+    }
+}
 pub(crate) trait SinkIter {
     type Item;
     fn item(&self) -> Option<&Self::Item>;
@@ -82,30 +94,24 @@ pub(crate) trait DoubleEndedSinkIter: SinkIter {
 }
 pub(crate) trait AsyncSinkIterator: SinkIter {
     async fn next(&mut self) -> Result<(), anyhow::Error>;
-    async fn seek_to_first(&mut self) -> Result<(), anyhow::Error>;
-    async fn seek_to_last(&mut self) -> Result<(), anyhow::Error>;
-    async fn rev(mut self) -> Result<SinkIterRev<Self>, anyhow::Error>
+    async fn rev(self) -> SinkIterRev<Self>
     where
-        Self: Sized,
+        Self: Sized + AsyncDoubleEndedSinkIterator,
     {
-        self.seek_to_last().await?;
-        Ok(SinkIterRev { iter: self })
+        SinkIterRev { iter: self }
     }
 }
 pub(crate) trait SinkIterator: SinkIter {
-    fn next(&mut self) -> Result<(), anyhow::Error>;
-    fn seek_to_first(&mut self) -> Result<(), anyhow::Error>;
-    fn seek_to_last(&mut self) -> Result<(), anyhow::Error>;
-    fn rev(mut self) -> Result<SinkIterRev<Self>, anyhow::Error>
+    fn next(&mut self) -> Result<bool, anyhow::Error>;
+    fn rev(self) -> SinkIterRev<Self>
     where
         Self: Sized + DoubleEndedSinkIterator,
     {
-        self.seek_to_last()?;
-        Ok(SinkIterRev { iter: self })
+        SinkIterRev { iter: self }
     }
 }
 pub(crate) trait DoubleEndedSinkIterator: SinkIterator + DoubleEndedSinkIter {
-    fn next_back(&mut self) -> Result<(), anyhow::Error>;
+    fn next_back(&mut self) -> Result<bool, anyhow::Error>;
 }
 pub(crate) trait AsyncDoubleEndedSinkIterator:
     AsyncSinkIterator + DoubleEndedSinkIter
@@ -115,20 +121,10 @@ pub(crate) trait AsyncDoubleEndedSinkIterator:
 pub(crate) trait KvSinkIterator: SinkIter {
     type Key;
     type Value;
-    fn key_ref(&self) -> Option<&Self::Key> {
-        if let Some(item) = self.item() {
-            return Self::parse_key(item);
-        } else {
-            None
-        }
-    }
-    fn value_ref(&self) -> Option<&Self::Value> {
-        if let Some(item) = self.item() {
-            return Self::parse_value(item);
-        } else {
-            None
-        }
-    }
-    fn parse_key(item: &<Self as SinkIter>::Item) -> Option<&Self::Key>;
-    fn parse_value(item: &<Self as SinkIter>::Item) -> Option<&Self::Value>;
+    fn key(&self) -> Option<Self::Key>;
+    fn value(&self) -> Option<Self::Value>;
+}
+pub(crate) trait KvDoubleEndedSinkIter: DoubleEndedSinkIter + KvSinkIterator {
+    fn key_back(&self) -> Option<<Self as KvSinkIterator>::Key>;
+    fn value_back(&self) -> Option<<Self as KvSinkIterator>::Value>;
 }
