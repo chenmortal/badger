@@ -10,8 +10,8 @@ use std::{
 use anyhow::anyhow;
 use anyhow::bail;
 use log::info;
-use thiserror::Error;
 use tokio::sync::RwLock;
+use thiserror::Error;
 
 use crate::{
     default::VLOG_FILE_EXT,

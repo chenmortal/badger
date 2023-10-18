@@ -9,7 +9,7 @@ use tokio::{
     select,
     sync::{
         mpsc::{Receiver, Sender},
-        Notify, Semaphore,
+        Notify,
     },
 };
 

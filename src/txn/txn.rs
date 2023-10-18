@@ -5,7 +5,8 @@ use std::{
 
 use anyhow::anyhow;
 use anyhow::bail;
-use tokio::sync::{oneshot::Receiver, Mutex};
+use parking_lot::Mutex;
+use tokio::sync::oneshot::Receiver;
 
 use crate::{
     db::DB,
@@ -96,7 +97,7 @@ impl Txn {
                 None => {}
             };
             let hash = HASH.hash_one(key);
-            let mut reads_m = self.read_key_hash.lock().await;
+            let mut reads_m = self.read_key_hash.lock();
             reads_m.push(hash);
             drop(reads_m);
         }
@@ -154,7 +155,9 @@ impl Txn {
             let count = self.count + 1;
             e.try_set_value_threshold(threshold);
             let size = self.size + e.estimate_size() + 10;
-            if count >= Options::max_batch_count() as usize || size >= Options::max_batch_size() as usize {
+            if count >= Options::max_batch_count() as usize
+                || size >= Options::max_batch_size() as usize
+            {
                 bail!(DBError::TxnTooBig)
             }
             self.count = count;
@@ -237,7 +240,7 @@ impl Txn {
     }
     async fn commit_and_send(&mut self) -> anyhow::Result<(TxnTs, Receiver<anyhow::Result<()>>)> {
         let oracle = &self.db.oracle;
-        let _guard = oracle.send_write_req.lock().await;
+        let _guard = oracle.send_write_req.lock();
         let commit_ts = oracle.get_latest_commit_ts(self).await?;
         let mut keep_together = true;
         let mut set_version = |e: &mut DecEntry| {

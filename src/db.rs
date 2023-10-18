@@ -19,16 +19,12 @@ use crate::{
         memtable::{new_mem_table, MemTable},
     },
     manifest::open_create_manifestfile,
-    metrics::{calculate_size, set_metrics_enabled, update_size},
+    metrics::{calculate_size, set_metrics_enabled},
     options::Options,
     publisher::Publisher,
     table::block::{self, Block},
     txn::oracle::Oracle,
-    vlog::{
-        discard,
-        threshold::{self, VlogThreshold},
-        ValueLog,
-    },
+    vlog::{threshold::VlogThreshold, ValueLog},
     write::WriteReq,
 };
 use anyhow::anyhow;

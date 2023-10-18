@@ -14,7 +14,7 @@ use bytes::{Buf, BufMut};
 use flatbuffers::InvalidFlatbuffer;
 use prost::Message;
 use snap::raw::Decoder;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
 use self::block::Block;
 use self::iter::TableIter;
@@ -32,7 +32,7 @@ use crate::{
 };
 #[derive(Debug)]
 pub(crate) struct TableInner {
-    lock: Mutex<()>,
+    // lock: Mutex<()>,
     mmap_f: MmapFile,
     table_size: usize,
     smallest: Vec<u8>,
@@ -105,21 +105,17 @@ impl Default for ChecksumVerificationMode {
 #[derive(Debug)]
 pub(crate) struct TableOption {
     // Open tables in read only mode.
-    read_only: bool,
-    metrics_enabled: bool,
 
     // Maximum size of the table.
-    table_size: u64,
     table_capacity: u64, // 0.9x TableSize.
 
     // ChkMode is the checksum verification mode for Table.
-    chk_mode: ChecksumVerificationMode,
 
     // BloomFalsePositive is the false positive probabiltiy of bloom filter.
-    bloom_false_positive: f64,
+    // bloom_false_positive: f64,
 
     // BlockSize is the size of each block inside SSTable in bytes.
-    block_size: usize,
+    // block_size: usize,
 
     // DataKey is the key used to decrypt the encrypted text.
     pub(crate) datakey: Option<DataKey>,
@@ -127,7 +123,7 @@ pub(crate) struct TableOption {
     // Compression indicates the compression algorithm used for block compression.
     pub(crate) compression: CompressionType,
 
-    zstd_compression_level: isize,
+    // zstd_compression_level: isize,
 
     block_cache: Option<BlockCache>,
 
@@ -144,16 +140,12 @@ impl TableOption {
         let data_key = registry_w.latest_datakey().await.unwrap();
         drop(registry_w);
         Self {
-            read_only: Options::read_only(),
-            metrics_enabled: Options::metrics_enabled(),
-            table_size: Options::base_table_size() as u64,
-            table_capacity: Default::default(),
-            chk_mode: Options::checksum_verification_mode(),
-            bloom_false_positive: Options::bloom_false_positive(),
-            block_size: Options::block_size(),
+            table_capacity: (Options::base_table_size() as f64 * 0.95) as u64,
+            // bloom_false_positive: Options::bloom_false_positive(),
+            // block_size: Options::block_size(),
             datakey: data_key,
             compression: Options::compression(),
-            zstd_compression_level: Options::zstd_compression_level(),
+            // zstd_compression_level: Options::zstd_compression_level(),
             block_cache: block_cache.clone(),
             index_cache: index_cache.clone(),
         }
@@ -162,7 +154,7 @@ impl TableOption {
 
 impl Table {
     pub(crate) async fn open(mut mmap_f: MmapFile, opt: TableOption) -> anyhow::Result<Self> {
-        if opt.block_size == 0 && opt.compression != CompressionType::None {
+        if Options::block_size() == 0 && opt.compression != CompressionType::None {
             bail!("Block size cannot be zero");
         }
         let id = parse_file_id(&mmap_f.path(), SSTABLE_FILE_EXT).ok_or(anyhow!(
@@ -180,7 +172,7 @@ impl Table {
         let (index_buf, cheap_index) = TableInner::init_index(table_size, &mut mmap_f, &cipher)?;
 
         let mut inner = TableInner {
-            lock: Default::default(),
+            // lock: Default::default(),
             mmap_f,
             table_size,
             smallest: Default::default(),
@@ -215,7 +207,7 @@ impl Table {
         *biggest_w = iter.get_key().unwrap().to_vec();
         drop(biggest_w);
 
-        match table.0.opt.chk_mode {
+        match Options::checksum_verification_mode() {
             ChecksumVerificationMode::OnTableRead
             | ChecksumVerificationMode::OnTableAndBlockRead => {}
             _ => {
@@ -287,7 +279,7 @@ impl TableInner {
             })?;
             // OnBlockRead or OnTableAndBlockRead, we don't need to call verify checksum
             // on block, verification would be done while reading block itself.
-            match self.opt.chk_mode {
+            match Options::checksum_verification_mode() {
                 ChecksumVerificationMode::OnBlockRead
                 | ChecksumVerificationMode::OnTableAndBlockRead => {}
                 _ => {
@@ -418,7 +410,7 @@ impl TableInner {
 
         let block = Block::new(blk_offset.offset(), raw_data)?;
 
-        match self.opt.chk_mode {
+        match Options::checksum_verification_mode() {
             ChecksumVerificationMode::OnBlockRead
             | ChecksumVerificationMode::OnTableAndBlockRead => {
                 block.verify()?;

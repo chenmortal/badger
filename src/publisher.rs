@@ -9,23 +9,17 @@ use std::{
 
 use anyhow::bail;
 use log::error;
-use scopeguard::defer;
 use tokio::{
     select,
     sync::{
-        mpsc::{
-            self,
-            error::{SendError, TryRecvError},
-            Receiver, Sender,
-        },
+        mpsc::{self, error::SendError, Receiver, Sender},
         Mutex,
     },
-    task::JoinHandle,
 };
 
 use crate::{
-    closer::{CloseNotify, Closer},
-    db::{DBInner, DB},
+    closer::Closer,
+    db::DB,
     pb::badgerpb4::{Kv, Match},
     tire::{Trie, TrieError},
     write::WriteReq,

@@ -7,8 +7,8 @@ use std::{
 
 use anyhow::{anyhow, bail};
 use bytes::{Buf, BufMut};
+use parking_lot::Mutex;
 use prost::Message;
-use tokio::sync::Mutex;
 
 use crate::{
     default::{MANIFEST_FILE_NAME, MANIFEST_REWRITE_FILE_NAME},

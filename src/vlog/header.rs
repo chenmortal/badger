@@ -1,6 +1,5 @@
 use std::io::Read;
 
-use bitflags::Flags;
 use bytes::{Buf, BufMut};
 use integer_encoding::{VarInt, VarIntReader};
 

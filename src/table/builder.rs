@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicU32;
+
 use bytes::{Buf, BufMut};
 #[derive(Debug)]
 pub(crate) struct Header {
@@ -29,4 +31,20 @@ impl Header {
     pub(crate) fn get_overlap(&self) -> usize {
         self.overlap as usize
     }
+}
+struct BackendBlock {
+    data: Vec<u8>,
+    basekey: Vec<u8>,
+    entry_offsets: Vec<u32>,
+    end: usize,
+}
+struct TableBuilder {
+    cur_block:BackendBlock,
+    compressed_size:AtomicU32,
+    uncompressed_size:AtomicU32,
+    len_offsets:u32,
+    key_hashes:Vec<u32>,
+    max_version:u64,
+    on_disk_size:u32,
+    stale_data_size:u32,
 }

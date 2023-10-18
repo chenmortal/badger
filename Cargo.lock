@@ -188,6 +188,7 @@ dependencies = [
  "log",
  "memmap2",
  "once_cell",
+ "parking_lot",
  "prost",
  "prost-build",
  "rand",

@@ -1,11 +1,10 @@
 use std::{collections::HashSet, ops::Deref};
 
-use tokio::sync::RwLock;
-
 use crate::{
     table::Table,
     util::{compare_key, key_with_ts, parse_key},
 };
+use parking_lot::RwLock;
 
 use super::levels::CompactDef;
 #[derive(Debug)]
@@ -47,8 +46,8 @@ pub(crate) struct KeyRange {
 }
 
 impl CompactStatus {
-    pub(super) async fn compare_and_add(&self, compact_def: &CompactDef) -> bool {
-        let mut status_w = self.0.write().await;
+    pub(super) fn compare_and_add(&self, compact_def: &CompactDef) -> bool {
+        let mut status_w = self.0.write();
 
         let this_level = compact_def.this_level.get_level();
         let next_level = compact_def.next_level.get_level();
@@ -82,8 +81,8 @@ impl CompactStatus {
         drop(status_w);
         true
     }
-    pub(super) async fn is_overlaps_with(&self, level: usize, target: &KeyRange) -> bool {
-        let inner_r = self.0.read().await;
+    pub(super) fn is_overlaps_with(&self, level: usize, target: &KeyRange) -> bool {
+        let inner_r = self.0.read();
         let r = inner_r.levels[level].is_overlaps_with(target);
         drop(inner_r);
         r

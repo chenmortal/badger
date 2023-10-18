@@ -277,7 +277,8 @@ impl SkipListInner {
     fn random_height() -> usize {
         let mut rng = rand::thread_rng();
         let mut h = 1;
-        while h < SKL_MAX_HEIGHT && rng.gen_ratio(RANDOM_HEIGHT_NUMERATOR, RANDOM_HEIGHT_NUMERATOR)
+        while h < SKL_MAX_HEIGHT
+            && rng.gen_ratio(RANDOM_HEIGHT_NUMERATOR, RANDOM_HEIGHT_DENOMINATOR)
         {
             h += 1;
         }
@@ -526,13 +527,34 @@ impl<'a> KvDoubleEndedSinkIter for SkipListIter<'a> {
 mod tests {
     use std::{mem::size_of, time::SystemTime};
 
+    use rand::Rng;
+
     use crate::iter::{
         DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIterator,
         SinkIter, SinkIterator,
     };
 
-    use super::{Node, SkipList, SkipListIter};
+    use super::{Node, SkipList, SkipListIter, RANDOM_HEIGHT_DENOMINATOR, RANDOM_HEIGHT_NUMERATOR};
+    #[test]
+    fn test_random() {
+        let mut rng = rand::thread_rng();
+        let count = 100_000;
+        let mut n = 0;
+        for _i in 0..count {
+            if rng.gen_ratio(RANDOM_HEIGHT_NUMERATOR, RANDOM_HEIGHT_DENOMINATOR) {
+                n += 1;
+            }
+        }
+        let two_decimal = |a: u32, b: u32| {
+            let ratio = (a as f32) / (b as f32);
+            (ratio * 100 as f32) as u32
+        };
 
+        assert_eq!(
+            two_decimal(n, count),
+            two_decimal(RANDOM_HEIGHT_NUMERATOR, RANDOM_HEIGHT_DENOMINATOR)
+        )
+    }
     #[test]
     fn test_iter_next() {
         let end = 1000 as u32;

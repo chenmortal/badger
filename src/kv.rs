@@ -224,9 +224,4 @@ mod tests {
         assert_eq!(a.cmp(&b), Ordering::Less);
         assert_eq!(a.cmp(&c), Ordering::Greater);
     }
-    #[test]
-    fn test_bytes(){
-        let k = Bytes::new();;
-        
-    }
 }
