@@ -4,7 +4,7 @@ use crate::iter::Iter;
 
 use super::{
     block::Block,
-    builder::{Header, HEADER_SIZE},
+    write::{Header, HEADER_SIZE},
     Table,
 };
 use anyhow::bail;

@@ -1,5 +1,4 @@
 use crate::{lsm::mmap::MmapFile, options::Options};
-use anyhow::anyhow;
 use bytes::Buf;
 use log::info;
 // use core::slice::SlicePattern;

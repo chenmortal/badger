@@ -1,7 +1,8 @@
 use std::{collections::HashSet, ops::Deref};
 
 use anyhow::{bail, Ok};
-use tokio::sync::{Mutex, MutexGuard};
+use parking_lot::{Mutex, MutexGuard};
+// use tokio::sync::{Mutex, MutexGuard};
 
 use crate::{closer::Closer, errors::DBError, options::Options};
 
@@ -57,7 +58,7 @@ impl Oracle {
     #[inline]
     pub(crate) async fn discard_at_or_below(&self) -> TxnTs {
         if Options::managed_txns() {
-            let lock = self.inner.lock().await;
+            let lock = self.inner.lock();
             let ts = lock.discard_ts;
             drop(lock);
             return ts.into();
@@ -79,7 +80,7 @@ impl Oracle {
         if Options::managed_txns() {
             panic!("ReadTimestamp should not be retrieved for managed DB");
         }
-        let inner_lock = self.inner.lock().await;
+        let inner_lock = self.inner.lock();
         let read_ts = inner_lock.next_txn_ts.sub_one();
         self.read_mark.begin(read_ts).await?;
         drop(inner_lock);
@@ -89,10 +90,10 @@ impl Oracle {
     }
     #[inline]
     pub(crate) async fn get_latest_commit_ts(&self, txn: &Txn) -> anyhow::Result<TxnTs> {
-        let mut inner_lock = self.inner.lock().await;
+        let mut inner_lock = self.inner.lock();
 
         //check read-write conflict
-        let read_key_hash_r = txn.read_key_hash.lock().await;
+        let read_key_hash_r = txn.read_key_hash.lock();
         if read_key_hash_r.len() != 0 {
             for commit_txn in inner_lock.committed_txns.iter() {
                 if commit_txn.ts > txn.read_ts {

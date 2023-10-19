@@ -14,7 +14,7 @@ use tokio::{
     sync::{
         mpsc::Receiver,
         oneshot::{self},
-        Notify, Semaphore,
+        Notify,
     },
 };
 

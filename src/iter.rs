@@ -1,3 +1,5 @@
+use crate::{kv::KeyTsBorrow, txn::entry::ValueMeta};
+
 // here use async fn look at https://blog.rust-lang.org/inside-rust/2022/11/17/async-fn-in-trait-nightly.html
 pub(crate) trait Iter {
     async fn rewind(&mut self) -> Result<(), anyhow::Error>;
@@ -57,32 +59,40 @@ where
         self.iter.next().await
     }
 }
-impl<T> KvSinkIterator for SinkIterRev<T>
+impl<'a, T, K, V> KvSinkIterator<'a, K, V> for SinkIterRev<T>
 where
-    T: KvDoubleEndedSinkIter,
+    T: KvDoubleEndedSinkIter<'a, K, V>,
+    K: Into<KeyTsBorrow<'a>>,
+    V: Into<ValueMeta>,
 {
-    type Key = <T as KvSinkIterator>::Key;
-
-    type Value = <T as KvSinkIterator>::Value;
-
-    fn key(&self) -> Option<Self::Key> {
+    fn key(&self) -> Option<K> {
         self.iter.key_back()
     }
 
-    fn value(&self) -> Option<Self::Value> {
-        self.iter.value_back()
+    fn value_ref(&mut self) -> Option<&V> {
+        self.iter.value_back_ref()
+    }
+
+    fn take_value(&mut self) -> Option<V> {
+        self.iter.take_value_back()
     }
 }
-impl<T> KvDoubleEndedSinkIter for SinkIterRev<T>
+impl<'a, T, K, V> KvDoubleEndedSinkIter<'a, K, V> for SinkIterRev<T>
 where
-    T: KvSinkIterator + KvDoubleEndedSinkIter,
+    T: KvSinkIterator<'a, K, V> + KvDoubleEndedSinkIter<'a, K, V>,
+    K: Into<KeyTsBorrow<'a>>,
+    V: Into<ValueMeta>,
 {
-    fn key_back(&self) -> Option<<Self as KvSinkIterator>::Key> {
+    fn key_back(&self) -> Option<K> {
         self.iter.key()
     }
 
-    fn value_back(&self) -> Option<<Self as KvSinkIterator>::Value> {
-        self.iter.value()
+    fn value_back_ref(&mut self) -> Option<&V> {
+        self.iter.value_ref()
+    }
+
+    fn take_value_back(&mut self) -> Option<V> {
+        self.iter.take_value()
     }
 }
 pub(crate) trait SinkIter {
@@ -118,13 +128,22 @@ pub(crate) trait AsyncDoubleEndedSinkIterator:
 {
     async fn next_back(&mut self) -> Result<(), anyhow::Error>;
 }
-pub(crate) trait KvSinkIterator: SinkIter {
-    type Key;
-    type Value;
-    fn key(&self) -> Option<Self::Key>;
-    fn value(&self) -> Option<Self::Value>;
+pub(crate) trait KvSinkIterator<'a, K, V>: SinkIter
+where
+    K: Into<KeyTsBorrow<'a>>,
+    V: Into<ValueMeta>,
+{
+    fn key(&self) -> Option<K>;
+    fn value_ref(&mut self) -> Option<&V>;
+    fn take_value(&mut self) -> Option<V>;
 }
-pub(crate) trait KvDoubleEndedSinkIter: DoubleEndedSinkIter + KvSinkIterator {
-    fn key_back(&self) -> Option<<Self as KvSinkIterator>::Key>;
-    fn value_back(&self) -> Option<<Self as KvSinkIterator>::Value>;
+pub(crate) trait KvDoubleEndedSinkIter<'a, K, V>:
+    DoubleEndedSinkIter + KvSinkIterator<'a, K, V>
+where
+    K: Into<KeyTsBorrow<'a>>,
+    V: Into<ValueMeta>,
+{
+    fn key_back(&self) -> Option<K>;
+    fn value_back_ref(&mut self) -> Option<&V>;
+    fn take_value_back(&mut self) -> Option<V>;
 }

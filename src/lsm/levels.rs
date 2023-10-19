@@ -15,7 +15,7 @@ use log::{debug, error, info};
 use rand::Rng;
 use tokio::{
     select,
-    sync::{Mutex, Notify, Semaphore},
+    sync::{ Notify, Semaphore, Mutex},
 };
 
 use crate::{
@@ -32,7 +32,7 @@ use crate::{
     table::{
         iter::{ConcatIter, TableIter},
         merge::MergeIter,
-        Table, TableOption,
+        Table, opt::TableOption,
     },
     txn::oracle::Oracle,
     util::{compare_key, dir_join_id_suffix, get_sst_id_set, key_with_ts, parse_key, Throttle},
@@ -77,7 +77,7 @@ pub(super) struct CompactDef {
 }
 impl LevelsController {
     pub(crate) async fn new(
-        manifest: &Arc<Mutex<Manifest>>,
+        manifest: &Arc<parking_lot::Mutex<Manifest>>,
         key_registry: KeyRegistry,
         block_cache: &Option<BlockCache>,
         index_cache: &Option<IndexCache>,
@@ -92,14 +92,14 @@ impl LevelsController {
             compact_status,
         };
 
-        let mut compact_status_w = levels_control.compact_status.0.write().await;
+        let mut compact_status_w = levels_control.compact_status.0.write();
         for i in 0..Options::max_levels() {
             levels_control.levels.push(LevelHandler::new(i));
             compact_status_w.levels.push(LevelCompactStatus::default());
         }
         drop(compact_status_w);
 
-        let manifest_lock = manifest.lock().await;
+        let manifest_lock = manifest.lock();
         let manifest = &*manifest_lock;
         revert_to_manifest(Options::dir(), manifest, get_sst_id_set(Options::dir()))?;
 
@@ -165,13 +165,9 @@ impl LevelsController {
                     }
                 };
                 drop(registry_r);
-                let mut table_opt = TableOption::new(
-                    &key_registry_clone,
-                    // &opt_clone,
-                    &block_cache_clone,
-                    &index_cache_clone,
-                )
-                .await;
+                let mut table_opt =
+                    TableOption::new(&key_registry_clone, &block_cache_clone, &index_cache_clone)
+                        .await;
                 table_opt.datakey = data_key;
                 table_opt.compression = tm.compression;
                 let mut fp_open_opt = OpenOptions::new();
@@ -425,7 +421,7 @@ impl LevelsController {
             if priority_level != Options::max_levels() - 1 {
                 compact_def.next_level = self.levels[priority_level + 1].clone();
             }
-            if !self.fill_tables(&mut compact_def, opt, oracle).await {
+            if !self.fill_tables(&mut compact_def, oracle).await {
                 bail!("Unable to fill tables")
             };
         }
@@ -481,7 +477,6 @@ impl LevelsController {
         &self,
         compact_def: &mut CompactDef,
         oracle: &Arc<Oracle>,
-        opt: &Arc<Options>,
     ) -> Option<bool> {
         let this_r = compact_def.this_level.handler_tables.read().await;
         let next_r = compact_def.next_level.handler_tables.read().await;
@@ -524,7 +519,6 @@ impl LevelsController {
             if self
                 .compact_status
                 .is_overlaps_with(this_level, &compact_def.this_range)
-                .await
             {
                 continue;
             };
@@ -558,7 +552,7 @@ impl LevelsController {
             }
             //
 
-            if !self.compact_status.compare_and_add(compact_def).await {
+            if !self.compact_status.compare_and_add(compact_def) {
                 compact_def.bottom.clear();
                 compact_def.next_range = KeyRange::default();
                 continue;
@@ -569,7 +563,7 @@ impl LevelsController {
             return false.into();
         }
 
-        let r = self.compact_status.compare_and_add(compact_def).await;
+        let r = self.compact_status.compare_and_add(compact_def);
         drop(this_r);
         drop(next_r);
         return r.into();
@@ -577,12 +571,11 @@ impl LevelsController {
     async fn fill_tables(
         &self,
         compact_def: &mut CompactDef,
-        opt: &Arc<Options>,
         oracle: &Arc<Oracle>,
     ) -> bool {
         //if compact_def.this_level.level is not last return None;
         if let Some(s) = self
-            .try_fill_max_level_tables(compact_def, oracle, opt)
+            .try_fill_max_level_tables(compact_def, oracle)
             .await
         {
             return s;
@@ -600,7 +593,6 @@ impl LevelsController {
             if self
                 .compact_status
                 .is_overlaps_with(compact_def.this_level.get_level(), &compact_def.this_range)
-                .await
             {
                 continue;
             };
@@ -614,7 +606,7 @@ impl LevelsController {
 
             if compact_def.bottom.len() == 0 {
                 compact_def.next_range = compact_def.this_range.clone();
-                if !self.compact_status.compare_and_add(&compact_def).await {
+                if !self.compact_status.compare_and_add(&compact_def) {
                     continue;
                 };
                 return true;
@@ -625,12 +617,11 @@ impl LevelsController {
             if self
                 .compact_status
                 .is_overlaps_with(compact_def.next_level.get_level(), &compact_def.next_range)
-                .await
             {
                 continue;
             };
 
-            if !self.compact_status.compare_and_add(compact_def).await {
+            if !self.compact_status.compare_and_add(compact_def) {
                 continue;
             };
             return true;
@@ -691,7 +682,7 @@ impl LevelsController {
             KeyRange::from_tables(&compact_def.bottom).await.unwrap() //len!=0 so can unwrap()
         };
 
-        let r = self.compact_status.compare_and_add(compact_def).await;
+        let r = self.compact_status.compare_and_add(compact_def);
         drop(this_level_r);
         drop(next_level_r);
         return r;
@@ -712,7 +703,7 @@ impl LevelsController {
         let targets = &mut compact_def.priority.targets;
 
         let this_level_handler_r = compact_def.this_level.handler_tables.read().await;
-        let mut compact_status_w = self.compact_status.write().await;
+        let mut compact_status_w = self.compact_status.write();
         let mut out = Vec::new();
         let now = SystemTime::now();
 
