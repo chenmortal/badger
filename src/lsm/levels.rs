@@ -32,7 +32,7 @@ use crate::{
     table::{
         iter::{ConcatIter, TableIter},
         merge::MergeIter,
-        Table, TableOption,
+        Table, opt::TableOption,
     },
     txn::oracle::Oracle,
     util::{compare_key, dir_join_id_suffix, get_sst_id_set, key_with_ts, parse_key, Throttle},

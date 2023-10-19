@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use scopeguard::defer;
 
-use crate::{closer::Closer, db::DB, table::TableOption};
+use crate::{closer::Closer, db::DB, table::opt::TableOption};
 
 use super::memtable::MemTable;
 
@@ -16,6 +16,6 @@ impl DB {
         let table =
             TableOption::new(&self.key_registry, &self.block_cache, &self.index_cache).await;
         let skip_list_iter = memtable.skip_list.iter();
-        
+
     }
 }

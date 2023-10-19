@@ -24,18 +24,36 @@ lazy_static! {
     static ref BINCODE_OPT: DefaultOptions = DefaultOptions::new();
 }
 impl ValueMeta {
+    pub(crate) fn encode_size(&self) -> Result<u64, Box<bincode::ErrorKind>> {
+        BINCODE_OPT.serialized_size(self)
+    }
     pub(crate) fn encode(&self) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
         BINCODE_OPT.serialize(&self)
     }
     pub(crate) fn decode(data: &[u8]) -> Result<ValueMeta, Box<bincode::ErrorKind>> {
+        // BINCODE_OPT.serialized_size(t)
         BINCODE_OPT.deserialize::<Self>(data)
     }
+
+    pub(crate) fn meta(&self) -> EntryMeta {
+        self.meta
+    }
+
+    pub(crate) fn value(&self) -> &[u8] {
+        self.value.as_ref()
+    }
 }
+// impl From<&[u8]> for ValueMeta {
+//     fn from(value: &[u8]) -> Self {
+//         let p = Self::decode(value);
+//     }
+// }
 #[test]
 fn test_encode() {
     let mut v = ValueMeta::default();
     v.value = String::from("abc").as_bytes().to_vec();
-    v.expires_at = 11111111;
+    v.expires_at = 1;
+    dbg!(v.encode_size().unwrap());
     let ve = v.encode().unwrap();
     dbg!(ve.len());
     let vd = ValueMeta::decode(&ve).unwrap();

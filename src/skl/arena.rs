@@ -119,7 +119,7 @@ impl Arena {
         if ptr.is_null() {
             return None;
         }
-        
+
         let ptr_addr = ptr as usize;
         let start_addr = self.start.as_ptr() as usize;
         debug_assert!(ptr_addr > start_addr);
@@ -249,10 +249,12 @@ mod tests {
     fn test_offset() {
         let arena = Arena::new(100);
         let keyts = KeyTs::new(b"abc", 1.into());
+
         let p = arena.alloc(keyts);
         dbg!(&p);
-
+        // let t = p as *const u8;
         let k = p as *const KeyTs;
+        let p=k as *const u8;
         let offset = arena.offset(k);
         dbg!(&offset);
         let p = unsafe { arena.get_mut::<KeyTs>(offset.unwrap()) }.unwrap();

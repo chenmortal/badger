@@ -101,24 +101,34 @@ impl PartialOrd for KeyTsBorrow<'_> {
 }
 impl Ord for KeyTsBorrow<'_> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        if self.len() > 8 && other.len() > 8 {
-            let self_split = self.len() - 8;
-            let other_split = other.len() - 8;
-            match self[..self_split].cmp(&other[..other_split]) {
+        KeyTsBorrow::cmp(&self, &other)
+    }
+}
+impl KeyTsBorrow<'_> {
+    pub(crate) fn cmp(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
+        if left.len() > 8 && right.len() > 8 {
+            let left_split = left.len() - 8;
+            let right_split = right.len() - 8;
+            match left[..left_split].cmp(&right[..right_split]) {
                 std::cmp::Ordering::Equal => {}
                 ord => {
                     return ord;
                 }
             }
-            other[other_split..].cmp(&self[self_split..])
+            right[right_split..].cmp(&left[left_split..])
         } else {
-            self.0.cmp(other.0)
+            left.cmp(right)
         }
     }
 }
 impl<'a> From<&'a [u8]> for KeyTsBorrow<'a> {
     fn from(value: &'a [u8]) -> Self {
         Self(value)
+    }
+}
+impl<'a> AsRef<[u8]> for KeyTsBorrow<'a> {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
     }
 }
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -156,7 +166,7 @@ impl ValuePointer {
         res
     }
     pub(crate) fn decode(bytes: &[u8]) -> Self {
-        let mut p = bytes.as_ref();
+        let mut p: &[u8] = bytes.as_ref();
         Self {
             fid: p.get_u32(),
             len: p.get_u32(),

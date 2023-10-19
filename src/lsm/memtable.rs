@@ -5,9 +5,11 @@ use crate::{
     default::{DEFAULT_PAGE_SIZE, MEM_FILE_EXT},
     errors::err_file,
     key_registry::KeyRegistry,
+    kv::KeyTsBorrow,
     options::Options,
     skl::skip_list::{SkipList, SKL_MAX_NODE_SIZE},
-    util::{dir_join_id_suffix, parse_file_id}, txn::TxnTs,
+    txn::TxnTs,
+    util::{dir_join_id_suffix, parse_file_id},
 };
 use anyhow::Result;
 use anyhow::{anyhow, bail};
@@ -53,7 +55,7 @@ async fn open_mem_table(
 ) -> anyhow::Result<(MemTable, bool)> {
     let mem_file_path = dir_join_id_suffix(Options::dir(), mem_file_fid, MEM_FILE_EXT);
 
-    let skip_list = SkipList::new(Options::arena_size());
+    let skip_list = SkipList::new(Options::arena_size(), KeyTsBorrow::cmp);
 
     let (log_file, is_new) = LogFile::open(
         mem_file_fid,

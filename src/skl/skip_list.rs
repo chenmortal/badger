@@ -5,7 +5,7 @@ use crate::{
         DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIterator,
         SinkIter, SinkIterator,
     },
-    kv::KeyTsBorrow,
+    txn::entry::ValueMeta,
 };
 
 /// <head> --> [1] --> [2] --> [3] --> [4] --> [5] --> [6] --> [7] --> [8] --> [9] --> [10] ->
@@ -14,7 +14,7 @@ use crate::{
 /// <head> ----------> [2] --------------------------------------------------> [9] ---------->
 use super::arena::Arena;
 use std::{
-    mem::size_of,
+    mem::{replace, size_of},
     ops::{Deref, DerefMut},
     ptr::Unique,
     sync::{
@@ -122,9 +122,10 @@ pub(crate) struct SkipListInner {
     height: AtomicUsize,
     head: Unique<Node>,
     arena: Arena,
+    cmp: fn(&[u8], &[u8]) -> std::cmp::Ordering,
 }
 impl SkipListInner {
-    fn new(arena_size: u32) -> Self {
+    fn new(arena_size: u32, cmp: fn(&[u8], &[u8]) -> std::cmp::Ordering) -> Self {
         let arena = Arena::new(arena_size);
         let head: &mut Node = arena.alloc_with(Node::default);
         head.height = SKL_MAX_HEIGHT as u16;
@@ -133,6 +134,7 @@ impl SkipListInner {
             height: AtomicUsize::new(1),
             head,
             arena,
+            cmp,
         }
     }
     #[inline]
@@ -246,7 +248,7 @@ impl SkipListInner {
     }
     fn find_splice_for_level<'a>(
         &self,
-        key: KeyTsBorrow<'a>,
+        key: &[u8],
         mut before_ptr: *const Node,
         height: usize,
     ) -> (*const Node, *const Node) {
@@ -254,9 +256,8 @@ impl SkipListInner {
             if let Some(before) = unsafe { before_ptr.as_ref() } {
                 if let Some(next) = before.next(&self.arena, height) {
                     if let Some(next_key_slice) = next.get_key(&self.arena) {
-                        let next_key: KeyTsBorrow = next_key_slice.into();
                         let next_ptr = next as *const _;
-                        match key.cmp(&next_key) {
+                        match (self.cmp)(key, next_key_slice) {
                             std::cmp::Ordering::Less => return (before_ptr, next_ptr),
                             std::cmp::Ordering::Equal => return (next_ptr, next_ptr),
                             std::cmp::Ordering::Greater => {
@@ -298,15 +299,12 @@ impl SkipListInner {
     }
     fn find_next(&self, key: &[u8]) -> Option<&Node> {
         let mut node = unsafe { self.head.as_ref() };
-        // let head_ptr = node as *const _;
-        let key_ref: KeyTsBorrow = key.into();
         let mut level = self.height() - 1;
         loop {
             match node.next(&self.arena, level) {
                 Some(next) => {
                     let next_key = next.get_key(&self.arena).unwrap();
-                    let next_key_ref: KeyTsBorrow = next_key.into();
-                    match key_ref.cmp(&next_key_ref) {
+                    match (self.cmp)(key, next_key) {
                         std::cmp::Ordering::Less => {
                             if level > 0 {
                                 level -= 1;
@@ -337,14 +335,12 @@ impl SkipListInner {
     fn find_prev(&self, key: &[u8]) -> Option<&Node> {
         let mut node = unsafe { self.head.as_ref() };
         let head_ptr = node as *const _;
-        let key_ref: KeyTsBorrow = key.into();
         let mut level = self.height() - 1;
         loop {
             match node.next(&self.arena, level) {
                 Some(next) => {
                     let next_key = next.get_key(&self.arena).unwrap();
-                    let next_key_ref: KeyTsBorrow = next_key.into();
-                    match key_ref.cmp(&next_key_ref) {
+                    match (self.cmp)(key, next_key) {
                         std::cmp::Ordering::Greater => {
                             //node.key <next.key < key
                             node = next;
@@ -398,9 +394,9 @@ impl Deref for SkipList {
     }
 }
 impl SkipList {
-    pub(crate) fn new(arena_size: u32) -> Self {
+    pub(crate) fn new(arena_size: u32, cmp: fn(&[u8], &[u8]) -> std::cmp::Ordering) -> Self {
         SkipList {
-            skip_list: Arc::new(SkipListInner::new(arena_size)),
+            skip_list: Arc::new(SkipListInner::new(arena_size, cmp)),
         }
     }
 
@@ -416,7 +412,9 @@ impl SkipList {
 pub(crate) struct SkipListIter<'a> {
     inner: &'a SkipListInner,
     node: Option<&'a Node>,
+    value: Option<ValueMeta>,
     node_back: Option<&'a Node>,
+    value_back: Option<ValueMeta>,
 }
 impl<'a> SkipListIter<'a> {
     fn new(inner: &'a SkipListInner) -> Self {
@@ -426,6 +424,8 @@ impl<'a> SkipListIter<'a> {
             inner,
             node,
             node_back,
+            value: None,
+            value_back: None,
         }
     }
 }
@@ -485,11 +485,8 @@ impl<'a> DoubleEndedSinkIterator for SkipListIter<'a> {
         Ok(false)
     }
 }
-impl<'a> KvSinkIterator for SkipListIter<'a> {
-    type Key = &'a [u8];
-    type Value = &'a [u8];
-
-    fn key(&self) -> Option<Self::Key> {
+impl<'a> KvSinkIterator<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
+    fn key(&self) -> Option<&'a [u8]> {
         if let Some(item) = self.item() {
             item.get_key(&self.inner.arena)
         } else {
@@ -497,16 +494,36 @@ impl<'a> KvSinkIterator for SkipListIter<'a> {
         }
     }
 
-    fn value(&self) -> Option<Self::Value> {
-        if let Some(item) = self.item() {
-            item.get_value(&self.inner.arena)
-        } else {
-            None
+    fn value_ref(&mut self) -> Option<&ValueMeta> {
+        if let None = self.value {
+            if let Some(item) = self.item() {
+                if let Some(data) = item.get_value(&self.inner.arena) {
+                    if let Ok(value_meta) = ValueMeta::decode(data) {
+                        self.value = value_meta.into();
+                    }
+                }
+            }
         }
+        self.value.as_ref()
+    }
+
+    fn take_value(&mut self) -> Option<ValueMeta> {
+        if let None = self.value {
+            if let Some(item) = self.item() {
+                if let Some(data) = item.get_value(&self.inner.arena) {
+                    if let Ok(value_meta) = ValueMeta::decode(data) {
+                        return value_meta.into();
+                    }
+                }
+            }
+        } else {
+            return replace(&mut self.value, None);
+        }
+        None
     }
 }
-impl<'a> KvDoubleEndedSinkIter for SkipListIter<'a> {
-    fn key_back(&self) -> Option<<Self as KvSinkIterator>::Key> {
+impl<'a> KvDoubleEndedSinkIter<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
+    fn key_back(&self) -> Option<&'a [u8]> {
         if let Some(item) = self.item_back() {
             item.get_key(&self.inner.arena)
         } else {
@@ -514,12 +531,32 @@ impl<'a> KvDoubleEndedSinkIter for SkipListIter<'a> {
         }
     }
 
-    fn value_back(&self) -> Option<<Self as KvSinkIterator>::Value> {
-        if let Some(item) = self.item_back() {
-            item.get_value(&self.inner.arena)
-        } else {
-            None
+    fn value_back_ref(&mut self) -> Option<&ValueMeta> {
+        if let None = self.value {
+            if let Some(item) = self.item_back() {
+                if let Some(data) = item.get_value(&self.inner.arena) {
+                    if let Ok(value_meta) = ValueMeta::decode(data) {
+                        self.value = value_meta.into();
+                    }
+                }
+            }
         }
+        self.value.as_ref()
+    }
+
+    fn take_value_back(&mut self) -> Option<ValueMeta> {
+        if let None = self.value {
+            if let Some(item) = self.item_back() {
+                if let Some(data) = item.get_value(&self.inner.arena) {
+                    if let Ok(value_meta) = ValueMeta::decode(data) {
+                        return value_meta.into();
+                    }
+                }
+            }
+        } else {
+            return replace(&mut self.value, None);
+        }
+        None
     }
 }
 
@@ -529,10 +566,10 @@ mod tests {
 
     use rand::Rng;
 
-    use crate::iter::{
+    use crate::{iter::{
         DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIterator,
         SinkIter, SinkIterator,
-    };
+    }, kv::KeyTsBorrow};
 
     use super::{Node, SkipList, SkipListIter, RANDOM_HEIGHT_DENOMINATOR, RANDOM_HEIGHT_NUMERATOR};
     #[test]
@@ -560,7 +597,7 @@ mod tests {
         let end = 1000 as u32;
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size);
+        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -578,7 +615,7 @@ mod tests {
         let end = 1000 as u32;
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size);
+        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -597,7 +634,7 @@ mod tests {
         assert!(split < end);
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size);
+        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -619,7 +656,7 @@ mod tests {
 
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size);
+        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -639,7 +676,7 @@ mod tests {
 
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size);
+        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -660,7 +697,7 @@ mod tests {
         assert!(split < end);
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size);
+        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -682,7 +719,7 @@ mod tests {
         let end = 1000 as u32;
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size);
+        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -731,7 +768,7 @@ mod tests {
     }
     #[test]
     fn test_init() {
-        let skip_list = SkipList::new(100000000);
+        let skip_list = SkipList::new(100000000,KeyTsBorrow::cmp);
         let start = SystemTime::now();
         for i in 1..2 {
             skip_list.push(i.to_string().as_bytes(), (i.to_string() + "abc").as_bytes());

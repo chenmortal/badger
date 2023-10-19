@@ -2,17 +2,15 @@ use std::fs::{create_dir_all, set_permissions, Permissions};
 use std::os::unix::prelude::PermissionsExt;
 use std::{path::PathBuf, time::Duration};
 
+use crate::default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD};
 use crate::errors::DBError;
 use crate::skl::skip_list::SKL_MAX_NODE_SIZE;
-use crate::{
-    default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD},
-    table::ChecksumVerificationMode,
-};
+use crate::table::opt::ChecksumVerificationMode;
 use anyhow::anyhow;
 use anyhow::bail;
 use log::LevelFilter;
 use once_cell::sync::OnceCell;
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd,Eq)]
 pub enum CompressionType {
     None = 0,
     Snappy = 1,
@@ -78,7 +76,7 @@ pub struct Options {
     num_compactors: usize,
     compactl0_on_close: bool,
     lmax_compaction: bool,
-    zstd_compression_level: isize,
+    zstd_compression_level: i32,
 
     // When set, checksum will be validated for each entry read from the value log file.
     verify_value_checksum: bool,
@@ -330,12 +328,10 @@ impl Options {
         self
     }
 
-    pub fn set_table_size_multiplier(mut self, table_size_multiplier: usize) ->Self{
+    pub fn set_table_size_multiplier(mut self, table_size_multiplier: usize) -> Self {
         self.table_size_multiplier = table_size_multiplier;
         self
     }
-
-    
 }
 static OPT: OnceCell<Options> = once_cell::sync::OnceCell::new();
 impl Options {
@@ -347,7 +343,6 @@ impl Options {
         // {
         //     bail!("Cannot use badger in Disk-less mode with Dir or ValueDir set");
         // }
-
         log::set_max_level(self.log_level);
         self.max_batch_size = (15 * self.memtable_size) / 100;
         self.max_batch_count = self.max_batch_size / (SKL_MAX_NODE_SIZE);
@@ -515,7 +510,7 @@ impl Options {
         Self::get_static().compactl0_on_close
     }
 
-    pub(crate) fn zstd_compression_level() -> isize {
+    pub(crate) fn zstd_compression_level() -> i32 {
         Self::get_static().zstd_compression_level
     }
 
