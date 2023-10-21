@@ -42,6 +42,8 @@ scopeguard = "1.2.0"
 parking_lot = "0.12.1"
 async-channel = "1.9.0"
 num_cpus = "1.16.0"
+rayon = "1.8.0"
+tokio-rayon = "2.1.0"
 # tracing = "0.1.37"
 # bumpalo = {version="3.13.0",features=["boxed","collections"]}
 # generational-arena = "0.2.9"
@@ -49,8 +51,8 @@ num_cpus = "1.16.0"
 prost-build = "0.12"
 
 [dev-dependencies]
-criterion = "0.5"
-
+criterion = { version = "0.5", features = ["async_tokio"] }
+# criterion-macro = "0.4"
 
 [[bench]]
 name = "my_bench"
