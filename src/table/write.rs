@@ -87,13 +87,54 @@ pub(crate) struct TableBuilderInner {
     stale_data_size: usize,
     opt: TableOption,
 
-    wait_group: Option<WaitGroup>,
-    send_block: Option<Sender<BackendBlock>>,
+    // wait_group: Option<WaitGroup>,
+    // send_block: Option<Sender<BackendBlock>>,
 }
 const MAX_BUFFER_BLOCK_SIZE: usize = 256 << 20; //256MB
 /// When a block is encrypted, it's length increases. We add 256 bytes of padding to
 /// handle cases when block size increases. This is an approximate number.
 const BLOCK_PADDING: usize = 256;
+impl TableBuilderInner {
+    fn new(opt: TableOption) -> Self {
+        let pre_alloc_size = MAX_BUFFER_BLOCK_SIZE.min(opt.table_size());
+        let cur_block = BackendBlock::new(opt.block_size());
+        let mut table_builder = TableBuilderInner::default();
+        table_builder.cur_block = cur_block;
+        table_builder.alloc = Vec::with_capacity(pre_alloc_size);
+        table_builder.opt = opt;
+        table_builder
+    }
+    fn add_internal(&mut self, key: &KeyTsBorrow, value: ValueMeta, is_stale: bool) {
+        if self.should_finish_block(&key, &value) {
+            if is_stale{
+                self.stale_data_size+=key.len()+4;
+            }
+        };
+        
+    }
+    fn add_helper(&mut self,key: &KeyTsBorrow){
+        
+    }
+    fn should_finish_block(&self, key: &KeyTsBorrow, value: &ValueMeta) -> bool {
+        let cur_block = &self.cur_block;
+        if self.cur_block.entry_offsets.len() == 0 {
+            return false;
+        }
+        debug_assert!((cur_block.entry_offsets.len() as u32 + 1) * 4 + 4 + 8 + 4 < u32::MAX);
+        let entries_offsets_size = (cur_block.entry_offsets.len() + 1) * 4 
+        + 4 //size of list
+        + 8 //sum64 in checksum proto
+        + 4; //checksum length
+        let mut estimate_size=cur_block.end+6+key.as_ref().len()+ value.encode_size().unwrap() as usize+ entries_offsets_size;
+        if self.opt.datakey.is_some() {
+            estimate_size+=NONCE_SIZE;
+        }
+        assert!(cur_block.end+estimate_size < u32::MAX as usize);
+
+        return estimate_size > self.opt.block_size();
+    }
+
+}
 impl TableBuilder {
     fn new(opt: TableOption) -> Self {
         let pre_alloc_size = MAX_BUFFER_BLOCK_SIZE.min(opt.table_size());
@@ -102,30 +143,31 @@ impl TableBuilder {
         table_builder.cur_block = cur_block;
         table_builder.alloc = Vec::with_capacity(pre_alloc_size);
         table_builder.opt = opt;
-        if table_builder.opt.compression == CompressionType::None
-            && table_builder.opt.datakey.is_none()
-        {
-            return Self(table_builder.into());
-        }
-        let count = 2 * num_cpus::get();
-        let (send, recv) = async_channel::bounded::<BackendBlock>(2 * count);
-        table_builder.wait_group = WaitGroup::new(count as u32).into();
-        table_builder.send_block = send.into();
-        for _ in 0..count {
-            let recv_clone = recv.clone();
-            // tokio::spawn();
-        }
         return Self(table_builder.into());
+        // if table_builder.opt.compression == CompressionType::None
+        //     && table_builder.opt.datakey.is_none()
+        // {
+        //     return Self(table_builder.into());
+        // }
+        // let count = 2 * num_cpus::get();
+        // let (send, recv) = async_channel::bounded::<BackendBlock>(2 * count);
+        // // table_builder.wait_group = WaitGroup::new(count as u32).into();
+        // // table_builder.send_block = send.into();
+        // for _ in 0..count {
+        //     let recv_clone = recv.clone();
+        //     // tokio::spawn();
+        // }
+        // return Self(table_builder.into());
     }
-    async fn run_backend_task(self, receiver: Receiver<BackendBlock>) {
-        defer!(self.wait_group.as_ref().unwrap().done());
-        let need_compress = self.opt.compression != CompressionType::None;
-        while let Ok(block) = receiver.recv().await {
-            // let tail=block.data[block.end..].to_vec();
-            // if need_compress{
-            //     self.compress_data();
-            // }
-        }
+    async fn run_backend_task(self,) {
+        // defer!(self.wait_group.as_ref().unwrap().done());
+        // let need_compress = self.opt.compression != CompressionType::None;
+        // while let Ok(block) = receiver.recv().await {
+        //     // let tail=block.data[block.end..].to_vec();
+        //     // if need_compress{
+        //     //     self.compress_data();
+        //     // }
+        // }
     }
     fn compress_data(&self, data: &[u8]) -> anyhow::Result<Vec<u8>> {
         match self.opt.compression {
@@ -144,7 +186,7 @@ impl TableBuilder {
         K: Into<KeyTsBorrow<'a>>,
         V: Into<ValueMeta>,
     {
-        let table_builder = Self::new(opt);
+        // let table_builder = Self::new(opt);
         while iter.next()? {
             let key: KeyTsBorrow = iter.key().unwrap().into();
             let key_bytes = key.as_ref();
@@ -170,29 +212,5 @@ impl TableBuilder {
         // while let Ok(s) = iter.next(){
         // }
     }
-    fn add_internal(&mut self, key: KeyTsBorrow, value: ValueMeta, is_stale: bool) {
-        if self.should_finish_block(&key, &value) {
-            if is_stale{
-                // self.stale_data_size+=key.as_ref().len()+4;
-            }
-        };
-    }
-    fn should_finish_block(&self, key: &KeyTsBorrow, value: &ValueMeta) -> bool {
-        let cur_block = &self.cur_block;
-        if self.cur_block.entry_offsets.len() == 0 {
-            return false;
-        }
-        debug_assert!((cur_block.entry_offsets.len() as u32 + 1) * 4 + 4 + 8 + 4 < u32::MAX);
-        let entries_offsets_size = (cur_block.entry_offsets.len() + 1) * 4 
-        + 4 //size of list
-        + 8 //sum64 in checksum proto
-        + 4; //checksum length
-        let mut estimate_size=cur_block.end+6+key.as_ref().len()+ value.encode_size().unwrap() as usize+ entries_offsets_size;
-        if self.opt.datakey.is_some() {
-            estimate_size+=NONCE_SIZE;
-        }
-        assert!(cur_block.end+estimate_size < u32::MAX as usize);
 
-        return estimate_size > self.opt.block_size();
-    }
 }

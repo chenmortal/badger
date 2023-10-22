@@ -132,11 +132,49 @@ async fn async_with_rayon_pool(
         data_vec.push(ele.await);
     }
 }
+async fn async_with_global_pool(data: &Vec<u8>, block_size: usize, compress: CompressType) {
+    let mut buf = Vec::with_capacity(block_size);
+    let mut task_v = Vec::new();
+    for ele in data {
+        if buf.len() < block_size {
+            buf.push(*ele);
+        } else {
+            let old = replace(&mut buf, Vec::with_capacity(block_size));
+            let k = tokio_rayon::spawn(move || compress.compress(&old));
+            task_v.push(k);
+        }
+    }
+    let mut data_vec = Vec::new();
+    for ele in task_v {
+        data_vec.push(ele.await);
+    }
+}
+async fn async_with_fifo(data: &Vec<u8>, block_size: usize, compress: CompressType) {
+    let mut buf = Vec::with_capacity(block_size);
+    let mut task_v = Vec::new();
+    for ele in data {
+        if buf.len() < block_size {
+            buf.push(*ele);
+        } else {
+            let old = replace(&mut buf, Vec::with_capacity(block_size));
+            let k = tokio_rayon::spawn_fifo(move || compress.compress(&old));
+            task_v.push(k);
+        }
+    }
+    let mut data_vec = Vec::new();
+    for ele in task_v {
+        data_vec.push(ele.await);
+    }
+}
 fn bench_compress(c: &mut Criterion, group_name: &str, compress: CompressType) {
     let mut group = c.benchmark_group(group_name);
     group.warm_up_time(Duration::from_secs(7));
     static KB: usize = 1024;
     static MB: usize = 1024 * KB;
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(16)
+        .build_global();
+
     for (size, block_size) in [
         (16 * MB, 4 * KB),
         (16 * MB, 8 * KB),
@@ -179,13 +217,30 @@ fn bench_compress(c: &mut Criterion, group_name: &str, compress: CompressType) {
             },
         );
         group.bench_with_input(
-            BenchmarkId::new("async_with_rayon_pool", par),
+            BenchmarkId::new("async_with_rayon_pool", par.clone()),
             &data,
             |b, data| {
                 b.to_async(tokio::runtime::Runtime::new().unwrap())
                     .iter(|| async_with_rayon_pool(&pool, data, *block_size, compress));
             },
         );
+        group.bench_with_input(
+            BenchmarkId::new("async_with_global_pool", par.clone()),
+            &data,
+            |b, data| {
+                b.to_async(tokio::runtime::Runtime::new().unwrap())
+                    .iter(|| async_with_global_pool(data, *block_size, compress));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("async_with_fifo", par.clone()),
+            &data,
+            |b, data| {
+                b.to_async(tokio::runtime::Runtime::new().unwrap())
+                    .iter(|| async_with_fifo(data, *block_size, compress));
+            },
+        );
+        // async_with_global_pool
     }
     group.finish();
 }
