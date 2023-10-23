@@ -4,7 +4,7 @@ use crate::iter::Iter;
 
 use super::{
     block::Block,
-    write::{Header, HEADER_SIZE},
+    write::{EntryHeader, HEADER_SIZE},
     Table,
 };
 use anyhow::bail;
@@ -136,7 +136,7 @@ impl BlockIter {
         let start_offset = self.entry_offsets[entry_pos] as usize;
 
         if self.base_key.len() == 0 {
-            let base_header = Header::deserialize(&actual_data[..HEADER_SIZE]);
+            let base_header = EntryHeader::deserialize(&actual_data[..HEADER_SIZE]);
             self.base_key = actual_data[HEADER_SIZE..HEADER_SIZE + base_header.get_diff()].to_vec();
         }
 
@@ -153,7 +153,7 @@ impl BlockIter {
         //123 122  pre_overlap=4 overlap:5 -> iter.key=123 12; diffkey=2   -> iter.key=123 122
         //123 211  pre_overlap=5 overlap:3 -> iter.key=123  ;  diffkey=211 -> iter.key=123 211
 
-        let header = Header::deserialize(&entry_data[..HEADER_SIZE]);
+        let header = EntryHeader::deserialize(&entry_data[..HEADER_SIZE]);
         let header_overlap = header.get_overlap();
 
         if header_overlap > self.prev_overlap {

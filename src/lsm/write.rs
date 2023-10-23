@@ -14,7 +14,7 @@ impl MemTable {
         }
         self.skip_list.push(
             &entry.key_ts().get_bytes(),
-            entry.value_meta().encode()?.as_ref(),
+            entry.value_meta().serialize()?.as_ref(),
         );
         self.max_version = self.max_version.max(entry.version());
         add_num_bytes_written_to_l0(entry.estimate_size());

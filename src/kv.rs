@@ -78,6 +78,23 @@ impl KeyTs {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct KeyTsBorrow<'a>(&'a [u8]);
+impl<'a> KeyTsBorrow<'a> {
+    pub(crate) fn key(&self) -> &[u8] {
+        if self.len() > 8 {
+            &self[..self.len() - 8]
+        } else {
+            &self[..]
+        }
+    }
+    pub(crate) fn txn_ts(&self) -> TxnTs {
+        if self.len() > 8 {
+            let mut p = &self[self.len() - 8..];
+            p.get_u64().into()
+        } else {
+            TxnTs::default()
+        }
+    }
+}
 impl Deref for KeyTsBorrow<'_> {
     type Target = [u8];
 
@@ -172,6 +189,10 @@ impl ValuePointer {
             len: p.get_u32(),
             offset: p.get_u32(),
         }
+    }
+
+    pub(crate) fn len(&self) -> u32 {
+        self.len
     }
 }
 #[derive(Debug, Default)]
