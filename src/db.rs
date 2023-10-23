@@ -22,6 +22,7 @@ use crate::{
     metrics::{calculate_size, set_metrics_enabled},
     options::Options,
     publisher::Publisher,
+    rayon::set_global_rayon_pool,
     table::block::{self, Block},
     txn::oracle::Oracle,
     vlog::{threshold::VlogThreshold, ValueLog},
@@ -105,7 +106,7 @@ impl DBInner {
             };
         }
         // }
-
+        set_global_rayon_pool()?;
         let manifest_file = open_create_manifestfile()?;
 
         let mut block_cache = None;
