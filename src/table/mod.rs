@@ -14,7 +14,6 @@ use anyhow::bail;
 use bytes::{Buf, BufMut};
 use flatbuffers::InvalidFlatbuffer;
 use prost::Message;
-use snap::raw::Decoder;
 use tokio::sync::RwLock;
 
 use self::block::Block;
@@ -44,7 +43,6 @@ pub(crate) struct TableInner {
     index_start: usize,
     index_len: usize,
     has_bloom_filter: bool,
-    cipher: Option<AesCipher>,
     opt: TableOption,
 }
 #[derive(Debug, Clone)]
@@ -83,7 +81,7 @@ impl CheapIndex {
 
 impl Table {
     pub(crate) async fn open(mut mmap_f: MmapFile, opt: TableOption) -> anyhow::Result<Self> {
-        if opt.block_size() == 0 && opt.compression != CompressionType::None {
+        if opt.block_size() == 0 && opt.compression() != CompressionType::None {
             bail!("Block size cannot be zero");
         }
         let id = parse_file_id(&mmap_f.path(), SSTABLE_FILE_EXT).ok_or(anyhow!(
@@ -94,14 +92,11 @@ impl Table {
         let table_size = mmap_f.get_file_size()? as usize;
         let created_at = mmap_f.get_modified_time()?;
 
-        let mut cipher = None;
-        if let Some(data_key) = opt.datakey.clone() {
-            cipher = AesCipher::new(data_key.data.as_ref(), true)?.into();
-        }
-        let (index_buf, cheap_index) = TableInner::init_index(table_size, &mut mmap_f, &cipher)?;
+        let (index_buf, cheap_index) =
+            TableInner::init_index(table_size, &mut mmap_f, opt.cipher())?;
 
+        let checksum_mode = opt.checksum_verify_mode();
         let mut inner = TableInner {
-            // lock: Default::default(),
             mmap_f,
             table_size,
             smallest: Default::default(),
@@ -112,8 +107,7 @@ impl Table {
             index_start: Default::default(),
             index_len: Default::default(),
             has_bloom_filter: Default::default(),
-            opt: opt.clone(),
-            cipher,
+            opt,
             index_buf,
             cheap_index,
         };
@@ -136,7 +130,7 @@ impl Table {
         *biggest_w = iter.get_key().unwrap().to_vec();
         drop(biggest_w);
 
-        match opt.checksum_verify_mode() {
+        match checksum_mode {
             ChecksumVerificationMode::OnTableRead
             | ChecksumVerificationMode::OnTableAndBlockRead => {}
             _ => {
@@ -246,7 +240,7 @@ impl TableInner {
     fn init_index(
         table_size: usize,
         mmap_f: &MmapFile,
-        cipher: &Option<AesCipher>,
+        cipher: Option<&AesCipher>,
     ) -> anyhow::Result<(TableIndexBuf, CheapIndex)> {
         let mut read_pos = table_size;
 
@@ -326,8 +320,8 @@ impl TableInner {
                 )
             })?;
 
-        let de_raw_data = try_decrypt(&self.cipher, raw_data_ref)?;
-        let raw_data = self.decompress(de_raw_data).map_err(|e| {
+        let de_raw_data = try_decrypt(self.opt.cipher(), raw_data_ref)?;
+        let raw_data = self.opt.compression().decompress(de_raw_data).map_err(|e| {
             anyhow!(
                 "Failed to decode compressed data in file: {:?} at offset: {}, len: {} for {}",
                 &self.mmap_f.path(),
@@ -371,38 +365,33 @@ impl TableInner {
     fn get_file_path(&self) -> &PathBuf {
         &self.mmap_f.path()
     }
-    #[inline]
-    fn decompress(&self, block_data: Vec<u8>) -> anyhow::Result<Vec<u8>> {
-        let data = match self.opt.compression {
-            CompressionType::None => block_data,
-            CompressionType::Snappy => Decoder::new()
-                .decompress_vec(&block_data)
-                .map_err(|e| anyhow!("fail to decompress for {}", e))?,
-            CompressionType::ZSTD => {
-                let data_u8: &[u8] = block_data.as_ref();
-                zstd::decode_all(data_u8).map_err(|e| anyhow!("Failed to decompress for {}", e))?
-            }
-        };
-        Ok(data)
-    }
 }
-fn try_decrypt(cipher: &Option<AesCipher>, data: &[u8]) -> anyhow::Result<Vec<u8>> {
+fn try_decrypt(cipher: Option<&AesCipher>, data: &[u8]) -> anyhow::Result<Vec<u8>> {
     let data = match cipher {
         Some(c) => {
             let nonce = &data[data.len() - NONCE_SIZE..];
-            let plaintext = &data[..data.len() - NONCE_SIZE];
-            c.decrypt_with_slice(nonce, plaintext)
+            let ciphertext = &data[..data.len() - NONCE_SIZE];
+            c.decrypt_with_slice(nonce, ciphertext)
                 .ok_or(anyhow!("while decrypt"))?
         }
         None => data.to_vec(),
     };
     Ok(data)
 }
+fn try_encrypt(cipher: Option<&AesCipher>, data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    if let Some(c) = cipher {
+        let nonce = AesCipher::generate_nonce();
+        let mut ciphertext = c.encrypt(&nonce, data).ok_or(anyhow!("while encrypt"))?;
+        ciphertext.extend_from_slice(&nonce);
+        return Ok(ciphertext);
+    }
+    Ok(data.to_vec())
+}
 #[inline(always)]
-pub(crate) fn vec_u32_to_bytes(s: Vec<u32>) -> Vec<u8> {
+pub(crate) fn vec_u32_to_bytes(s: &Vec<u32>) -> Vec<u8> {
     let mut r = Vec::<u8>::with_capacity(s.len() * 4);
     for ele in s {
-        r.put_u32(ele);
+        r.put_u32(*ele);
     }
     r
 }

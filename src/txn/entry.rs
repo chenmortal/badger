@@ -27,10 +27,10 @@ impl ValueMeta {
     pub(crate) fn encode_size(&self) -> Result<u64, Box<bincode::ErrorKind>> {
         BINCODE_OPT.serialized_size(self)
     }
-    pub(crate) fn encode(&self) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
+    pub(crate) fn serialize(&self) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
         BINCODE_OPT.serialize(&self)
     }
-    pub(crate) fn decode(data: &[u8]) -> Result<ValueMeta, Box<bincode::ErrorKind>> {
+    pub(crate) fn deserialize(data: &[u8]) -> Result<ValueMeta, Box<bincode::ErrorKind>> {
         // BINCODE_OPT.serialized_size(t)
         BINCODE_OPT.deserialize::<Self>(data)
     }
@@ -54,9 +54,9 @@ fn test_encode() {
     v.value = String::from("abc").as_bytes().to_vec();
     v.expires_at = 1;
     dbg!(v.encode_size().unwrap());
-    let ve = v.encode().unwrap();
+    let ve = v.serialize().unwrap();
     dbg!(ve.len());
-    let vd = ValueMeta::decode(&ve).unwrap();
+    let vd = ValueMeta::deserialize(&ve).unwrap();
     assert_eq!(vd, v);
 }
 #[derive(Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

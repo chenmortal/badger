@@ -498,7 +498,7 @@ impl<'a> KvSinkIterator<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
         if let None = self.value {
             if let Some(item) = self.item() {
                 if let Some(data) = item.get_value(&self.inner.arena) {
-                    if let Ok(value_meta) = ValueMeta::decode(data) {
+                    if let Ok(value_meta) = ValueMeta::deserialize(data) {
                         self.value = value_meta.into();
                     }
                 }
@@ -511,7 +511,7 @@ impl<'a> KvSinkIterator<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
         if let None = self.value {
             if let Some(item) = self.item() {
                 if let Some(data) = item.get_value(&self.inner.arena) {
-                    if let Ok(value_meta) = ValueMeta::decode(data) {
+                    if let Ok(value_meta) = ValueMeta::deserialize(data) {
                         return value_meta.into();
                     }
                 }
@@ -535,7 +535,7 @@ impl<'a> KvDoubleEndedSinkIter<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
         if let None = self.value {
             if let Some(item) = self.item_back() {
                 if let Some(data) = item.get_value(&self.inner.arena) {
-                    if let Ok(value_meta) = ValueMeta::decode(data) {
+                    if let Ok(value_meta) = ValueMeta::deserialize(data) {
                         self.value = value_meta.into();
                     }
                 }
@@ -548,7 +548,7 @@ impl<'a> KvDoubleEndedSinkIter<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
         if let None = self.value {
             if let Some(item) = self.item_back() {
                 if let Some(data) = item.get_value(&self.inner.arena) {
-                    if let Ok(value_meta) = ValueMeta::decode(data) {
+                    if let Ok(value_meta) = ValueMeta::deserialize(data) {
                         return value_meta.into();
                     }
                 }

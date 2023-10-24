@@ -9,6 +9,7 @@ use std::{
 use tokio::sync::oneshot::{self, Receiver};
 
 //copy from  tokio-rayon
+#[derive(Debug)]
 pub struct AsyncRayonHandle<T> {
     pub(crate) rx: Receiver<thread::Result<T>>,
 }
