@@ -12,7 +12,7 @@ use rayon::prelude::ParallelIterator;
 use rayon::ThreadPool;
 use tokio_rayon::AsyncThreadPool;
 
-fn generate_data(size: usize) -> Vec<u8> {
+pub(crate) fn generate_data(size: usize) -> Vec<u8> {
     let mut buf = vec![0u8; size];
     getrandom::getrandom(&mut buf).unwrap();
     buf

@@ -62,8 +62,8 @@ impl KeyRegistryInner {
         if keys_len > 0 && !vec![16, 32].contains(&keys_len) {
             bail!("{:?} During OpenKeyRegistry", DBError::InvalidEncryptionKey);
         }
-        let cipher = if keys_len > 0 {
-            AesCipher::new(Options::encryption_key(), true).ok()
+        let cipher: Option<AesCipher> = if keys_len > 0 {
+            AesCipher::new(Options::encryption_key(), Options::aes_is_siv()).ok()
         } else {
             None
         };
@@ -205,6 +205,14 @@ impl KeyRegistryInner {
                 .insert(data_key.key_id, data_key);
         }
         Ok(())
+    }
+    pub(crate) async fn latest_cipher(&mut self) -> Option<AesCipher> {
+        if let Ok(d) = self.latest_datakey().await {
+            if let Some(data_key) = d {
+                return AesCipher::new(&data_key.data, Options::aes_is_siv()).ok();
+            }
+        }
+        None
     }
     pub(crate) async fn latest_datakey(&mut self) -> anyhow::Result<Option<DataKey>> {
         if self.cipher.is_none() {
@@ -380,12 +388,14 @@ impl<'a> Iterator for KeyRegistryIter<'a> {
         Some(data_key)
     }
 }
+#[derive(Clone)]
 pub(crate) enum AesCipher {
     Aes128(Aes128Gcm),
     Aes128Siv(Aes128GcmSiv),
     Aes256(Aes256Gcm),
     Aes256Siv(Aes256GcmSiv),
 }
+
 impl Debug for AesCipher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -438,17 +448,17 @@ impl AesCipher {
         self.encrypt(Nonce::from_slice(nonce), plaintext)
     }
     #[inline]
-    pub(crate) fn decrypt(&self, nonce: &Nonce, plaintext: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn decrypt(&self, nonce: &Nonce, ciphertext: &[u8]) -> Option<Vec<u8>> {
         match self {
-            AesCipher::Aes128(ref cipher) => cipher.decrypt(nonce, plaintext).ok(),
-            AesCipher::Aes128Siv(ref cipher) => cipher.decrypt(nonce, plaintext).ok(),
-            AesCipher::Aes256(ref cipher) => cipher.decrypt(nonce, plaintext).ok(),
-            AesCipher::Aes256Siv(ref cipher) => cipher.decrypt(nonce, plaintext).ok(),
+            AesCipher::Aes128(ref cipher) => cipher.decrypt(nonce, ciphertext).ok(),
+            AesCipher::Aes128Siv(ref cipher) => cipher.decrypt(nonce, ciphertext).ok(),
+            AesCipher::Aes256(ref cipher) => cipher.decrypt(nonce, ciphertext).ok(),
+            AesCipher::Aes256Siv(ref cipher) => cipher.decrypt(nonce, ciphertext).ok(),
         }
     }
     #[inline]
-    pub(crate) fn decrypt_with_slice(&self, nonce: &[u8], plaintext: &[u8]) -> Option<Vec<u8>> {
-        self.decrypt(Nonce::from_slice(nonce), plaintext)
+    pub(crate) fn decrypt_with_slice(&self, nonce: &[u8], ciphertext: &[u8]) -> Option<Vec<u8>> {
+        self.decrypt(Nonce::from_slice(nonce), ciphertext)
     }
     #[inline]
     fn generate_key(&self) -> Vec<u8> {

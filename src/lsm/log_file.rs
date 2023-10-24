@@ -10,6 +10,7 @@ use crate::{
     default::DEFAULT_IS_SIV,
     key_registry::{AesCipher, KeyRegistry},
     lsm::mmap::MmapFile,
+    options::Options,
     pb::badgerpb4::DataKey,
     vlog::VLOG_HEADER_SIZE,
 };
@@ -98,7 +99,7 @@ impl LogFile {
 
         let registry_r = log_file.key_registry.read().await;
         if let Some(dk) = registry_r.get_data_key(key_id).await? {
-            log_file.cipher = AesCipher::new(dk.data.as_slice(), DEFAULT_IS_SIV)?.into();
+            log_file.cipher = AesCipher::new(dk.data.as_slice(), Options::aes_is_siv())?.into();
             log_file.datakey = Some(dk);
         }
         drop(registry_r);
@@ -134,7 +135,7 @@ impl LogFile {
         drop(key_registry_w);
         self.datakey = datakey;
         if let Some(dk) = &self.datakey {
-            self.cipher = AesCipher::new(&dk.data, DEFAULT_IS_SIV)?.into();
+            self.cipher = AesCipher::new(&dk.data, Options::aes_is_siv())?.into();
         }
         self.base_nonce = AesCipher::generate_nonce().to_vec();
 
@@ -164,10 +165,10 @@ impl LogFile {
         v
     }
     #[inline]
-    pub(crate) fn try_decrypt(&self, plaintext: &[u8], offset: usize) -> Option<Vec<u8>> {
+    pub(crate) fn try_decrypt(&self, ciphertext: &[u8], offset: usize) -> Option<Vec<u8>> {
         if let Some(c) = &self.cipher {
             let nonce = self.generate_nonce(offset);
-            return c.decrypt_with_slice(nonce.as_slice(), plaintext);
+            return c.decrypt_with_slice(nonce.as_slice(), ciphertext);
         } else {
             None
         }

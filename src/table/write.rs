@@ -1,18 +1,18 @@
 use std::{
-    ops::Deref,
-    sync::{atomic::AtomicU32, Arc},
+    sync::{atomic::{AtomicU32, Ordering}, Arc}, mem::replace,
 };
 
 use bytes::{Buf, BufMut};
+use prost::Message;
 
 use crate::{
     iter::{KvSinkIterator, SinkIterator},
     kv::{ KeyTsBorrow, ValuePointer},
     options::CompressionType,
-    txn::{entry::{EntryMeta, ValueMeta}, TxnTs}, key_registry::NONCE_SIZE, bloom::Bloom,
+    txn::{entry::{EntryMeta, ValueMeta}, TxnTs}, key_registry::NONCE_SIZE, bloom::Bloom, pb::badgerpb4::{Checksum, checksum::Algorithm}, rayon::{spawn_fifo, AsyncRayonHandle},
 };
 
-use super::TableOption;
+use super::{TableOption, vec_u32_to_bytes, try_encrypt};
 #[derive(Debug)]
 pub(crate) struct EntryHeader {
     overlap: u16,
@@ -66,31 +66,21 @@ impl BackendBlock {
         }
     }
 }
-#[derive(Debug)]
-pub(crate) struct TableBuilder(Arc<TableBuilderInner>);
-impl Deref for TableBuilder {
-    type Target = TableBuilderInner;
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
 
 #[derive(Debug, Default)]
-pub(crate) struct TableBuilderInner {
+pub(crate) struct TableBuilder {
     alloc: Vec<u8>,
     cur_block: BackendBlock,
-    compressed_size: AtomicU32,
-    uncompressed_size: AtomicU32,
+    compressed_size: Arc<AtomicU32>,
+    uncompressed_size: u32,
     len_offsets: u32,
     key_hashes: Vec<u32>,
     max_version: TxnTs,
     on_disk_size: u32,
     stale_data_size: usize,
     opt: TableOption,
-
-    // wait_group: Option<WaitGroup>,
-    // send_block: Option<Sender<BackendBlock>>,
+    compress_task:Vec<AsyncRayonHandle<anyhow::Result<BackendBlock>>>
 }
 const MAX_BUFFER_BLOCK_SIZE: usize = 256 << 20; //256MB
 /// When a block is encrypted, it's length increases. We add 256 bytes of padding to
@@ -144,94 +134,86 @@ impl BackendBlock {
         self.data.extend_from_slice(value.serialize().unwrap().as_ref());
         
     }
+    fn finish_block(&mut self,algo:Algorithm){
+        self.data.extend_from_slice(&vec_u32_to_bytes(&self.entry_offsets));
+        self.data.put_u32(self.entry_offsets.len() as u32);
+
+        let checksum = Checksum::new(algo, &self.data);
+        self.data.extend_from_slice(&checksum.encode_to_vec());
+        self.data.put_u32(checksum.encoded_len() as u32);
+    }
 }
-impl TableBuilderInner {
+impl TableBuilder {
     fn new(opt: TableOption) -> Self {
         let pre_alloc_size = MAX_BUFFER_BLOCK_SIZE.min(opt.table_size());
         let cur_block = BackendBlock::new(opt.block_size());
-        let mut table_builder = TableBuilderInner::default();
+        let mut table_builder = Self::default();
         table_builder.cur_block = cur_block;
         table_builder.alloc = Vec::with_capacity(pre_alloc_size);
         table_builder.opt = opt;
         table_builder
     }
     fn push_internal(&mut self, key_ts: &KeyTsBorrow, value: ValueMeta,vptr_len:Option<u32>, is_stale: bool) {
-        if self.cur_block.should_finish_block(&key_ts, &value,self.opt.block_size(),self.opt.datakey.is_some()) {
+        if self.cur_block.should_finish_block(&key_ts, &value,self.opt.block_size(),self.opt.cipher().is_some()) {
             if is_stale{
                 self.stale_data_size+=key_ts.len()+4;
             }
-            todo!()
+            self.finish_cur_block();
         };
         self.key_hashes.push(Bloom::hash(key_ts.key()));
         self.max_version=self.max_version.max(key_ts.txn_ts());
         self.cur_block.push_entry(key_ts, value);
         self.on_disk_size+=vptr_len.unwrap_or(0);
     }
-    fn finish_block(&mut self){
-        let cur_block=&mut self.cur_block;
-        for offset in cur_block.entry_offsets.iter() {
-            cur_block.data.put_u32(*offset);
+     fn finish_cur_block(&mut self){
+        if self.cur_block.entry_offsets.len()==0 {
+            return;
         }
+        self.cur_block.finish_block(self.opt.block_checksum_algo());
+        self.uncompressed_size+=self.cur_block.len() as u32;
 
+        self.len_offsets+=(self.cur_block.basekey.len() as f32/ 4.0).ceil() as u32 * 4 + 40;
+        let mut finished_block = replace(&mut self.cur_block, BackendBlock::new(self.opt.block_size()));
+        let cipher = self.opt.cipher_clone();
+        let compression = self.opt.compression();
+        let compressed_size = self.compressed_size.clone();
+        self.compress_task.push(spawn_fifo(move ||{
+                    if compression!=CompressionType::None{
+                        match compression.compress(&finished_block.data) {
+                            Ok(compressed) => {
+                                finished_block.data=compressed;
+                            },
+                            Err(e) => {
+                                return Err(e);
+                            },
+                        }
+                    }
+                    if let Some(cipher) = cipher.as_ref() {
+                        match try_encrypt(cipher.into(), &finished_block.data) {
+                            Ok(ciphertext) => {
+                                finished_block.data=ciphertext;
+                            },
+                            Err(e) => {return Err(e)},
+                        }
+                    }
+                    compressed_size.fetch_add(finished_block.len() as u32, Ordering::AcqRel);
+                    Ok(finished_block)
+                }));
     }
     fn push(&mut self,key_ts: &KeyTsBorrow,value: ValueMeta,vptr_len:Option<u32>){
         self.push_internal(key_ts, value, vptr_len, false);
-    }
-
-}
-impl TableBuilder {
-    fn new(opt: TableOption) -> Self {
-        let pre_alloc_size = MAX_BUFFER_BLOCK_SIZE.min(opt.table_size());
-        let cur_block = BackendBlock::new(opt.block_size());
-        let mut table_builder = TableBuilderInner::default();
-        table_builder.cur_block = cur_block;
-        table_builder.alloc = Vec::with_capacity(pre_alloc_size);
-        table_builder.opt = opt;
-        return Self(table_builder.into());
-        // if table_builder.opt.compression == CompressionType::None
-        //     && table_builder.opt.datakey.is_none()
-        // {
-        //     return Self(table_builder.into());
-        // }
-        // let count = 2 * num_cpus::get();
-        // let (send, recv) = async_channel::bounded::<BackendBlock>(2 * count);
-        // // table_builder.wait_group = WaitGroup::new(count as u32).into();
-        // // table_builder.send_block = send.into();
-        // for _ in 0..count {
-        //     let recv_clone = recv.clone();
-        //     // tokio::spawn();
-        // }
-        // return Self(table_builder.into());
-    }
-    async fn run_backend_task(self,) {
-        // defer!(self.wait_group.as_ref().unwrap().done());
-        // let need_compress = self.opt.compression != CompressionType::None;
-        // while let Ok(block) = receiver.recv().await {
-        //     // let tail=block.data[block.end..].to_vec();
-        //     // if need_compress{
-        //     //     self.compress_data();
-        //     // }
-        // }
-    }
-    fn compress_data(&self, data: &[u8]) -> anyhow::Result<Vec<u8>> {
-        match self.opt.compression {
-            CompressionType::None => Ok(data.to_vec()),
-            CompressionType::Snappy => Ok(snap::raw::Encoder::new().compress_vec(data)?),
-            CompressionType::ZSTD => Ok(zstd::encode_all(data, self.opt.zstd_compression_level())?),
-        }
     }
     pub(crate) fn build_l0_table<'a, I, K, V>(
         mut iter: I,
         drop_prefixed: Vec<Vec<u8>>,
         opt: TableOption,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<Self>
     where
         I: KvSinkIterator<'a, K, V> + SinkIterator,
         K: Into<KeyTsBorrow<'a>>,
         V: Into<ValueMeta>,
     {
-        // let table_builder = Self::new(opt);
-        let mut table_builder = TableBuilderInner::new(opt);
+        let mut table_builder = Self::new(opt);
         while iter.next()? {
             let key_ts: KeyTsBorrow = iter.key().unwrap().into();
             let key_bytes = key_ts.as_ref();
@@ -246,45 +228,23 @@ impl TableBuilder {
                 None
             };
             table_builder.push(&key_ts, value, vptr_len);
-            // let p: &[u8] = key.as_ref();
-
-            // let p = key.0;
-            // if drop_prefixed.len() > 0 && d
-            // let key = iter.key().unwrap();
-            // let key_ref = key.as_ref();
-            // if drop_prefixed.len() > 0 && drop_prefixed.iter().any(|x| key_ref.starts_with(x)) {
-            //     continue;
-            // }
-            // iter.value()
         }
+        Ok(table_builder)
+    }
+    pub(crate) fn is_empty(&self)->bool{
+        self.key_hashes.len()==0
+    }
+    pub(crate) fn finish(){
+
+    }
+    pub(crate) async fn done(&mut self)->anyhow::Result<()>{
+        self.finish_cur_block();
+        let mut block_list=Vec::with_capacity(self.compress_task.len());
+        for task in self.compress_task.drain(..) {
+            block_list.push(task.await?);
+        } 
+          
         Ok(())
-        // while let Ok(s) = iter.next(){
-        // }
     }
-
 }
-#[cfg(test)]
-mod tests{
-    use bytes::{BufMut, Buf};
 
-    #[test]
-    fn test_base_diff(){
-        let a:&[u8]="abck".as_ref();
-        let b:&[u8]="abcde".as_ref();
-        let mut i=0;
-        while i < a.len().min(b.len()) {
-            if a[i]!=b[i]{
-                break;
-            }
-            i+=1;
-        }
-        dbg!(i);
-        // println!(i);
-        // for i in 0..a.len().min(b.len()) {
-            // if a[i]!=b[i]{
-                // break;
-            // }
-        // }
-    }
-
-}

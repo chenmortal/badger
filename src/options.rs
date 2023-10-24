@@ -4,17 +4,21 @@ use std::{path::PathBuf, time::Duration};
 
 use crate::default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD};
 use crate::errors::DBError;
+use crate::pb::badgerpb4;
+use crate::pb::badgerpb4::checksum::Algorithm;
 use crate::skl::skip_list::SKL_MAX_NODE_SIZE;
 use crate::table::opt::ChecksumVerificationMode;
 use anyhow::anyhow;
 use anyhow::bail;
+use libc::DAY_1;
 use log::LevelFilter;
 use once_cell::sync::OnceCell;
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd,Eq)]
+use snap::raw::Decoder;
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq)]
 pub enum CompressionType {
-    None = 0,
-    Snappy = 1,
-    ZSTD = 2,
+    None,
+    Snappy,
+    ZSTD(i32),
 }
 impl Default for CompressionType {
     fn default() -> Self {
@@ -25,10 +29,38 @@ impl From<u32> for CompressionType {
     fn from(value: u32) -> Self {
         match value {
             1 => Self::Snappy,
-            2 => Self::ZSTD,
+            2 => Self::ZSTD(1),
             _ => Self::None,
         }
     }
+}
+impl Into<u32> for CompressionType {
+    fn into(self) -> u32 {
+        match self {
+            CompressionType::None => 0,
+            CompressionType::Snappy => 1,
+            CompressionType::ZSTD(_) => 2,
+        }
+    }
+}
+impl CompressionType {
+    #[inline]
+    pub(crate) fn compress(&self, data: &[u8]) -> anyhow::Result<Vec<u8>> {
+        match self {
+            CompressionType::None => Ok(data.to_vec()),
+            CompressionType::Snappy => Ok(snap::raw::Encoder::new().compress_vec(data)?),
+            CompressionType::ZSTD(level) => Ok(zstd::encode_all(data, *level)?),
+        }
+    }
+    #[inline]
+    pub(crate) fn decompress(&self, data: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+        match self {
+            CompressionType::None => Ok(data),
+            CompressionType::Snappy => Ok(Decoder::new().decompress_vec(&data)?),
+            CompressionType::ZSTD(_) => Ok(zstd::decode_all(data.as_slice())?),
+        }
+    }
+
 }
 // static OPT:Options=Options::default();
 // const MAX_VALUE_THRESHOLD: i64 = 1 << 20;
@@ -44,6 +76,7 @@ pub struct Options {
     read_only: bool,
     log_level: LevelFilter,
     compression: CompressionType,
+    aes_is_siv: bool,
     // pub(crate) in_memory: bool,
     metrics_enabled: bool,
     // Sets the Stream.numGo field
@@ -63,6 +96,7 @@ pub struct Options {
     // Changing BlockSize across DB runs will not break badger. The block size is
     // read from the block index stored at the end of the table.
     block_size: usize,
+    block_checksum_algo: badgerpb4::checksum::Algorithm,
     bloom_false_positive: f64,
     block_cache_size: usize,
     index_cache_size: i64,
@@ -163,6 +197,8 @@ impl Default for Options {
             encryption_key: Vec::new(),
             encryption_key_rotation_duration: Duration::from_secs(10 * 24 * 60 * 60),
             checksum_verification_mode: Default::default(),
+            block_checksum_algo: Default::default(),
+            aes_is_siv: true,
         }
     }
 }
@@ -269,6 +305,10 @@ impl Options {
         self.compression = compression;
         self
     }
+    pub fn set_block_checksum_algo(mut self, algo: Algorithm) -> Self {
+        self.block_checksum_algo = algo;
+        self
+    }
     pub fn set_verify_value_checksum(mut self, verify_value_checksum: bool) -> Self {
         self.verify_value_checksum = verify_value_checksum;
         self
@@ -330,6 +370,10 @@ impl Options {
 
     pub fn set_table_size_multiplier(mut self, table_size_multiplier: usize) -> Self {
         self.table_size_multiplier = table_size_multiplier;
+        self
+    }
+    pub fn set_aes_is_siv(mut self, is_siv: bool) -> Self {
+        self.aes_is_siv = is_siv;
         self
     }
 }
@@ -395,6 +439,7 @@ impl Options {
 
         Ok(())
     }
+    #[deny(unused)]
     pub(super) fn init(mut self) -> anyhow::Result<()> {
         self.check_set_options()?;
         self.create_dirs()?;
@@ -521,6 +566,9 @@ impl Options {
     pub(crate) fn encryption_key_rotation_duration() -> Duration {
         Self::get_static().encryption_key_rotation_duration
     }
+    pub(crate) fn aes_is_siv() -> bool {
+        Self::get_static().aes_is_siv
+    }
 
     pub(crate) fn bypass_lock_guard() -> bool {
         Self::get_static().bypass_lock_guard
@@ -528,6 +576,9 @@ impl Options {
 
     pub(crate) fn checksum_verification_mode() -> ChecksumVerificationMode {
         Self::get_static().checksum_verification_mode
+    }
+    pub(crate) fn block_checksum_algo() -> Algorithm {
+        Self::get_static().block_checksum_algo
     }
 
     pub(crate) fn detect_conflicts() -> bool {

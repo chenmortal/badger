@@ -15,7 +15,7 @@ use log::{debug, error, info};
 use rand::Rng;
 use tokio::{
     select,
-    sync::{ Notify, Semaphore, Mutex},
+    sync::{Mutex, Notify, Semaphore},
 };
 
 use crate::{
@@ -32,7 +32,8 @@ use crate::{
     table::{
         iter::{ConcatIter, TableIter},
         merge::MergeIter,
-        Table, opt::TableOption,
+        opt::TableOption,
+        Table,
     },
     txn::oracle::Oracle,
     util::{compare_key, dir_join_id_suffix, get_sst_id_set, key_with_ts, parse_key, Throttle},
@@ -153,23 +154,17 @@ impl LevelsController {
             let key_registry_clone = key_registry.clone();
             let block_cache_clone = block_cache.clone();
             let index_cache_clone = index_cache.clone();
-            // let opt_clone = opt.clone();
 
             let future = async move {
                 let read_only = Options::read_only();
                 let registry_r = key_registry_clone.read().await;
-                let data_key = match registry_r.get_data_key(tm.keyid).await {
-                    Ok(dk) => dk,
-                    Err(e) => {
-                        bail!(e)
-                    }
-                };
+                let data_key = registry_r.get_data_key(tm.keyid).await?;
                 drop(registry_r);
                 let mut table_opt =
                     TableOption::new(&key_registry_clone, &block_cache_clone, &index_cache_clone)
                         .await;
-                table_opt.datakey = data_key;
-                table_opt.compression = tm.compression;
+                table_opt.set_cipher_with_key(data_key);
+                table_opt.set_compression(tm.compression);
                 let mut fp_open_opt = OpenOptions::new();
                 fp_open_opt.read(true).write(!read_only);
 
@@ -568,16 +563,9 @@ impl LevelsController {
         drop(next_r);
         return r.into();
     }
-    async fn fill_tables(
-        &self,
-        compact_def: &mut CompactDef,
-        oracle: &Arc<Oracle>,
-    ) -> bool {
+    async fn fill_tables(&self, compact_def: &mut CompactDef, oracle: &Arc<Oracle>) -> bool {
         //if compact_def.this_level.level is not last return None;
-        if let Some(s) = self
-            .try_fill_max_level_tables(compact_def, oracle)
-            .await
-        {
+        if let Some(s) = self.try_fill_max_level_tables(compact_def, oracle).await {
             return s;
         }
 
