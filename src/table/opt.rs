@@ -36,7 +36,7 @@ pub(crate) struct TableOption {
 
     // ChkMode is the checksum verification mode for Table.
     checksum_verify_mode: ChecksumVerificationMode,
-    block_checksum_algo: badgerpb4::checksum::Algorithm,
+    checksum_algo: badgerpb4::checksum::Algorithm,
     // BloomFalsePositive is the false positive probabiltiy of bloom filter.
     bloom_false_positive: f64,
 
@@ -67,7 +67,7 @@ impl Default for TableOption {
             zstd_compression_level: 1,
             block_cache: Default::default(),
             index_cache: Default::default(),
-            block_checksum_algo: Default::default(),
+            checksum_algo: Default::default(),
             cipher: None.into(),
         }
     }
@@ -91,7 +91,7 @@ impl TableOption {
             index_cache: index_cache.clone(),
             table_size: Options::base_table_size(),
             checksum_verify_mode: Options::checksum_verification_mode(),
-            block_checksum_algo: Options::block_checksum_algo(),
+            checksum_algo: Options::checksum_algo(),
             cipher,
         }
     }
@@ -121,8 +121,8 @@ impl TableOption {
         self.zstd_compression_level
     }
 
-    pub(crate) fn block_checksum_algo(&self) -> Algorithm {
-        self.block_checksum_algo
+    pub(crate) fn checksum_algo(&self) -> Algorithm {
+        self.checksum_algo
     }
 
     pub(crate) fn cipher(&self) -> Option<&AesCipher> {
@@ -146,6 +146,10 @@ impl TableOption {
 
     pub(crate) fn set_compression(&mut self, compression: CompressionType) {
         self.compression = compression;
+    }
+
+    pub(crate) fn bloom_false_positive(&self) -> f64 {
+        self.bloom_false_positive
     }
 }
 #[test]

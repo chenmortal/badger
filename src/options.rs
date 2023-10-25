@@ -96,7 +96,7 @@ pub struct Options {
     // Changing BlockSize across DB runs will not break badger. The block size is
     // read from the block index stored at the end of the table.
     block_size: usize,
-    block_checksum_algo: badgerpb4::checksum::Algorithm,
+    checksum_algo: badgerpb4::checksum::Algorithm,
     bloom_false_positive: f64,
     block_cache_size: usize,
     index_cache_size: i64,
@@ -197,7 +197,7 @@ impl Default for Options {
             encryption_key: Vec::new(),
             encryption_key_rotation_duration: Duration::from_secs(10 * 24 * 60 * 60),
             checksum_verification_mode: Default::default(),
-            block_checksum_algo: Default::default(),
+            checksum_algo: Default::default(),
             aes_is_siv: true,
         }
     }
@@ -305,8 +305,8 @@ impl Options {
         self.compression = compression;
         self
     }
-    pub fn set_block_checksum_algo(mut self, algo: Algorithm) -> Self {
-        self.block_checksum_algo = algo;
+    pub fn set_checksum_algo(mut self, algo: Algorithm) -> Self {
+        self.checksum_algo = algo;
         self
     }
     pub fn set_verify_value_checksum(mut self, verify_value_checksum: bool) -> Self {
@@ -577,8 +577,8 @@ impl Options {
     pub(crate) fn checksum_verification_mode() -> ChecksumVerificationMode {
         Self::get_static().checksum_verification_mode
     }
-    pub(crate) fn block_checksum_algo() -> Algorithm {
-        Self::get_static().block_checksum_algo
+    pub(crate) fn checksum_algo() -> Algorithm {
+        Self::get_static().checksum_algo
     }
 
     pub(crate) fn detect_conflicts() -> bool {
