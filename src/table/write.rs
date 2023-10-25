@@ -1,5 +1,5 @@
 use std::{
-    sync::{atomic::{AtomicU32, Ordering}, Arc}, mem::replace,
+    sync::{atomic::{AtomicU32, Ordering}, Arc}, mem::replace, io::Read, ptr,
 };
 
 use bytes::{Buf, BufMut};
@@ -9,7 +9,7 @@ use crate::{
     iter::{KvSinkIterator, SinkIterator},
     kv::{ KeyTsBorrow, ValuePointer},
     options::CompressionType,
-    txn::{entry::{EntryMeta, ValueMeta}, TxnTs}, key_registry::NONCE_SIZE, bloom::Bloom, pb::badgerpb4::{Checksum, checksum::Algorithm}, rayon::{spawn_fifo, AsyncRayonHandle},
+    txn::{entry::{EntryMeta, ValueMeta}, TxnTs}, key_registry::NONCE_SIZE, bloom::Bloom, pb::badgerpb4::{Checksum, checksum::Algorithm}, rayon::{spawn_fifo, AsyncRayonHandle}, fb::fb,
 };
 
 use super::{TableOption, vec_u32_to_bytes, try_encrypt};
@@ -78,17 +78,17 @@ pub(crate) struct TableBuilder {
     key_hashes: Vec<u32>,
     max_version: TxnTs,
     on_disk_size: u32,
-    stale_data_size: usize,
+    stale_data_size: u32,
     opt: TableOption,
-    compress_task:Vec<AsyncRayonHandle<anyhow::Result<BackendBlock>>>
+    compress_task:Vec<AsyncRayonHandle<anyhow::Result<BackendBlock>>>,
 }
 const MAX_BUFFER_BLOCK_SIZE: usize = 256 << 20; //256MB
 /// When a block is encrypted, it's length increases. We add 256 bytes of padding to
 /// handle cases when block size increases. This is an approximate number.
 const BLOCK_PADDING: usize = 256;
 impl BackendBlock {
-    fn len(&self)->usize{
-        self.data.len()
+    fn len(&self)->u32{
+        self.data.len() as u32
     }
     fn diff_base_key(&self,new_key:&[u8])->usize{
         let mut i=0;
@@ -144,19 +144,19 @@ impl BackendBlock {
     }
 }
 impl TableBuilder {
-    fn new(opt: TableOption) -> Self {
-        let pre_alloc_size = MAX_BUFFER_BLOCK_SIZE.min(opt.table_size());
-        let cur_block = BackendBlock::new(opt.block_size());
+    pub(crate) fn new(table_opt: TableOption) -> Self {
+        let pre_alloc_size = MAX_BUFFER_BLOCK_SIZE.min(table_opt.table_size());
+        let cur_block = BackendBlock::new(table_opt.block_size());
         let mut table_builder = Self::default();
         table_builder.cur_block = cur_block;
         table_builder.alloc = Vec::with_capacity(pre_alloc_size);
-        table_builder.opt = opt;
+        table_builder.opt = table_opt;
         table_builder
     }
     fn push_internal(&mut self, key_ts: &KeyTsBorrow, value: ValueMeta,vptr_len:Option<u32>, is_stale: bool) {
         if self.cur_block.should_finish_block(&key_ts, &value,self.opt.block_size(),self.opt.cipher().is_some()) {
             if is_stale{
-                self.stale_data_size+=key_ts.len()+4;
+                self.stale_data_size+=key_ts.len() as u32+4;
             }
             self.finish_cur_block();
         };
@@ -169,7 +169,7 @@ impl TableBuilder {
         if self.cur_block.entry_offsets.len()==0 {
             return;
         }
-        self.cur_block.finish_block(self.opt.block_checksum_algo());
+        self.cur_block.finish_block(self.opt.checksum_algo());
         self.uncompressed_size+=self.cur_block.len() as u32;
 
         self.len_offsets+=(self.cur_block.basekey.len() as f32/ 4.0).ceil() as u32 * 4 + 40;
@@ -234,17 +234,100 @@ impl TableBuilder {
     pub(crate) fn is_empty(&self)->bool{
         self.key_hashes.len()==0
     }
-    pub(crate) fn finish(){
-
+    pub(crate) async fn finish(&mut self)->anyhow::Result<Vec<u8>>{
+        let mut data = self.done().await?;
+        let mut buf=vec![0u8;data.size()];
+        let written = data.read(&mut buf)?;
+        assert_eq!(written,buf.len());
+        Ok(buf)
     }
-    pub(crate) async fn done(&mut self)->anyhow::Result<()>{
+    pub(crate) async fn done(&mut self)->anyhow::Result<TableBuildData>{
         self.finish_cur_block();
         let mut block_list=Vec::with_capacity(self.compress_task.len());
         for task in self.compress_task.drain(..) {
             block_list.push(task.await?);
+        }
+        let mut bloom=None; 
+        if self.opt.bloom_false_positive() > 0.0{
+            bloom = Bloom::new(&self.key_hashes, self.opt.bloom_false_positive()).into();
+        }
+        let (index,data_size) = self.build_index(&block_list,bloom.as_ref())?;
+        let checksum = Checksum::new(self.opt.checksum_algo(), &index).encode_to_vec();
+        let size=data_size as usize + index.len() + 4 + checksum.len() + 4;
+        let build_data = TableBuildData{
+                    block_list,
+                    index,
+                    checksum,
+                    size,
+                };
+        Ok(build_data)
+    }
+    fn build_index(&mut self,block_list:&Vec<BackendBlock>,bloom:Option<&Bloom>)-> anyhow::Result<(Vec<u8>,u32)>{
+        let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(3<<20);
+        let mut data_size=0;
+        let mut block_offset=Vec::new();
+        for block in block_list {
+            let args = fb::BlockOffsetArgs{
+                            key: builder.create_vector(block.basekey.as_ref()).into(),
+                            offset: data_size,
+                            len: block.len() as u32,
+                        };
+
+            data_size+=block.len() as u32;
+            block_offset.push(fb::BlockOffset::create(&mut builder, &args));
         } 
-          
-        Ok(())
+        self.on_disk_size+=data_size;
+        let table_index_args = fb::TableIndexArgs{
+                    offsets: builder.create_vector(&block_offset).into(),
+                    bloom_filter: bloom.and_then(|x|builder.create_vector(x).into()),
+                    max_version: self.max_version.to_u64(),
+                    key_count: self.key_hashes.len() as u32,
+                    uncompressed_size: self.uncompressed_size,
+                    on_disk_size:self.on_disk_size,
+                    stale_data_size: self.stale_data_size,
+                };
+        let table_index = fb::TableIndex::create(&mut builder, &table_index_args);
+        builder.finish(table_index, None);
+        Ok((try_encrypt(self.opt.cipher(), builder.finished_data())?,data_size))
     }
 }
 
+pub(crate) struct TableBuildData{
+    block_list:Vec<BackendBlock>,
+    index:Vec<u8>,
+    checksum:Vec<u8>,
+    size:usize,
+}
+
+impl TableBuildData {
+    pub(crate) fn size(&self) -> usize {
+        self.size
+    }
+}
+
+
+impl Read for TableBuildData {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        assert_eq!(buf.len(),self.size);
+        let mut written=0;
+        for block in self.block_list.iter() {
+            unsafe {
+                ptr::copy_nonoverlapping(block.data.as_slice().as_ptr(), buf.as_mut_ptr().add(written), block.data.len());
+            };
+            written+=block.data.len();
+        }
+
+        buf[written..written+self.index.len()].copy_from_slice(&self.index);
+        written+=self.index.len();
+
+        buf[written..written+4].copy_from_slice(&(self.index.len() as u32).to_be_bytes());
+        written+=4;
+
+        buf[written..written+self.checksum.len()].copy_from_slice(&self.checksum);
+        written+=self.checksum.len();
+
+        buf[written..written+4].copy_from_slice(&(self.checksum.len() as u32).to_be_bytes());
+        written+=4;
+        Ok(written)
+    }
+}
