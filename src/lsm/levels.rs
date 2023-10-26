@@ -138,7 +138,7 @@ impl LevelsController {
         for (file_id, table_manifest) in manifest.tables.iter() {
             let num_opened_clone = num_opened.clone();
             let tables_clone = tables.clone();
-            let path = dir_join_id_suffix(Options::dir(), *file_id as u32, SSTABLE_FILE_EXT);
+            let path = dir_join_id_suffix(Options::dir(), *file_id , SSTABLE_FILE_EXT);
             let permit = match throttle.acquire().await {
                 Ok(p) => p,
                 Err(e) => {
@@ -827,6 +827,9 @@ impl LevelsController {
         }
         return false;
     }
+    pub(crate) fn get_reserve_file_id(&self) -> u64 {
+        self.next_file_id.fetch_add(1, Ordering::AcqRel)
+    }
 }
 
 #[inline]
@@ -856,7 +859,7 @@ pub(crate) fn revert_to_manifest(
             Some(_) => {}
             None => {
                 debug!("Table file {} not referenced in Manifest", id);
-                let sst_path = dir_join_id_suffix(dir, id as u32, SSTABLE_FILE_EXT);
+                let sst_path = dir_join_id_suffix(dir, id, SSTABLE_FILE_EXT);
                 remove_file(sst_path)
                     .map_err(|e| anyhow!("While removing table {} for {}", id, e))?;
             }

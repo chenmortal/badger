@@ -3,7 +3,8 @@
     ptr_sub_ptr,
     slice_as_chunks,
     async_fn_in_trait,
-    unchecked_math
+    unchecked_math,
+    async_closure
 )]
 #[macro_use]
 extern crate lazy_static;

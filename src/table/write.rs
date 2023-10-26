@@ -1,5 +1,5 @@
 use std::{
-    sync::{atomic::{AtomicU32, Ordering}, Arc}, mem::replace, io::Read, ptr,
+    sync::{atomic::{AtomicU32, Ordering}, Arc}, mem::replace, io::Read, ptr, path::PathBuf, fs::OpenOptions,
 };
 
 use bytes::{Buf, BufMut};
@@ -9,10 +9,10 @@ use crate::{
     iter::{KvSinkIterator, SinkIterator},
     kv::{ KeyTsBorrow, ValuePointer},
     options::CompressionType,
-    txn::{entry::{EntryMeta, ValueMeta}, TxnTs}, key_registry::NONCE_SIZE, bloom::Bloom, pb::badgerpb4::{Checksum, checksum::Algorithm}, rayon::{spawn_fifo, AsyncRayonHandle}, fb::fb,
+    txn::{entry::{EntryMeta, ValueMeta}, TxnTs}, key_registry::NONCE_SIZE, bloom::Bloom, pb::badgerpb4::{Checksum, checksum::Algorithm}, rayon::{spawn_fifo, AsyncRayonHandle}, fb::fb, lsm::mmap::MmapFile,
 };
 
-use super::{TableOption, vec_u32_to_bytes, try_encrypt};
+use super::{TableOption, vec_u32_to_bytes, try_encrypt, Table};
 #[derive(Debug)]
 pub(crate) struct EntryHeader {
     overlap: u16,
@@ -241,7 +241,7 @@ impl TableBuilder {
         assert_eq!(written,buf.len());
         Ok(buf)
     }
-    pub(crate) async fn done(&mut self)->anyhow::Result<TableBuildData>{
+     async fn done(&mut self)->anyhow::Result<TableBuildData>{
         self.finish_cur_block();
         let mut block_list=Vec::with_capacity(self.compress_task.len());
         for task in self.compress_task.drain(..) {
@@ -289,6 +289,21 @@ impl TableBuilder {
         let table_index = fb::TableIndex::create(&mut builder, &table_index_args);
         builder.finish(table_index, None);
         Ok((try_encrypt(self.opt.cipher(), builder.finished_data())?,data_size))
+    }
+    pub(crate) async fn build(&mut self,path:PathBuf)->anyhow::Result<Table>{
+        let  build_data = self.done().await?;
+        fn write_data(path:PathBuf,mut build_data: TableBuildData)->anyhow::Result<MmapFile>{
+            let mut fp_open_opt = OpenOptions::new();
+            fp_open_opt.read(true).write(true).create_new(true);
+            let (mut mmap_f, is_new) = MmapFile::open(&path, fp_open_opt, build_data.size())?;
+            debug_assert!(is_new);
+            let written = build_data.read(&mut mmap_f.as_mut()[..])?;
+            assert_eq!(written,mmap_f.len());
+            mmap_f.raw_sync()?;
+            Ok(mmap_f)
+        }
+        let mmap_f = tokio::task::spawn_blocking(move ||{write_data(path, build_data)}).await??;
+        Table::open(mmap_f, self.opt.to_owned()).await
     }
 }
 

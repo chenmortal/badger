@@ -93,7 +93,7 @@ impl Oracle {
         let mut inner_lock = self.inner.lock();
 
         //check read-write conflict
-        let read_key_hash_r = txn.read_key_hash.lock();
+        let read_key_hash_r = txn.read_key_hash().lock();
         if read_key_hash_r.len() != 0 {
             for commit_txn in inner_lock.committed_txns.iter() {
                 if commit_txn.ts > txn.read_ts {
@@ -126,15 +126,15 @@ impl Oracle {
         if Options::detect_conflicts() {
             inner_lock.committed_txns.push(CommittedTxn {
                 ts: commit_ts,
-                conflict_keys: txn.conflict_keys.as_ref().unwrap().clone(),
+                conflict_keys: txn.conflict_keys().unwrap().clone(),
             });
         }
         drop(inner_lock);
         Ok(commit_ts)
     }
-    async fn done_read(&self, txn: &Txn) -> anyhow::Result<()> {
+    pub(super) async fn done_read(&self, txn: &Txn) -> anyhow::Result<()> {
         if !txn
-            .done_read
+            .done_read()
             .swap(true, std::sync::atomic::Ordering::SeqCst)
         {
             self.read_mark

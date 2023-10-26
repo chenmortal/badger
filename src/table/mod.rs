@@ -147,7 +147,7 @@ impl Table {
 
     #[inline]
     pub(crate) fn sync_mmap(&self) -> io::Result<()> {
-        self.0.mmap_f.sync_all()
+        self.0.mmap_f.raw_sync()
     }
 
     #[inline]

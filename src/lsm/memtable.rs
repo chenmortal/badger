@@ -53,7 +53,7 @@ async fn open_mem_table(
     mem_file_fid: u32,
     fp_open_opt: OpenOptions,
 ) -> anyhow::Result<(MemTable, bool)> {
-    let mem_file_path = dir_join_id_suffix(Options::dir(), mem_file_fid, MEM_FILE_EXT);
+    let mem_file_path = dir_join_id_suffix(Options::dir(), mem_file_fid as u64, MEM_FILE_EXT);
 
     let skip_list = SkipList::new(Options::arena_size(), KeyTsBorrow::cmp);
 

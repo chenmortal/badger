@@ -181,7 +181,7 @@ pub(crate) fn get_sst_id_set(dir: &PathBuf) -> HashSet<u64> {
     return id_set;
 }
 #[inline(always)]
-pub(crate) fn dir_join_id_suffix(dir: &PathBuf, id: u32, suffix: &str) -> PathBuf {
+pub(crate) fn dir_join_id_suffix(dir: &PathBuf, id: u64, suffix: &str) -> PathBuf {
     dir.join(format!("{:06}{}", id, suffix))
 }
 #[inline(always)]

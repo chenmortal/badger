@@ -196,7 +196,7 @@ impl DB {
         let old_memtable = Arc::new(old_memtable);
         self.flush_memtable.send(old_memtable.clone()).await?;
         let mut immut_memtables_w = self.immut_memtable.write().await;
-        immut_memtables_w.push(old_memtable);
+        immut_memtables_w.push_back(old_memtable);
         drop(immut_memtables_w);
 
         Ok(())

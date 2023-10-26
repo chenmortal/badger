@@ -1,6 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use bincode::{DefaultOptions, Options};
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use super::TxnTs;
@@ -83,7 +84,7 @@ impl std::fmt::Display for EntryMeta {
 }
 
 impl Entry {
-    pub fn new(key: &[u8], value: &[u8]) -> Self {
+    pub fn new(key: Bytes, value: Bytes) -> Self {
         let key_ts = KeyTs::new(key, TxnTs::default());
         let value_meta = ValueMeta {
             value: value.to_vec(),
@@ -129,8 +130,8 @@ impl Entry {
             value_meta,
         }
     }
-    pub fn set_key(&mut self, key: Vec<u8>) {
-        self.key_ts.set_key(key);
+    pub fn set_key<B:Into<Bytes>>(&mut self, key: B) {
+        self.key_ts.set_key(key.into());
     }
 
     pub fn set_value(&mut self, value: Vec<u8>) {

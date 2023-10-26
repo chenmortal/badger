@@ -29,7 +29,7 @@ pub struct ItemInner {
     pub(crate) meta: EntryMeta,
     pub(crate) user_meta: u8,
     pub(crate) status: u8,
-    pub(crate) db: Option<DB>,
+    // pub(crate) db: Option<DB>,
     // pub(crate) next: Option<Item>,
 }
 

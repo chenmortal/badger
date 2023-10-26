@@ -1,11 +1,11 @@
 use crate::txn::{entry::EntryMeta, TxnTs};
 use bincode::{DefaultOptions, Options};
-use bytes::{Buf, BufMut};
+use bytes::{Buf, BufMut, Bytes};
 use serde::{Deserialize, Serialize};
 use std::{mem, ops::Deref};
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub(crate) struct KeyTs {
-    key: Vec<u8>,
+    key: Bytes,
     txn_ts: TxnTs,
 }
 impl PartialOrd for KeyTs {
@@ -31,24 +31,21 @@ impl From<&[u8]> for KeyTs {
         let len = value.len();
         if len <= 8 {
             Self {
-                key: value.to_vec(),
+                key: value.to_vec().into(),
                 txn_ts: 0.into(),
             }
         } else {
             let mut p = &value[len - 8..];
             Self {
-                key: value[..len - 8].to_vec(),
+                key: value[..len - 8].to_vec().into(),
                 txn_ts: p.get_u64().into(),
             }
         }
     }
 }
 impl KeyTs {
-    pub(crate) fn new(key: &[u8], ts: TxnTs) -> Self {
-        Self {
-            key: key.to_vec(),
-            txn_ts: ts,
-        }
+    pub(crate) fn new(key: Bytes, txn_ts: TxnTs) -> Self {
+        Self { key, txn_ts }
     }
 
     pub(crate) fn get_bytes(&self) -> Vec<u8> {
@@ -64,7 +61,7 @@ impl KeyTs {
         self.txn_ts
     }
 
-    pub(crate) fn set_key(&mut self, key: Vec<u8>) {
+    pub(crate) fn set_key(&mut self, key: Bytes) {
         self.key = key;
     }
 
@@ -235,15 +232,15 @@ mod tests {
     #[test]
     fn test_bytes_from() {
         use crate::kv::KeyTs;
-        let key_ts = KeyTs::new(b"a", 1.into());
+        let key_ts = KeyTs::new("a".into(), 1.into());
         let bytes = key_ts.get_bytes();
         assert_eq!(KeyTs::from(bytes.as_ref()), key_ts);
     }
     #[test]
     fn test_ord() {
-        let a = KeyTs::new(b"a", 1.into());
-        let b = KeyTs::new(b"b", 0.into());
-        let c = KeyTs::new(b"a", 2.into());
+        let a = KeyTs::new("a".into(), 1.into());
+        let b = KeyTs::new("b".into(), 0.into());
+        let c = KeyTs::new("a".into(), 2.into());
         assert_eq!(a.cmp(&b), Ordering::Less);
         assert_eq!(a.cmp(&c), Ordering::Greater);
         let a = &a.get_bytes();

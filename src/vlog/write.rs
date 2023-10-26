@@ -93,7 +93,7 @@ impl ValueLog {
                 || self.num_entries_written.load(Ordering::SeqCst) > Options::vlog_max_entries()
             {
                 if Options::sync_writes() {
-                    cur_logfile_w.sync_all()?;
+                    cur_logfile_w.raw_sync()?;
                 }
                 cur_logfile_w.truncate(w_offset)?;
                 let new = self.create_vlog_file().await?; //new logfile will be latest logfile
@@ -108,7 +108,7 @@ impl ValueLog {
             || self.num_entries_written.load(Ordering::SeqCst) > Options::vlog_max_entries()
         {
             if Options::sync_writes() {
-                cur_logfile_w.sync_all()?;
+                cur_logfile_w.raw_sync()?;
             }
             cur_logfile_w.truncate(w_offset)?;
             let _ = self.create_vlog_file().await?; //new logfile will be latest logfile
