@@ -6,11 +6,10 @@ use crate::default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD};
 use crate::errors::DBError;
 use crate::pb::badgerpb4;
 use crate::pb::badgerpb4::checksum::Algorithm;
-use crate::skl::skip_list::SKL_MAX_NODE_SIZE;
 use crate::table::opt::ChecksumVerificationMode;
+use crate::util::skip_list::SKL_MAX_NODE_SIZE;
 use anyhow::anyhow;
 use anyhow::bail;
-use libc::DAY_1;
 use log::LevelFilter;
 use once_cell::sync::OnceCell;
 use snap::raw::Decoder;
@@ -60,10 +59,10 @@ impl CompressionType {
             CompressionType::ZSTD(_) => Ok(zstd::decode_all(data.as_slice())?),
         }
     }
-
 }
 // static OPT:Options=Options::default();
 // const MAX_VALUE_THRESHOLD: i64 = 1 << 20;
+
 #[derive(Debug, Clone)]
 pub struct Options {
     // Required options.

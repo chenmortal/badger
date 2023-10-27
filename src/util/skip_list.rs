@@ -5,14 +5,14 @@ use crate::{
         DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIterator,
         SinkIter, SinkIterator,
     },
-    txn::entry::ValueMeta,
+    kv::ValueMeta,
+    util::arena::Arena,
 };
 
 /// <head> --> [1] --> [2] --> [3] --> [4] --> [5] --> [6] --> [7] --> [8] --> [9] --> [10] ->
 /// <head> ----------> [2] ----------> [4] ------------------> [7] ----------> [9] --> [10] ->
 /// <head> ----------> [2] ------------------------------------[7] ----------> [9] ---------->
 /// <head> ----------> [2] --------------------------------------------------> [9] ---------->
-use super::arena::Arena;
 use std::{
     mem::{replace, size_of},
     ops::{Deref, DerefMut},
@@ -297,6 +297,41 @@ impl SkipListInner {
             unreachable!()
         }
     }
+    fn find(&self, key: &[u8]) -> Option<&Node> {
+        let mut node = unsafe { self.head.as_ref() };
+        let mut level = self.height() - 1;
+        loop {
+            match node.next(&self.arena, level) {
+                Some(next) => {
+                    let next_key = next.get_key(&self.arena).unwrap();
+                    match (self.cmp)(key, next_key) {
+                        std::cmp::Ordering::Less => {
+                            if level > 0 {
+                                level -= 1;
+                                continue;
+                            } else {
+                                return None;
+                            }
+                        }
+                        std::cmp::Ordering::Equal => {
+                            return next.into();
+                        }
+                        std::cmp::Ordering::Greater => {
+                            node = next;
+                            continue;
+                        }
+                    }
+                }
+                None => {
+                    if level > 0 {
+                        level -= 1;
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
     fn find_next(&self, key: &[u8]) -> Option<&Node> {
         let mut node = unsafe { self.head.as_ref() };
         let mut level = self.height() - 1;
@@ -408,6 +443,13 @@ impl SkipList {
     pub(crate) fn iter(&self) -> SkipListIter<'_> {
         SkipListIter::new(&self)
     }
+    #[inline]
+    pub(crate) fn get(&self, key: &[u8]) -> Option<&[u8]> {
+        if let Some(node) = self.find(key) {
+            return node.get_value(&self.arena);
+        };
+        None
+    }
 }
 pub(crate) struct SkipListIter<'a> {
     inner: &'a SkipListInner,
@@ -498,9 +540,7 @@ impl<'a> KvSinkIterator<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
         if let None = self.value {
             if let Some(item) = self.item() {
                 if let Some(data) = item.get_value(&self.inner.arena) {
-                    if let Ok(value_meta) = ValueMeta::deserialize(data) {
-                        self.value = value_meta.into();
-                    }
+                    self.value = ValueMeta::deserialize(data).into();
                 }
             }
         }
@@ -511,9 +551,7 @@ impl<'a> KvSinkIterator<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
         if let None = self.value {
             if let Some(item) = self.item() {
                 if let Some(data) = item.get_value(&self.inner.arena) {
-                    if let Ok(value_meta) = ValueMeta::deserialize(data) {
-                        return value_meta.into();
-                    }
+                    return ValueMeta::deserialize(data).into();
                 }
             }
         } else {
@@ -535,9 +573,7 @@ impl<'a> KvDoubleEndedSinkIter<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
         if let None = self.value {
             if let Some(item) = self.item_back() {
                 if let Some(data) = item.get_value(&self.inner.arena) {
-                    if let Ok(value_meta) = ValueMeta::deserialize(data) {
-                        self.value = value_meta.into();
-                    }
+                    self.value = ValueMeta::deserialize(data).into();
                 }
             }
         }
@@ -548,9 +584,7 @@ impl<'a> KvDoubleEndedSinkIter<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
         if let None = self.value {
             if let Some(item) = self.item_back() {
                 if let Some(data) = item.get_value(&self.inner.arena) {
-                    if let Ok(value_meta) = ValueMeta::deserialize(data) {
-                        return value_meta.into();
-                    }
+                    return ValueMeta::deserialize(data).into();
                 }
             }
         } else {
@@ -566,10 +600,13 @@ mod tests {
 
     use rand::Rng;
 
-    use crate::{iter::{
-        DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIterator,
-        SinkIter, SinkIterator,
-    }, kv::KeyTsBorrow};
+    use crate::{
+        iter::{
+            DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIterator,
+            SinkIter, SinkIterator,
+        },
+        kv::KeyTsBorrow,
+    };
 
     use super::{Node, SkipList, SkipListIter, RANDOM_HEIGHT_DENOMINATOR, RANDOM_HEIGHT_NUMERATOR};
     #[test]
@@ -597,7 +634,7 @@ mod tests {
         let end = 1000 as u32;
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
+        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -615,7 +652,7 @@ mod tests {
         let end = 1000 as u32;
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
+        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -634,7 +671,7 @@ mod tests {
         assert!(split < end);
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
+        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -656,7 +693,7 @@ mod tests {
 
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
+        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -676,7 +713,7 @@ mod tests {
 
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
+        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -697,7 +734,7 @@ mod tests {
         assert!(split < end);
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
+        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -719,7 +756,7 @@ mod tests {
         let end = 1000 as u32;
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
         let arena_size = (size_of::<Node>() as u32 + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size,KeyTsBorrow::cmp);
+        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
         for i in 0..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
@@ -768,14 +805,20 @@ mod tests {
     }
     #[test]
     fn test_init() {
-        let skip_list = SkipList::new(100000000,KeyTsBorrow::cmp);
+        let skip_list = SkipList::new(100_000_000, KeyTsBorrow::cmp);
         let start = SystemTime::now();
-        for i in 1..2 {
+        for i in 1..100_000 {
             skip_list.push(i.to_string().as_bytes(), (i.to_string() + "abc").as_bytes());
         }
         let e = SystemTime::now().duration_since(start).unwrap();
         dbg!(e);
 
+        assert_eq!(
+            skip_list
+                .get(49.to_string().as_bytes())
+                .and_then(|x| String::from_utf8_lossy(x).to_string().into()),
+            Some(49.to_string() + "abc")
+        );
         // for i in 0..SKL_MAX_HEIGHT {
         //     let mut iter = SkipListLevelIter::new(skip_list.clone(), i);
         //     print!("h{:<5}", i);

@@ -19,16 +19,13 @@ use tokio::{
 };
 
 use crate::{
-    closer::Closer,
     db::{BlockCache, IndexCache},
     default::SSTABLE_FILE_EXT,
     key_registry::KeyRegistry,
-    lsm::{compaction::LevelCompactStatus, mmap::MmapFile},
+    lsm::compaction::LevelCompactStatus,
     manifest::Manifest,
-    metrics::{add_num_compaction_tables, sub_num_compaction_tables},
     options::Options,
     pb::ERR_CHECKSUM_MISMATCH,
-    sys::sync_dir,
     table::{
         iter::{ConcatIter, TableIter},
         merge::MergeIter,
@@ -36,6 +33,9 @@ use crate::{
         Table,
     },
     txn::oracle::Oracle,
+    util::closer::Closer,
+    util::{metrics::{add_num_compaction_tables, sub_num_compaction_tables}, mmap::MmapFile},
+    util::sys::sync_dir,
     util::{compare_key, dir_join_id_suffix, get_sst_id_set, key_with_ts, parse_key, Throttle},
 };
 
@@ -138,7 +138,7 @@ impl LevelsController {
         for (file_id, table_manifest) in manifest.tables.iter() {
             let num_opened_clone = num_opened.clone();
             let tables_clone = tables.clone();
-            let path = dir_join_id_suffix(Options::dir(), *file_id , SSTABLE_FILE_EXT);
+            let path = dir_join_id_suffix(Options::dir(), *file_id, SSTABLE_FILE_EXT);
             let permit = match throttle.acquire().await {
                 Ok(p) => p,
                 Err(e) => {

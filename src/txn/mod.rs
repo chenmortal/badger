@@ -1,4 +1,3 @@
-pub(crate) mod entry;
 mod item;
 pub(crate) mod oracle;
 mod txn;
@@ -13,12 +12,11 @@ use anyhow::anyhow;
 use anyhow::bail;
 use bytes::Bytes;
 use rand::{thread_rng, Rng};
-use scopeguard::defer;
 
+use crate::kv::Entry;
+use crate::kv::Meta;
 use crate::{db::DB, errors::DBError, kv::KeyTs, options::Options};
 
-use self::entry::Entry;
-use self::entry::EntryMeta;
 use self::{
     item::{Item, ItemInner, PRE_FETCH_STATUS},
     txn::{is_deleted_or_expired, Txn},
@@ -33,35 +31,11 @@ const BANNED_NAMESPACES_KEY: &[u8] = b"!badger!banned";
 lazy_static! {
     pub(crate) static ref HASH: RandomState = ahash::RandomState::with_seed(thread_rng().gen());
 }
-///this means TransactionTimestamp
-// pub type TxnTs=u64;
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TxnTs(u64);
-impl TxnTs {
-    #[inline(always)]
-    pub(crate) fn sub_one(&self) -> Self {
-        Self(self.0 - 1)
-    }
-    #[inline(always)]
-    pub(crate) fn add_one_mut(&mut self) {
-        self.0 += 1;
-    }
-    #[inline(always)]
-    pub(crate) fn to_u64(&self) -> u64 {
-        self.0
-    }
-}
-
-impl From<u64> for TxnTs {
-    fn from(value: u64) -> Self {
-        Self(value)
-    }
-}
 
 //Transaction
 type TxnFuture = Pin<Box<dyn Future<Output = anyhow::Result<()>>>>;
 impl DB {
-    pub(crate) async fn update<F>(&self, f: F) -> anyhow::Result<()>
+    pub async fn update<F>(&self, f: F) -> anyhow::Result<()>
     where
         F: Fn(&mut Txn) -> TxnFuture,
     {
@@ -98,7 +72,7 @@ impl DB {
 }
 impl Txn {
     pub async fn get<B: Into<Bytes>>(&self, key: B) -> anyhow::Result<Item> {
-        let key:Bytes = key.into();
+        let key: Bytes = key.into();
         if key.len() == 0 {
             bail!(DBError::EmptyKey);
         } else if self.discarded() {
@@ -109,10 +83,10 @@ impl Txn {
         if self.update() {
             match self.pending_writes().as_ref().unwrap().get(key.as_ref()) {
                 Some(e) => {
-                    if e.key() == key {
-                        if is_deleted_or_expired(e.meta(), e.expires_at()) {
+                    if e.key().as_ref() == key {
+                        if e.is_deleted() || e.is_expired() {
                             bail!(DBError::KeyNotFound);
-                        };
+                        }
                         item_inner.meta = e.meta();
                         item_inner.val = e.value().to_vec();
                         item_inner.user_meta = e.user_meta();
@@ -145,12 +119,12 @@ impl Txn {
             bail!(DBError::KeyNotFound)
         }
 
-        item_inner.key = key.to_vec();
-        item_inner.version = value_struct.version();
-        item_inner.meta = value_struct.meta();
-        item_inner.user_meta = value_struct.user_meta();
-        item_inner.vptr = value_struct.value().clone();
-        item_inner.expires_at = value_struct.expires_at();
+        // item_inner.key = key.to_vec();
+        // item_inner.version = value_struct.version();
+        // item_inner.meta = value_struct.meta();
+        // item_inner.user_meta = value_struct.user_meta();
+        // item_inner.vptr = value_struct.value().clone();
+        // item_inner.expires_at = value_struct.expires_at();
         // item_inner.db = self.db().clone().into();
         Ok(item_inner.into())
     }
@@ -160,7 +134,7 @@ impl Txn {
     pub async fn delete(&mut self, key: &[u8]) -> anyhow::Result<()> {
         let mut e = Entry::default();
         e.set_key(key.to_vec());
-        e.set_meta(EntryMeta::DELETE);
+        e.set_meta(Meta::DELETE);
         self.set_entry(e).await
     }
     pub async fn set_entry(&mut self, e: Entry) -> anyhow::Result<()> {

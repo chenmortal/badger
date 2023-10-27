@@ -1,4 +1,4 @@
-use std::{mem::size_of, sync::Arc, time::SystemTime};
+use std::sync::Arc;
 
 use crate::{
     db::{BlockCache, IndexCache},
@@ -151,37 +151,4 @@ impl TableOption {
     pub(crate) fn bloom_false_positive(&self) -> f64 {
         self.bloom_false_positive
     }
-}
-#[test]
-fn test_size() {
-    let key = [0u8; 16];
-    let aes = Some(AesCipher::new(key.as_ref(), true).unwrap());
-    let start = SystemTime::now();
-    for _i in 0..10000 {
-        let aes = aes.clone();
-    }
-    let p = SystemTime::now().duration_since(start).unwrap();
-    dbg!(p);
-}
-#[test]
-fn test_a() {
-    let key = [0u8; 16];
-    let aes = Arc::new(Some(AesCipher::new(key.as_ref(), true).unwrap()));
-    let start = SystemTime::now();
-    for _i in 0..1_000_000 {
-        let aes = aes.clone();
-    }
-    let p = SystemTime::now().duration_since(start).unwrap();
-    dbg!(p);
-}
-#[test]
-fn test_b() {
-    let key = [0u8; 16];
-    let aes = Some(Arc::new(AesCipher::new(key.as_ref(), true).unwrap()));
-    let start = SystemTime::now();
-    for _i in 0..1_000_000 {
-        let aes = aes.clone();
-    }
-    let p = SystemTime::now().duration_since(start).unwrap();
-    dbg!(p);
 }

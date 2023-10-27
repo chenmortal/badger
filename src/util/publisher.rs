@@ -18,10 +18,10 @@ use tokio::{
 };
 
 use crate::{
-    closer::Closer,
     db::DB,
     pb::badgerpb4::{Kv, Match},
-    tire::{Trie, TrieError},
+    util::closer::Closer,
+    util::tire::{Trie, TrieError},
     write::WriteReq,
 };
 #[derive(Debug)]
@@ -119,7 +119,7 @@ impl Publisher {
         for reqs in reqs_vec {
             for req in reqs {
                 for (dec_entry, _) in req.entries_vptrs() {
-                    let key_ts = dec_entry.key_ts().get_bytes();
+                    let key_ts = dec_entry.key_ts().serialize();
                     let ids = s.indexer.get(&key_ts);
                     if ids.len() == 0 {
                         continue;
@@ -129,7 +129,7 @@ impl Publisher {
                         value: dec_entry.value().to_vec(),
                         user_meta: vec![],
                         version: dec_entry.version().to_u64(),
-                        expires_at: dec_entry.expires_at(),
+                        expires_at: dec_entry.expires_at().to_u64(),
                         meta: vec![dec_entry.user_meta()],
                         stream_id: 0,
                         stream_done: false,

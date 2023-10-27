@@ -2,14 +2,12 @@ use std::{collections::HashSet, ops::Deref};
 
 use anyhow::{bail, Ok};
 use parking_lot::{Mutex, MutexGuard};
-// use tokio::sync::{Mutex, MutexGuard};
 
-use crate::{closer::Closer, errors::DBError, options::Options};
+use crate::{errors::DBError, options::Options, util::closer::Closer, kv::TxnTs};
 
 use super::{
     txn::Txn,
     water_mark::{Mark, WaterMark},
-    TxnTs,
 };
 #[derive(Debug)]
 pub(crate) struct Oracle {

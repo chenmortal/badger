@@ -10,15 +10,13 @@ use tokio::sync::oneshot::Receiver;
 use crate::{
     db::DB,
     errors::DBError,
+    kv::{Meta, TxnTs, Entry},
     options::Options,
     txn::{BADGER_PREFIX, HASH},
     util::now_since_unix,
 };
 
-use super::{
-    entry::{DecEntry, Entry, EntryMeta},
-    TxnTs, TXN_KEY,
-};
+use super::TXN_KEY;
 
 pub struct Txn {
     pub(super) read_ts: TxnTs,
@@ -28,8 +26,8 @@ pub struct Txn {
     db: DB,
     conflict_keys: Option<HashSet<u64>>,
     read_key_hash: Mutex<Vec<u64>>,
-    pending_writes: Option<HashMap<Vec<u8>, DecEntry>>, // Vec<u8> -> String
-    duplicate_writes: Vec<DecEntry>,
+    pending_writes: Option<HashMap<Vec<u8>, Entry>>, // Vec<u8> -> String
+    duplicate_writes: Vec<Entry>,
     num_iters: AtomicI32,
     discarded: bool,
     done_read: AtomicBool,
@@ -70,7 +68,7 @@ impl Txn {
     }
 
     #[inline]
-    pub(super) async fn modify(&mut self, mut e: DecEntry) -> anyhow::Result<()> {
+    pub(super) async fn modify(&mut self, mut e: Entry) -> anyhow::Result<()> {
         let exceeds_size = |prefix: &str, max: usize, key: &[u8]| {
             bail!(
                 "{} with size {} exceeded {} limit. {}:\n{:?}",
@@ -82,10 +80,10 @@ impl Txn {
             )
         };
         let threshold = Options::value_threshold();
-        let mut check_size = |e: &mut DecEntry| {
+        let mut check_size = |e: &mut Entry| {
             let count = self.count + 1;
             e.try_set_value_threshold(threshold);
-            let size = self.size + e.estimate_size() + 10;
+            let size = self.size + e.estimate_size(threshold) + 10;
             if count >= Options::max_batch_count() as usize
                 || size >= Options::max_batch_size() as usize
             {
@@ -113,7 +111,7 @@ impl Txn {
             exceeds_size("Key", MAX_KEY_SIZE, e.key())?;
         }
         if e.value().len() > Options::vlog_file_size() {
-            exceeds_size("Value", Options::vlog_file_size() as usize, e.value())?
+            exceeds_size("Value", Options::vlog_file_size() as usize, e.value().as_ref())?
         }
         self.db.is_banned(&e.key()).await?;
 
@@ -159,7 +157,7 @@ impl Txn {
         let _guard = oracle.send_write_req.lock();
         let commit_ts = oracle.get_latest_commit_ts(self).await?;
         let mut keep_together = true;
-        let mut set_version = |e: &mut DecEntry| {
+        let mut set_version = |e: &mut Entry| {
             if e.version() == TxnTs::default() {
                 e.set_version(commit_ts)
             } else {
@@ -177,9 +175,9 @@ impl Txn {
 
         //read from pending_writes and duplicate_writes to Vec<>
         let mut entries = Vec::with_capacity(pending_wirtes_len + duplicate_writes_len + 1);
-        let mut process_entry = |mut e: DecEntry| {
+        let mut process_entry = |mut e: Entry| {
             if keep_together {
-                e.meta_mut().insert(EntryMeta::TXN)
+                e.meta_mut().insert(Meta::TXN)
             }
             entries.push(e);
         };
@@ -198,7 +196,7 @@ impl Txn {
             debug_assert!(commit_ts != TxnTs::default());
             let mut entry = Entry::new(TXN_KEY.into(), commit_ts.to_u64().to_string().into());
             entry.set_version(commit_ts);
-            entry.set_meta(EntryMeta::FIN_TXN);
+            entry.set_meta(Meta::FIN_TXN);
             entries.push(entry.into())
         }
 
@@ -233,7 +231,7 @@ impl Txn {
         self.update
     }
 
-    pub(super) fn pending_writes(&self) -> Option<&HashMap<Vec<u8>, DecEntry>> {
+    pub(super) fn pending_writes(&self) -> Option<&HashMap<Vec<u8>, Entry>> {
         self.pending_writes.as_ref()
     }
 
@@ -255,8 +253,8 @@ impl Txn {
 }
 
 #[inline]
-pub(super) fn is_deleted_or_expired(meta: EntryMeta, expires_at: u64) -> bool {
-    if meta.contains(EntryMeta::DELETE) {
+pub(super) fn is_deleted_or_expired(meta: Meta, expires_at: u64) -> bool {
+    if meta.contains(Meta::DELETE) {
         return true;
     };
 

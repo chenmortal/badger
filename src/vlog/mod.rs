@@ -17,7 +17,7 @@ use crate::{
     default::VLOG_FILE_EXT,
     errors::err_file,
     key_registry::KeyRegistry,
-    lsm::log_file::LogFile,
+    util::log_file::LogFile,
     options::Options,
     util::{dir_join_id_suffix, parse_file_id},
     vlog::read::LogFileIter,

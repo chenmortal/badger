@@ -9,6 +9,7 @@ use std::mem;
 use std::path::PathBuf;
 use std::{sync::Arc, time::SystemTime};
 
+use aes_gcm_siv::Nonce;
 use anyhow::anyhow;
 use anyhow::bail;
 use bytes::{Buf, BufMut};
@@ -23,10 +24,10 @@ use crate::fb::fb::TableIndex;
 use crate::iter::Iter;
 use crate::key_registry::AesCipher;
 use crate::key_registry::NONCE_SIZE;
+use crate::kv::TxnTs;
 use crate::pb::badgerpb4::Checksum;
-use crate::txn::TxnTs;
 use crate::{
-    default::SSTABLE_FILE_EXT, lsm::mmap::MmapFile, options::CompressionType, util::parse_file_id,
+    default::SSTABLE_FILE_EXT, options::CompressionType, util::mmap::MmapFile, util::parse_file_id,
 };
 #[derive(Debug)]
 pub(crate) struct TableInner {
@@ -321,15 +322,19 @@ impl TableInner {
             })?;
 
         let de_raw_data = try_decrypt(self.opt.cipher(), raw_data_ref)?;
-        let raw_data = self.opt.compression().decompress(de_raw_data).map_err(|e| {
-            anyhow!(
-                "Failed to decode compressed data in file: {:?} at offset: {}, len: {} for {}",
-                &self.mmap_f.path(),
-                blk_offset.offset(),
-                blk_offset.len(),
-                e
-            )
-        })?;
+        let raw_data = self
+            .opt
+            .compression()
+            .decompress(de_raw_data)
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to decode compressed data in file: {:?} at offset: {}, len: {} for {}",
+                    &self.mmap_f.path(),
+                    blk_offset.offset(),
+                    blk_offset.len(),
+                    e
+                )
+            })?;
 
         let block = Block::new(blk_offset.offset(), raw_data)?;
 
@@ -380,9 +385,9 @@ fn try_decrypt(cipher: Option<&AesCipher>, data: &[u8]) -> anyhow::Result<Vec<u8
 }
 fn try_encrypt(cipher: Option<&AesCipher>, data: &[u8]) -> anyhow::Result<Vec<u8>> {
     if let Some(c) = cipher {
-        let nonce = AesCipher::generate_nonce();
+        let nonce:Nonce = AesCipher::generate_nonce();
         let mut ciphertext = c.encrypt(&nonce, data).ok_or(anyhow!("while encrypt"))?;
-        ciphertext.extend_from_slice(&nonce);
+        ciphertext.extend_from_slice(nonce.as_ref());
         return Ok(ciphertext);
     }
     Ok(data.to_vec())

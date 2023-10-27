@@ -8,23 +8,21 @@ use std::{
 };
 
 use crate::{
-    closer::Closer,
     default::{KV_WRITES_ENTRIES_CHANNEL_CAPACITY, LOCK_FILE},
     errors::DBError,
     key_registry::KeyRegistry,
     kv::{KeyTs, ValueStruct},
-    lock::DirLockGuard,
-    lsm::{
-        levels::LevelsController,
-        memtable::{new_mem_table, MemTable},
-    },
+    lsm::levels::LevelsController,
     manifest::open_create_manifestfile,
-    metrics::{calculate_size, set_metrics_enabled},
+    memtable::{new_mem_table, MemTable},
     options::Options,
-    publisher::Publisher,
-    rayon::set_global_rayon_pool,
     table::block::{self, Block},
     txn::oracle::Oracle,
+    util::closer::Closer,
+    util::lock::DirLockGuard,
+    util::metrics::calculate_size,
+    util::publisher::Publisher,
+    util::rayon::set_global_rayon_pool,
     vlog::{threshold::VlogThreshold, ValueLog},
     write::WriteReq,
 };
@@ -143,8 +141,6 @@ impl DBInner {
 
         let key_registry = KeyRegistry::open().await?;
 
-        set_metrics_enabled(Options::metrics_enabled());
-
         calculate_size().await;
         // let mut update_size_closer = Closer::new();
         // let update_size_handle = tokio::spawn(update_size(update_size_closer.sem_clone()));
@@ -197,7 +193,7 @@ impl DBInner {
         let _p = tokio::spawn(db.clone().flush_memtable(flush_memtable.clone()));
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);
-        
+
         Ok(db)
     }
 

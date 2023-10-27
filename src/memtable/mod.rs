@@ -1,3 +1,5 @@
+pub(crate) mod write;
+pub(crate) mod read;
 use std::fs::{read_dir, OpenOptions};
 
 use crate::{
@@ -5,16 +7,14 @@ use crate::{
     default::{DEFAULT_PAGE_SIZE, MEM_FILE_EXT},
     errors::err_file,
     key_registry::KeyRegistry,
-    kv::KeyTsBorrow,
+    kv::{KeyTsBorrow, TxnTs},
     options::Options,
-    skl::skip_list::{SkipList, SKL_MAX_NODE_SIZE},
-    txn::TxnTs,
-    util::{dir_join_id_suffix, parse_file_id},
+    util::skip_list::{SkipList, SKL_MAX_NODE_SIZE},
+    util::{dir_join_id_suffix, log_file::LogFile, parse_file_id},
 };
 use anyhow::Result;
 use anyhow::{anyhow, bail};
 
-use super::log_file::LogFile;
 #[derive(Debug)]
 pub(crate) struct MemTable {
     pub(super) skip_list: SkipList,

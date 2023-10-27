@@ -10,14 +10,12 @@ use tokio::{
     select,
     sync::{
         mpsc::{Receiver, Sender},
-        Notify, Semaphore,
+        Notify,
     },
-    task::JoinHandle,
 };
 
-use crate::closer::Closer;
+use crate::{kv::TxnTs, util::closer::Closer};
 
-use super::TxnTs;
 #[derive(Debug)]
 pub(crate) struct WaterMark {
     done_until: Arc<AtomicU64>,
@@ -60,7 +58,7 @@ impl WaterMark {
         }
     }
     pub(crate) async fn begin(&self, txn_ts: TxnTs) -> anyhow::Result<()> {
-        self.last_index.store(txn_ts.0, Ordering::SeqCst);
+        self.last_index.store(txn_ts.to_u64(), Ordering::SeqCst);
         self.sender.send(Mark::new(txn_ts, false)).await?;
         Ok(())
     }
@@ -151,75 +149,75 @@ impl WaterMark {
     }
 }
 
-#[tokio::test]
-async fn test_a() {
-    #[derive(Debug, PartialEq, Eq)]
-    struct RevTxn(TxnTs);
-    impl PartialOrd for RevTxn {
-        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            other.0.partial_cmp(&self.0)
-        }
-    }
-    impl Ord for RevTxn {
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            other.0.cmp(&self.0)
-        }
-    }
-    impl From<TxnTs> for RevTxn {
-        fn from(value: TxnTs) -> Self {
-            RevTxn(value)
-        }
-    }
-    // let mut a=HashMap::<TxnTs,Vec<u8>>::new();
-    let mut p = std::collections::BinaryHeap::<RevTxn>::new();
-    p.push(TxnTs(2).into());
-    p.push(TxnTs(1).into());
-    p.push(TxnTs(3).into());
-    dbg!(p.peek());
-    dbg!(p.pop());
-    dbg!(p.peek());
-    // p.peek();
-    // p.pop()
-    // let (mut sender, mut receiver) = tokio::sync::mpsc::channel::<Mark>(100);
-    // let h = tokio::spawn(async move {
-    //     select! {
-    //         Some(m)=receiver.recv()=>{
-    //             dbg!(m);
-    //         }
-    //     }
-    // });
-    // sender.send(Mark::new(TxnTs::default(), true)).await;
-    // h.await;
-}
+// #[tokio::test]
+// async fn test_a() {
+//     #[derive(Debug, PartialEq, Eq)]
+//     struct RevTxn(TxnTs);
+//     impl PartialOrd for RevTxn {
+//         fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+//             other.0.partial_cmp(&self.0)
+//         }
+//     }
+//     impl Ord for RevTxn {
+//         fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+//             other.0.cmp(&self.0)
+//         }
+//     }
+//     impl From<TxnTs> for RevTxn {
+//         fn from(value: TxnTs) -> Self {
+//             RevTxn(value)
+//         }
+//     }
+//     // let mut a=HashMap::<TxnTs,Vec<u8>>::new();
+//     let mut p = std::collections::BinaryHeap::<RevTxn>::new();
+//     p.push(2.into<TxnTs>().into());
+//     p.push(1.into().into());
+//     p.push(3.into().into());
+//     dbg!(p.peek());
+//     dbg!(p.pop());
+//     dbg!(p.peek());
+//     // p.peek();
+//     // p.pop()
+//     // let (mut sender, mut receiver) = tokio::sync::mpsc::channel::<Mark>(100);
+//     // let h = tokio::spawn(async move {
+//     //     select! {
+//     //         Some(m)=receiver.recv()=>{
+//     //             dbg!(m);
+//     //         }
+//     //     }
+//     // });
+//     // sender.send(Mark::new(TxnTs::default(), true)).await;
+//     // h.await;
+// }
 
-#[tokio::test]
-async fn test_b() {
-    use std::sync::Arc;
-    use tokio::sync::Barrier;
-    // tokio::sync::futures::Notified;
-    let mut handles = Vec::with_capacity(10);
-    let barrier = Arc::new(Barrier::new(10));
-    for _ in 0..10 {
-        let c = barrier.clone();
-        // The same messages will be printed together.
-        // You will NOT see any interleaving.
-        handles.push(tokio::spawn(async move {
-            println!("before wait");
-            let wait_result = c.wait().await;
-            println!("after wait");
-            wait_result
-        }));
-    }
+// #[tokio::test]
+// async fn test_b() {
+//     use std::sync::Arc;
+//     use tokio::sync::Barrier;
+//     // tokio::sync::futures::Notified;
+//     let mut handles = Vec::with_capacity(10);
+//     let barrier = Arc::new(Barrier::new(10));
+//     for _ in 0..10 {
+//         let c = barrier.clone();
+//         // The same messages will be printed together.
+//         // You will NOT see any interleaving.
+//         handles.push(tokio::spawn(async move {
+//             println!("before wait");
+//             let wait_result = c.wait().await;
+//             println!("after wait");
+//             wait_result
+//         }));
+//     }
 
-    // Will not resolve until all "after wait" messages have been printed
-    let mut num_leaders = 0;
-    for handle in handles {
-        let wait_result = handle.await.unwrap();
-        if wait_result.is_leader() {
-            num_leaders += 1;
-        }
-    }
+//     // Will not resolve until all "after wait" messages have been printed
+//     let mut num_leaders = 0;
+//     for handle in handles {
+//         let wait_result = handle.await.unwrap();
+//         if wait_result.is_leader() {
+//             num_leaders += 1;
+//         }
+//     }
 
-    // Exactly one barrier will resolve as the "leader"
-    assert_eq!(num_leaders, 1);
-}
+//     // Exactly one barrier will resolve as the "leader"
+//     assert_eq!(num_leaders, 1);
+// }

@@ -4,15 +4,11 @@ use std::{
 };
 
 use crate::{
-    kv::ValuePointer,
-    lsm::log_file::LogFile,
-    txn::{
-        entry::{Entry, EntryMeta},
-        TxnTs,
-    },
+    kv::{Meta, TxnTs, ValuePointer, Entry},
+    util::log_file::LogFile,
 };
 
-use super::header::EntryHeader;
+use super::header::VlogEntryHeader;
 use anyhow::bail;
 use bytes::Buf;
 #[derive(Debug)]
@@ -42,7 +38,7 @@ impl<'a> LogFileIter<'a> {
             len: 0,
         };
 
-        let entry_header = EntryHeader::decode_from(&mut hash_reader)?;
+        let entry_header = VlogEntryHeader::decode_from(&mut hash_reader)?;
         let header_len = hash_reader.len;
         if entry_header.key_len() > 1 << 16 as u32 {
             return Err(io::Error::new(
@@ -95,7 +91,7 @@ impl<'a> LogFileIter<'a> {
         loop {
             match self.read_entry() {
                 Ok((entry, v_ptr)) => {
-                    if entry.meta().contains(EntryMeta::TXN) {
+                    if entry.meta().contains(Meta::TXN) {
                         let txn_ts = entry.version();
                         if last_commit == TxnTs::default() {
                             last_commit = txn_ts;
@@ -104,7 +100,7 @@ impl<'a> LogFileIter<'a> {
                             break;
                         }
                         self.entries_vptrs.push((entry, v_ptr));
-                    } else if entry.meta().contains(EntryMeta::FIN_TXN) {
+                    } else if entry.meta().contains(Meta::FIN_TXN) {
                         let txn_ts = entry.version();
                         if last_commit != txn_ts {
                             break;

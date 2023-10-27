@@ -19,27 +19,26 @@ use tokio::{
 };
 
 use crate::{
-    closer::Closer,
     db::DB,
     default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
     errors::DBError,
-    kv::ValuePointer,
-    lsm::memtable::new_mem_table,
-    metrics::{add_num_bytes_written_user, add_num_puts, set_pending_writes},
+    kv::{ValuePointer, Meta, Entry},
+    memtable::new_mem_table,
     options::Options,
-    txn::entry::{DecEntry, EntryMeta},
+    util::closer::Closer,
+    util::metrics::{add_num_bytes_written_user, add_num_puts, set_pending_writes},
 };
 use anyhow::anyhow;
 use anyhow::bail;
 pub(crate) struct WriteReq {
-    entries_vptrs: Vec<(DecEntry, ValuePointer)>,
+    entries_vptrs: Vec<(Entry, ValuePointer)>,
     result: anyhow::Result<()>,
     send_result: Option<oneshot::Sender<anyhow::Result<()>>>,
 }
 
 impl WriteReq {
     pub(crate) fn new(
-        mut entries: Vec<DecEntry>,
+        mut entries: Vec<Entry>,
         send_result: oneshot::Sender<anyhow::Result<()>>,
     ) -> Self {
         let p = entries
@@ -54,12 +53,12 @@ impl WriteReq {
     }
 
     #[inline]
-    pub(crate) fn entries_vptrs_mut(&mut self) -> &mut Vec<(DecEntry, ValuePointer)> {
+    pub(crate) fn entries_vptrs_mut(&mut self) -> &mut Vec<(Entry, ValuePointer)> {
         &mut self.entries_vptrs
     }
 
     #[inline]
-    pub(crate) fn entries_vptrs(&self) -> &[(DecEntry, ValuePointer)] {
+    pub(crate) fn entries_vptrs(&self) -> &[(Entry, ValuePointer)] {
         self.entries_vptrs.as_ref()
     }
     pub(crate) fn set_result(&mut self, result: anyhow::Result<()>) {
@@ -78,7 +77,7 @@ impl DB {
     #[inline]
     pub(crate) async fn send_entires_to_write_channel(
         &self,
-        entries: Vec<DecEntry>,
+        entries: Vec<Entry>,
         entries_size: usize,
     ) -> anyhow::Result<oneshot::Receiver<anyhow::Result<()>>> {
         if self.block_writes.load(Ordering::SeqCst) {
@@ -206,10 +205,10 @@ impl DB {
         let mut memtable_w = memtable.write().await;
         for (dec_entry, vptr) in req.entries_vptrs_mut() {
             if vptr.is_empty() {
-                dec_entry.meta_mut().remove(EntryMeta::VALUE_POINTER);
+                dec_entry.meta_mut().remove(Meta::VALUE_POINTER);
             } else {
-                dec_entry.meta_mut().insert(EntryMeta::VALUE_POINTER);
-                dec_entry.set_value(vptr.encode());
+                dec_entry.meta_mut().insert(Meta::VALUE_POINTER);
+                dec_entry.set_value(vptr.serialize());
             }
             memtable_w.push(&dec_entry)?;
         }

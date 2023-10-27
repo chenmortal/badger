@@ -4,15 +4,13 @@ use log::error;
 use scopeguard::defer;
 
 use crate::{
-    closer::Closer,
+    util::closer::Closer,
     db::DB,
     default::SSTABLE_FILE_EXT,
     options::Options,
     table::{opt::TableOption, write::TableBuilder},
-    util::dir_join_id_suffix,
+    util::dir_join_id_suffix, memtable::MemTable,
 };
-
-use super::memtable::MemTable;
 
 impl DB {
     #[deny(unused)]

@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use std::{fs::OpenOptions, path::PathBuf};
 
 use crate::default::DEFAULT_PAGE_SIZE;
-use crate::sys::sync_dir;
+use crate::util::sys::sync_dir;
 #[derive(Debug)]
 pub(crate) struct MmapFile {
     /// like std::io::BufWriter

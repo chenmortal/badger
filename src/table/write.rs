@@ -7,9 +7,9 @@ use prost::Message;
 
 use crate::{
     iter::{KvSinkIterator, SinkIterator},
-    kv::{ KeyTsBorrow, ValuePointer},
+    kv::{ KeyTsBorrow, ValuePointer, TxnTs, ValueMeta, Meta},
     options::CompressionType,
-    txn::{entry::{EntryMeta, ValueMeta}, TxnTs}, key_registry::NONCE_SIZE, bloom::Bloom, pb::badgerpb4::{Checksum, checksum::Algorithm}, rayon::{spawn_fifo, AsyncRayonHandle}, fb::fb, lsm::mmap::MmapFile,
+ key_registry::NONCE_SIZE, pb::badgerpb4::{Checksum, checksum::Algorithm}, util::rayon::{spawn_fifo, AsyncRayonHandle}, fb::fb, util::{bloom::Bloom, mmap::MmapFile},
 };
 
 use super::{TableOption, vec_u32_to_bytes, try_encrypt, Table};
@@ -110,7 +110,7 @@ impl BackendBlock {
         + 4 //size of list
         + 8 //sum64 in checksum proto
         + 4; //checksum length
-        let mut estimate_size=self.data.len()+6+key.as_ref().len()+ value.encode_size().unwrap() as usize+ entries_offsets_size;
+        let mut estimate_size=self.data.len()+6+key.as_ref().len()+ value.serialized_size() + entries_offsets_size;
         if is_encrypt{
             estimate_size+=NONCE_SIZE;
         }
@@ -131,7 +131,7 @@ impl BackendBlock {
         self.entry_offsets.push(self.data.len() as u32);
         self.data.extend_from_slice(&entry_header.serialize());
         self.data.extend_from_slice(diff_key);
-        self.data.extend_from_slice(value.serialize().unwrap().as_ref());
+        self.data.extend_from_slice(value.serialize().as_ref());
         
     }
     fn finish_block(&mut self,algo:Algorithm){
@@ -221,8 +221,8 @@ impl TableBuilder {
                 continue;
             }
             let value: ValueMeta = iter.take_value().unwrap().into();
-            let vptr_len=if value.meta().contains(EntryMeta::VALUE_POINTER) {
-                let vp = ValuePointer::decode(&value.value());
+            let vptr_len=if value.meta().contains(Meta::VALUE_POINTER) {
+                let vp = ValuePointer::deserialize(&value.value());
                 vp.len().into()
             }else {
                 None

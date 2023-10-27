@@ -3,18 +3,18 @@ use std::io::Read;
 use bytes::{Buf, BufMut};
 use integer_encoding::{VarInt, VarIntReader};
 
-use crate::txn::entry::{Entry, EntryMeta};
+use crate::kv::{Entry, Meta, PhyTs};
 
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct EntryHeader {
+pub(crate) struct VlogEntryHeader {
     key_len: u32,
     value_len: u32,
-    expires_at: u64,
-    meta: EntryMeta,
+    expires_at: PhyTs,
+    meta: Meta,
     user_meta: u8,
 }
 pub(crate) const MAX_HEADER_SIZE: usize = 22;
-impl EntryHeader {
+impl VlogEntryHeader {
     pub(crate) fn new(e: &Entry) -> Self {
         Self {
             key_len: e.key_ts().len() as u32,
@@ -33,11 +33,11 @@ impl EntryHeader {
         out.put_u8(self.user_meta);
         out.put_slice(self.key_len.encode_var_vec().as_ref());
         out.put_slice(self.value_len.encode_var_vec().as_ref());
-        out.put_slice(self.expires_at.encode_var_vec().as_ref());
+        out.put_slice(self.expires_at.to_u64().encode_var_vec().as_ref());
         out
     }
-    pub(crate) fn decode(mut buf: &[u8]) -> (EntryHeader, usize) {
-        let meta = EntryMeta::from_bits_retain(buf.get_u8());
+    pub(crate) fn decode(mut buf: &[u8]) -> (VlogEntryHeader, usize) {
+        let meta = Meta::from_bits_retain(buf.get_u8());
         let user_meta = buf.get_u8();
         let mut index = 2;
 
@@ -54,7 +54,7 @@ impl EntryHeader {
         let e = Self {
             key_len,
             value_len,
-            expires_at,
+            expires_at: expires_at.into(),
             meta,
             user_meta,
         };
@@ -63,7 +63,7 @@ impl EntryHeader {
     pub(super) fn decode_from<R: Read>(reader: &mut R) -> std::io::Result<Self> {
         let meta: u8 = 0;
         reader.read_exact(&mut [meta])?;
-        let meta=EntryMeta::from_bits_retain(meta);
+        let meta = Meta::from_bits_retain(meta);
         let user_meta: u8 = 0;
         reader.read_exact(&mut [user_meta])?;
 
@@ -74,7 +74,7 @@ impl EntryHeader {
         Ok(Self {
             key_len,
             value_len,
-            expires_at,
+            expires_at: expires_at.into(),
             meta,
             user_meta,
         })
@@ -88,7 +88,7 @@ impl EntryHeader {
         self.value_len
     }
 
-    pub(crate) fn meta(&self) -> EntryMeta {
+    pub(crate) fn meta(&self) -> Meta {
         self.meta
     }
 
@@ -96,7 +96,7 @@ impl EntryHeader {
         self.user_meta
     }
 
-    pub(crate) fn expires_at(&self) -> u64 {
+    pub(crate) fn expires_at(&self) -> PhyTs {
         self.expires_at
     }
 }

@@ -113,8 +113,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81953c529336010edd6d8e358f886d9581267795c61b19475b71314bffa46d35"
 dependencies = [
  "concurrent-queue",
- "event-listener",
+ "event-listener 2.5.3",
  "futures-core",
+]
+
+[[package]]
+name = "async-channel"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "336d835910fab747186c56586562cb46f42809c2843ef3a84f47509009522838"
+dependencies = [
+ "concurrent-queue",
+ "event-listener 3.0.0",
+ "event-listener-strategy",
+ "futures-core",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -143,7 +156,7 @@ version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "287272293e9d8c41773cec55e365490fe034813a2f172f502d6ddcf75b2f582b"
 dependencies = [
- "event-listener",
+ "event-listener 2.5.3",
 ]
 
 [[package]]
@@ -187,8 +200,7 @@ dependencies = [
  "aes-gcm-siv",
  "ahash",
  "anyhow",
- "async-channel",
- "bincode",
+ "async-channel 2.0.0",
  "bitflags 2.4.0",
  "bytes",
  "crc32fast",
@@ -209,7 +221,6 @@ dependencies = [
  "rand",
  "rayon",
  "scopeguard",
- "serde",
  "smallvec",
  "snap",
  "stretto",
@@ -219,15 +230,6 @@ dependencies = [
  "tracing",
  "xxhash-rust",
  "zstd",
-]
-
-[[package]]
-name = "bincode"
-version = "1.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -504,6 +506,27 @@ name = "event-listener"
 version = "2.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
+
+[[package]]
+name = "event-listener"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29e56284f00d94c1bc7fd3c77027b4623c88c1f53d8d2394c6199f2921dea325"
+dependencies = [
+ "concurrent-queue",
+ "parking",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "event-listener-strategy"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d96b852f1345da36d551b9473fa1e2b1eb5c5195585c6c018118bc92a8d91160"
+dependencies = [
+ "event-listener 3.0.0",
+ "pin-project-lite",
+]
 
 [[package]]
 name = "fastrand"
@@ -1390,7 +1413,7 @@ checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 name = "stretto"
 version = "0.8.1"
 dependencies = [
- "async-channel",
+ "async-channel 1.9.0",
  "async-io",
  "atomic",
  "crossbeam-channel",
