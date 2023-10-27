@@ -9,7 +9,7 @@ use std::{
 use crate::{
     default::DEFAULT_IS_SIV,
     key_registry::{AesCipher, KeyRegistry},
-    lsm::mmap::MmapFile,
+    util::mmap::MmapFile,
     options::Options,
     pb::badgerpb4::DataKey,
     vlog::VLOG_HEADER_SIZE,

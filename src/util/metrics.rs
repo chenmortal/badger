@@ -1,18 +1,15 @@
 use log::debug;
+use parking_lot::RwLock;
 use std::{
     collections::HashMap,
     fs::{metadata, read_dir},
     path::PathBuf,
-    sync::{atomic::AtomicBool, atomic::AtomicUsize, Arc},
+    sync::{atomic::AtomicUsize, atomic::Ordering, Arc},
 };
-use tokio::{
-    select,
-    sync::{RwLock, Semaphore},
-};
+use tokio::{select, sync::Semaphore};
 
 use crate::options::Options;
 lazy_static! {
-    static ref METRICS_ENABLED: AtomicBool = AtomicBool::new(true);
     static ref LSM_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
     static ref VLOG_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
     static ref PENDING_WRITES: RwLock<HashMap<PathBuf, Arc<AtomicUsize>>> =
@@ -22,22 +19,21 @@ lazy_static! {
     static ref NUM_WRITES_VLOG: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_BYTES_VLOG_WRITTEN: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_PUTS: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_GETS: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_MEMTABLE_GETS: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_BYTES_WRITTEN_TO_L0: AtomicUsize = AtomicUsize::new(0);
 }
-#[inline]
-pub(crate) fn set_metrics_enabled(enabled: bool) {
-    METRICS_ENABLED.store(enabled, std::sync::atomic::Ordering::SeqCst);
-}
+
 #[inline]
 pub(crate) fn get_metrics_enabled() -> bool {
-    METRICS_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+    Options::metrics_enabled()
 }
 #[inline]
 pub(crate) async fn set_lsm_size(k: &PathBuf, v: u64) {
     if !get_metrics_enabled() {
         return;
     }
-    let mut lsm_size_w = LSM_SIZE.write().await;
+    let mut lsm_size_w = LSM_SIZE.write();
     lsm_size_w.insert(k.clone(), v);
     drop(lsm_size_w)
 }
@@ -46,7 +42,7 @@ pub(crate) async fn set_pending_writes(dir: PathBuf, req_len: Arc<AtomicUsize>) 
     if !get_metrics_enabled() {
         return;
     }
-    let mut pending_writes_w = PENDING_WRITES.write().await;
+    let mut pending_writes_w = PENDING_WRITES.write();
     pending_writes_w.insert(dir, req_len);
     drop(pending_writes_w);
 }
@@ -55,7 +51,7 @@ pub(crate) async fn set_vlog_size(k: &PathBuf, v: u64) {
     if !get_metrics_enabled() {
         return;
     }
-    let mut vlog_size_w = VLOG_SIZE.write().await;
+    let mut vlog_size_w = VLOG_SIZE.write();
     vlog_size_w.insert(k.clone(), v);
     drop(vlog_size_w)
 }
@@ -90,11 +86,25 @@ pub(crate) fn add_num_compaction_tables(val: usize) {
     NUM_COMPACTION_TABLES.fetch_add(val, std::sync::atomic::Ordering::SeqCst);
 }
 #[inline]
-pub(crate) fn add_num_puts(len: usize) {
+pub(crate) fn add_num_puts(size: usize) {
     if !get_metrics_enabled() {
         return;
     }
-    NUM_PUTS.fetch_add(len, std::sync::atomic::Ordering::SeqCst);
+    NUM_PUTS.fetch_add(size, Ordering::Acquire);
+}
+#[inline]
+pub(crate) fn add_num_gets(size: usize) {
+    if !get_metrics_enabled() {
+        return;
+    }
+    NUM_GETS.fetch_add(size, Ordering::Acquire);
+}
+#[inline]
+pub(crate) fn add_num_memtable_gets(size: usize) {
+    if !get_metrics_enabled() {
+        return;
+    }
+    NUM_MEMTABLE_GETS.fetch_add(size, Ordering::Acquire);
 }
 #[inline]
 pub(crate) fn add_num_bytes_written_to_l0(size: usize) {

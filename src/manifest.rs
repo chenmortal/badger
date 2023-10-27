@@ -15,7 +15,7 @@ use crate::{
     errors::err_file,
     options::{CompressionType, Options},
     pb::badgerpb4::{manifest_change, ManifestChange, ManifestChangeSet},
-    sys::sync_dir,
+    util::sys::sync_dir,
 };
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Manifest {

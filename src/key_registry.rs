@@ -1,5 +1,5 @@
-use crate::util::{now_since_unix, secs_to_systime};
-use crate::{errors::DBError, options::Options, pb::badgerpb4::DataKey, sys::sync_dir};
+use crate::util::{now_since_unix, secs_to_systime, sys::sync_dir};
+use crate::{errors::DBError, options::Options, pb::badgerpb4::DataKey};
 use aes_gcm::AeadCore;
 use aes_gcm::{aead::Aead, Aes128Gcm, Aes256Gcm, KeyInit};
 

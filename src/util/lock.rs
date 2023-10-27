@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
 };
 
-use crate::sys::{flock, open_with_libc};
+use crate::util::sys::{flock, open_with_libc};
 pub(crate) struct DirLockGuard {
     dir_fd: File,
     abs_pid_path: PathBuf,

@@ -1,9 +1,8 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, AtomicI32},
 };
 
-use anyhow::anyhow;
 use anyhow::bail;
 use parking_lot::Mutex;
 use tokio::sync::oneshot::Receiver;
@@ -11,17 +10,13 @@ use tokio::sync::oneshot::Receiver;
 use crate::{
     db::DB,
     errors::DBError,
-    kv::KeyTs,
+    kv::{Meta, TxnTs, Entry},
     options::Options,
     txn::{BADGER_PREFIX, HASH},
     util::now_since_unix,
 };
 
-use super::{
-    entry::{DecEntry, Entry, EntryMeta},
-    item::{Item, ItemInner, PRE_FETCH_STATUS},
-    TxnTs, TXN_KEY,
-};
+use super::TXN_KEY;
 
 pub struct Txn {
     pub(super) read_ts: TxnTs,
@@ -29,12 +24,13 @@ pub struct Txn {
     size: usize,
     count: usize,
     db: DB,
-    pub(super) conflict_keys: Option<HashSet<u64>>,
-    pub(super) read_key_hash: Mutex<Vec<u64>>,
-    pending_writes: Option<HashMap<Vec<u8>, DecEntry>>, // Vec<u8> -> String
-    duplicate_writes: Vec<DecEntry>,
+    conflict_keys: Option<HashSet<u64>>,
+    read_key_hash: Mutex<Vec<u64>>,
+    pending_writes: Option<HashMap<Vec<u8>, Entry>>, // Vec<u8> -> String
+    duplicate_writes: Vec<Entry>,
+    num_iters: AtomicI32,
     discarded: bool,
-    pub(super) done_read: AtomicBool,
+    done_read: AtomicBool,
     update: bool,
 }
 impl Txn {
@@ -66,80 +62,13 @@ impl Txn {
             done_read: AtomicBool::new(false),
             db,
             update,
+            num_iters: AtomicI32::new(0),
         };
         Ok(s)
     }
-    pub async fn get(&self, key: &[u8]) -> anyhow::Result<Item> {
-        if key.len() == 0 {
-            bail!(DBError::EmptyKey);
-        } else if self.discarded {
-            bail!(DBError::DiscardedTxn);
-        }
-        self.db.is_banned(key).await?;
-        let mut item_inner = ItemInner::default();
-        if self.update {
-            match self.pending_writes.as_ref().unwrap().get(key) {
-                Some(e) => {
-                    if e.key() == key {
-                        if is_deleted_or_expired(e.meta(), e.expires_at()) {
-                            bail!(DBError::KeyNotFound);
-                        };
-                        item_inner.meta = e.meta();
-                        item_inner.val = e.value().to_vec();
-                        item_inner.user_meta = e.user_meta();
-                        item_inner.key = key.to_vec();
-                        item_inner.status = PRE_FETCH_STATUS;
-                        item_inner.version = self.read_ts;
-                        item_inner.expires_at = e.expires_at();
-                        return Ok(item_inner.into());
-                    }
-                }
-                None => {}
-            };
-            let hash = HASH.hash_one(key);
-            let mut reads_m = self.read_key_hash.lock();
-            reads_m.push(hash);
-            drop(reads_m);
-        }
-        let seek = KeyTs::new(key, self.read_ts);
 
-        // todo!()
-        let value_struct = self
-            .db
-            .get_value(&seek)
-            .await
-            .map_err(|e| anyhow!("DB::Get key: {:?} for {}", &key, e))?;
-
-        if value_struct.value().is_empty() && value_struct.meta().bits() == 0 {
-            bail!(DBError::KeyNotFound)
-        }
-        if is_deleted_or_expired(value_struct.meta(), value_struct.expires_at()) {
-            bail!(DBError::KeyNotFound)
-        }
-
-        item_inner.key = key.to_vec();
-        item_inner.version = value_struct.version();
-        item_inner.meta = value_struct.meta();
-        item_inner.user_meta = value_struct.user_meta();
-        item_inner.vptr = value_struct.value().clone();
-        item_inner.expires_at = value_struct.expires_at();
-        item_inner.db = self.db.clone().into();
-        Ok(item_inner.into())
-    }
-    pub async fn set(&mut self, key: &[u8], value: &[u8]) -> anyhow::Result<()> {
-        self.set_entry(Entry::new(key, value)).await
-    }
-    pub async fn delete(&mut self, key: &[u8]) -> anyhow::Result<()> {
-        let mut e = Entry::default();
-        e.set_key(key.to_vec());
-        e.set_meta(EntryMeta::DELETE);
-        self.set_entry(e).await
-    }
-    pub async fn set_entry(&mut self, e: Entry) -> anyhow::Result<()> {
-        self.modify(e.into()).await
-    }
     #[inline]
-    async fn modify(&mut self, mut e: DecEntry) -> anyhow::Result<()> {
+    pub(super) async fn modify(&mut self, mut e: Entry) -> anyhow::Result<()> {
         let exceeds_size = |prefix: &str, max: usize, key: &[u8]| {
             bail!(
                 "{} with size {} exceeded {} limit. {}:\n{:?}",
@@ -151,10 +80,10 @@ impl Txn {
             )
         };
         let threshold = Options::value_threshold();
-        let mut check_size = |e: &mut DecEntry| {
+        let mut check_size = |e: &mut Entry| {
             let count = self.count + 1;
             e.try_set_value_threshold(threshold);
-            let size = self.size + e.estimate_size() + 10;
+            let size = self.size + e.estimate_size(threshold) + 10;
             if count >= Options::max_batch_count() as usize
                 || size >= Options::max_batch_size() as usize
             {
@@ -182,7 +111,7 @@ impl Txn {
             exceeds_size("Key", MAX_KEY_SIZE, e.key())?;
         }
         if e.value().len() > Options::vlog_file_size() {
-            exceeds_size("Value", Options::vlog_file_size() as usize, e.value())?
+            exceeds_size("Value", Options::vlog_file_size() as usize, e.value().as_ref())?
         }
         self.db.is_banned(&e.key()).await?;
 
@@ -202,25 +131,8 @@ impl Txn {
         }
         Ok(())
     }
-    pub async fn commit(&mut self) -> anyhow::Result<()> {
-        match self.pending_writes.as_ref() {
-            Some(s) => {
-                if s.len() == 0 {
-                    return Ok(());
-                }
-            }
-            None => {
-                return Ok(());
-            }
-        };
-        self.commit_pre_check()?;
-        let (commit_ts, recv) = self.commit_and_send().await?;
-        let result = recv.await;
-        self.db.oracle.done_commit(commit_ts).await?;
-        result??;
-        Ok(())
-    }
-    fn commit_pre_check(&self) -> anyhow::Result<()> {
+
+    pub(super) fn commit_pre_check(&self) -> anyhow::Result<()> {
         if self.discarded {
             bail!("Trying to commit a discarded txn")
         }
@@ -238,12 +150,14 @@ impl Txn {
         }
         Ok(())
     }
-    async fn commit_and_send(&mut self) -> anyhow::Result<(TxnTs, Receiver<anyhow::Result<()>>)> {
+    pub(super) async fn commit_and_send(
+        &mut self,
+    ) -> anyhow::Result<(TxnTs, Receiver<anyhow::Result<()>>)> {
         let oracle = &self.db.oracle;
         let _guard = oracle.send_write_req.lock();
         let commit_ts = oracle.get_latest_commit_ts(self).await?;
         let mut keep_together = true;
-        let mut set_version = |e: &mut DecEntry| {
+        let mut set_version = |e: &mut Entry| {
             if e.version() == TxnTs::default() {
                 e.set_version(commit_ts)
             } else {
@@ -261,9 +175,9 @@ impl Txn {
 
         //read from pending_writes and duplicate_writes to Vec<>
         let mut entries = Vec::with_capacity(pending_wirtes_len + duplicate_writes_len + 1);
-        let mut process_entry = |mut e: DecEntry| {
+        let mut process_entry = |mut e: Entry| {
             if keep_together {
-                e.meta_mut().insert(EntryMeta::TXN)
+                e.meta_mut().insert(Meta::TXN)
             }
             entries.push(e);
         };
@@ -280,9 +194,9 @@ impl Txn {
 
         if keep_together {
             debug_assert!(commit_ts != TxnTs::default());
-            let mut entry = Entry::new(TXN_KEY, commit_ts.to_u64().to_string().as_bytes());
+            let mut entry = Entry::new(TXN_KEY.into(), commit_ts.to_u64().to_string().into());
             entry.set_version(commit_ts);
-            entry.set_meta(EntryMeta::FIN_TXN);
+            entry.set_meta(Meta::FIN_TXN);
             entries.push(entry.into())
         }
 
@@ -300,11 +214,47 @@ impl Txn {
 
         Ok((commit_ts, receiver))
     }
+
+    pub(super) fn discarded(&self) -> bool {
+        self.discarded
+    }
+
+    pub(super) fn set_discarded(&mut self, discarded: bool) {
+        self.discarded = discarded;
+    }
+
+    pub(super) fn db(&self) -> &DB {
+        &self.db
+    }
+
+    pub(super) fn update(&self) -> bool {
+        self.update
+    }
+
+    pub(super) fn pending_writes(&self) -> Option<&HashMap<Vec<u8>, Entry>> {
+        self.pending_writes.as_ref()
+    }
+
+    pub(super) fn num_iters(&self) -> &AtomicI32 {
+        &self.num_iters
+    }
+
+    pub(super) fn done_read(&self) -> &AtomicBool {
+        &self.done_read
+    }
+
+    pub(super) fn read_key_hash(&self) -> &Mutex<Vec<u64>> {
+        &self.read_key_hash
+    }
+
+    pub(super) fn conflict_keys(&self) -> Option<&HashSet<u64>> {
+        self.conflict_keys.as_ref()
+    }
 }
 
 #[inline]
-fn is_deleted_or_expired(meta: EntryMeta, expires_at: u64) -> bool {
-    if meta.contains(EntryMeta::DELETE) {
+pub(super) fn is_deleted_or_expired(meta: Meta, expires_at: u64) -> bool {
+    if meta.contains(Meta::DELETE) {
         return true;
     };
 

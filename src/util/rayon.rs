@@ -3,7 +3,7 @@ use std::{
     panic::{catch_unwind, resume_unwind, AssertUnwindSafe},
     pin::Pin,
     task::{Context, Poll},
-    thread, sync::{Once, ONCE_INIT},
+    thread,
 };
 
 use tokio::sync::oneshot::{self, Receiver};
@@ -51,7 +51,7 @@ where
 
     AsyncRayonHandle { rx }
 }
-
+#[deny(unused)]
 pub fn set_global_rayon_pool() -> Result<(), rayon::ThreadPoolBuildError> {
     let cpus = num_cpus::get();
     rayon::ThreadPoolBuilder::new()

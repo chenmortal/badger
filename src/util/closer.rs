@@ -85,7 +85,7 @@ impl Deref for Closer {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use crate::closer::{CloseNotify, Closer, WaitGroup};
+    use crate::util::closer::{CloseNotify, Closer, WaitGroup};
 
     #[tokio::test]
     async fn test_waitgroup() {

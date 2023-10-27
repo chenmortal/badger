@@ -13,7 +13,7 @@ use tokio::{
     },
 };
 
-use crate::{closer::Closer, options::Options};
+use crate::{util::closer::Closer, options::Options};
 #[derive(Debug, Clone)]
 pub(crate) struct VlogThreshold(Arc<VlogThresholdInner>);
 #[derive(Debug)]

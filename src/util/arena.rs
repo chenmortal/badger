@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn test_offset() {
         let arena = Arena::new(100);
-        let keyts = KeyTs::new(b"abc", 1.into());
+        let keyts = KeyTs::new("abc".into(), 1.into());
 
         let p = arena.alloc(keyts);
         dbg!(&p);
@@ -280,7 +280,7 @@ mod tests {
             let arena_clone = arena.clone();
             handles.push(tokio::spawn(async move {
                 let s = i.to_string() + "abc";
-                let k = KeyTs::new(s.as_bytes(), i.into());
+                let k = KeyTs::new(s.into(), i.into());
                 let k_clone = k.clone();
                 let offset = arena_clone.offset(arena_clone.alloc(k) as _);
                 let p = unsafe { arena_clone.get_mut::<KeyTs>(offset.unwrap()) }.unwrap();
@@ -300,7 +300,7 @@ mod tests {
             // std::thread::spawn(f)
             handles.push(std::thread::spawn(move || {
                 let s = i.to_string() + "abc";
-                let k = KeyTs::new(s.as_bytes(), i.into());
+                let k = KeyTs::new(s.into(), i.into());
                 let k_clone = k.clone();
                 let offset = arena_clone.offset(arena_clone.alloc(k) as _);
                 let p = unsafe { arena_clone.get_mut::<KeyTs>(offset.unwrap()) }.unwrap();

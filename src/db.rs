@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     ops::Deref,
     sync::{
         atomic::{AtomicBool, AtomicU32},
@@ -8,23 +8,21 @@ use std::{
 };
 
 use crate::{
-    closer::Closer,
     default::{KV_WRITES_ENTRIES_CHANNEL_CAPACITY, LOCK_FILE},
     errors::DBError,
     key_registry::KeyRegistry,
     kv::{KeyTs, ValueStruct},
-    lock::DirLockGuard,
-    lsm::{
-        levels::LevelsController,
-        memtable::{new_mem_table, MemTable},
-    },
+    lsm::levels::LevelsController,
     manifest::open_create_manifestfile,
-    metrics::{calculate_size, set_metrics_enabled},
+    memtable::{new_mem_table, MemTable},
     options::Options,
-    publisher::Publisher,
-    rayon::set_global_rayon_pool,
     table::block::{self, Block},
     txn::oracle::Oracle,
+    util::closer::Closer,
+    util::lock::DirLockGuard,
+    util::metrics::calculate_size,
+    util::publisher::Publisher,
+    util::rayon::set_global_rayon_pool,
     vlog::{threshold::VlogThreshold, ValueLog},
     write::WriteReq,
 };
@@ -73,10 +71,10 @@ pub struct DBInner {
     pub(crate) next_mem_fid: NextId,
     pub(crate) key_registry: KeyRegistry,
     pub(crate) memtable: Option<Arc<RwLock<MemTable>>>,
-    pub(crate) immut_memtable: RwLock<Vec<Arc<MemTable>>>,
+    pub(crate) immut_memtable: RwLock<VecDeque<Arc<MemTable>>>,
     pub(crate) block_cache: Option<BlockCache>,
     pub(crate) index_cache: Option<IndexCache>,
-    pub(crate) level_controller: Option<LevelsController>,
+    pub(crate) level_controller: LevelsController,
     pub(crate) oracle: Arc<Oracle>,
     pub(crate) send_write_req: Sender<WriteReq>,
     pub(crate) flush_memtable: Sender<Arc<MemTable>>,
@@ -88,7 +86,7 @@ pub struct DBInner {
     pub(crate) block_writes: AtomicBool,
 }
 impl DBInner {
-    pub async fn open(opt: Options) -> anyhow::Result<()> {
+    pub async fn open(opt: Options) -> anyhow::Result<DB> {
         Options::init(opt)?;
         let mut dir_lock_guard = None;
         let mut value_dir_lock_guard = None;
@@ -143,8 +141,6 @@ impl DBInner {
 
         let key_registry = KeyRegistry::open().await?;
 
-        set_metrics_enabled(Options::metrics_enabled());
-
         calculate_size().await;
         // let mut update_size_closer = Closer::new();
         // let update_size_handle = tokio::spawn(update_size(update_size_closer.sem_clone()));
@@ -166,8 +162,7 @@ impl DBInner {
             &block_cache,
             &index_cache,
         )
-        .await?
-        .into();
+        .await?;
         let threshold = VlogThreshold::new();
 
         let vlog = ValueLog::new(threshold, key_registry.clone())?;
@@ -180,7 +175,7 @@ impl DBInner {
             next_mem_fid,
             key_registry,
             memtable,
-            immut_memtable: Vec::with_capacity(Options::num_memtables()).into(),
+            immut_memtable: VecDeque::with_capacity(Options::num_memtables()).into(),
             block_cache,
             index_cache,
             level_controller,
@@ -194,10 +189,12 @@ impl DBInner {
             block_writes: AtomicBool::new(false),
             recv_memtable: recv_memtable.into(),
         }));
-
+        let flush_memtable = Closer::new(1);
+        let _p = tokio::spawn(db.clone().flush_memtable(flush_memtable.clone()));
         drop(value_dir_lock_guard);
         drop(dir_lock_guard);
-        Ok(())
+
+        Ok(db)
     }
 
     pub(crate) fn update_size() {}

@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use std::{fs::OpenOptions, path::PathBuf};
 
 use crate::default::DEFAULT_PAGE_SIZE;
-use crate::sys::sync_dir;
+use crate::util::sys::sync_dir;
 #[derive(Debug)]
 pub(crate) struct MmapFile {
     /// like std::io::BufWriter
@@ -97,7 +97,7 @@ impl MmapFile {
 
     #[inline]
     #[tracing::instrument]
-    pub fn sync_all(&self) -> io::Result<()> {
+    pub fn raw_sync(&self) -> io::Result<()> {
         self.raw.flush()
     }
 
@@ -145,7 +145,7 @@ impl MmapFile {
     #[tracing::instrument]
     pub(crate) fn ready_to_close(&mut self, max_sz: u64) -> io::Result<()> {
         self.flush()?;
-        self.sync_all()?;
+        self.raw_sync()?;
         self.munmap()?;
         self.fd.set_len(max_sz as u64)?;
         Ok(())
@@ -478,7 +478,7 @@ impl Drop for MmapFile {
         if !self.panicked {
             let _r = self.flush_buf();
         }
-        let _ = self.sync_all();
+        let _ = self.raw_sync();
     }
 }
 #[inline]

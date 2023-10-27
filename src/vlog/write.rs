@@ -4,18 +4,14 @@ use bytes::BufMut;
 
 use crate::{
     default::DEFAULT_PAGE_SIZE,
-    kv::ValuePointer,
-    lsm::log_file::LogFile,
-    metrics::{add_num_bytes_vlog_written, add_num_writes_vlog},
+    kv::{Entry, Meta, TxnTs, ValuePointer},
     options::Options,
-    txn::{
-        entry::{Entry, EntryMeta},
-        TxnTs,
-    },
+    util::log_file::LogFile,
+    util::metrics::{add_num_bytes_vlog_written, add_num_writes_vlog},
     write::WriteReq,
 };
 
-use super::{header::EntryHeader, ValueLog, MAX_HEADER_SIZE, MAX_VLOG_FILE_SIZE};
+use super::{header::VlogEntryHeader, ValueLog, MAX_HEADER_SIZE, MAX_VLOG_FILE_SIZE};
 use anyhow::bail;
 pub(crate) struct HashWriter<'a, T: Hasher> {
     writer: &'a mut Vec<u8>,
@@ -63,8 +59,8 @@ impl ValueLog {
                 let offset = self.writable_log_offset();
 
                 let tmp_meta = dec_entry.meta();
-                dec_entry.meta_mut().remove(EntryMeta::TXN);
-                dec_entry.meta_mut().remove(EntryMeta::FIN_TXN);
+                dec_entry.meta_mut().remove(Meta::TXN);
+                dec_entry.meta_mut().remove(Meta::FIN_TXN);
                 let len = cur_logfile_w.encode_entry(&mut buf, &dec_entry, offset);
 
                 dec_entry.set_meta(tmp_meta);
@@ -93,7 +89,7 @@ impl ValueLog {
                 || self.num_entries_written.load(Ordering::SeqCst) > Options::vlog_max_entries()
             {
                 if Options::sync_writes() {
-                    cur_logfile_w.sync_all()?;
+                    cur_logfile_w.raw_sync()?;
                 }
                 cur_logfile_w.truncate(w_offset)?;
                 let new = self.create_vlog_file().await?; //new logfile will be latest logfile
@@ -108,7 +104,7 @@ impl ValueLog {
             || self.num_entries_written.load(Ordering::SeqCst) > Options::vlog_max_entries()
         {
             if Options::sync_writes() {
-                cur_logfile_w.sync_all()?;
+                cur_logfile_w.raw_sync()?;
             }
             cur_logfile_w.truncate(w_offset)?;
             let _ = self.create_vlog_file().await?; //new logfile will be latest logfile
@@ -121,9 +117,9 @@ impl ValueLog {
             let mut size = 0;
             req.entries_vptrs().iter().for_each(|(x, _)| {
                 size += MAX_HEADER_SIZE
-                    + x.entry.key().len()
+                    + x.key().len()
                     + mem::size_of::<TxnTs>()
-                    + x.entry.value().len()
+                    + x.value().len()
                     + mem::size_of::<u32>()
             });
             let estimate = vlog_offset + size;
@@ -154,7 +150,7 @@ impl ValueLog {
 }
 impl LogFile {
     pub(crate) fn encode_entry(&self, buf: &mut Vec<u8>, entry: &Entry, offset: usize) -> usize {
-        let header = EntryHeader::new(&entry);
+        let header = VlogEntryHeader::new(&entry);
         let mut hash_writer = HashWriter {
             writer: buf,
             hasher: crc32fast::Hasher::new(),
@@ -162,8 +158,8 @@ impl LogFile {
         let header_encode = header.encode();
         let header_len = hash_writer.write(&header_encode).unwrap();
 
-        let mut kv_buf = entry.key_ts().get_bytes();
-        kv_buf.extend_from_slice(entry.value());
+        let mut kv_buf = entry.key_ts().serialize();
+        kv_buf.extend_from_slice(entry.value().as_ref());
         if let Some(e) = self.try_encrypt(&kv_buf, offset) {
             kv_buf = e;
         };

@@ -1,6 +1,18 @@
 use anyhow::bail;
 use anyhow::Error;
 use bytes::BufMut;
+pub(crate) mod arena;
+pub(crate) mod bloom;
+pub(crate) mod closer;
+pub(crate) mod lock;
+pub(crate) mod log_file;
+pub(crate) mod metrics;
+pub(crate) mod mmap;
+pub(crate) mod publisher;
+pub(crate) mod rayon;
+pub(crate) mod skip_list;
+pub(crate) mod sys;
+pub(crate) mod tire;
 use tokio::select;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
@@ -181,7 +193,7 @@ pub(crate) fn get_sst_id_set(dir: &PathBuf) -> HashSet<u64> {
     return id_set;
 }
 #[inline(always)]
-pub(crate) fn dir_join_id_suffix(dir: &PathBuf, id: u32, suffix: &str) -> PathBuf {
+pub(crate) fn dir_join_id_suffix(dir: &PathBuf, id: u64, suffix: &str) -> PathBuf {
     dir.join(format!("{:06}{}", id, suffix))
 }
 #[inline(always)]

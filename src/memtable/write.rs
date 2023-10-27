@@ -1,23 +1,23 @@
 use crate::{
-    metrics::add_num_bytes_written_to_l0,
-    txn::entry::{DecEntry, Entry, EntryMeta},
+    kv::{Entry, Meta},
+    util::{log_file::LogFile, metrics::add_num_bytes_written_to_l0},
 };
 
-use super::{log_file::LogFile, memtable::MemTable};
+use super::MemTable;
 
 impl MemTable {
     #[inline]
-    pub(crate) fn push(&mut self, entry: &DecEntry) -> anyhow::Result<()> {
+    pub(crate) fn push(&mut self, entry: &Entry) -> anyhow::Result<()> {
         self.wal.write_entry(&mut self.buf, entry)?;
-        if entry.meta().contains(EntryMeta::FIN_TXN) {
+        if entry.meta().contains(Meta::FIN_TXN) {
             return Ok(());
         }
         self.skip_list.push(
-            &entry.key_ts().get_bytes(),
-            entry.value_meta().serialize()?.as_ref(),
+            &entry.key_ts().serialize().as_ref(),
+            entry.value_meta().serialize().as_ref(),
         );
         self.max_version = self.max_version.max(entry.version());
-        add_num_bytes_written_to_l0(entry.estimate_size());
+        add_num_bytes_written_to_l0(entry.estimate_size(entry.value_threshold()));
         Ok(())
     }
 }

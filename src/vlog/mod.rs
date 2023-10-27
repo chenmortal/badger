@@ -10,14 +10,14 @@ use std::{
 use anyhow::anyhow;
 use anyhow::bail;
 use log::info;
-use tokio::sync::RwLock;
 use thiserror::Error;
+use tokio::sync::RwLock;
 
 use crate::{
     default::VLOG_FILE_EXT,
     errors::err_file,
     key_registry::KeyRegistry,
-    lsm::log_file::LogFile,
+    util::log_file::LogFile,
     options::Options,
     util::{dir_join_id_suffix, parse_file_id},
     vlog::read::LogFileIter,
@@ -153,7 +153,7 @@ impl ValueLog {
     }
     async fn create_vlog_file(&self) -> anyhow::Result<Arc<RwLock<LogFile>>> {
         let fid = self.max_fid.fetch_add(1, Ordering::SeqCst) + 1;
-        let file_path = dir_join_id_suffix(Options::value_dir(), fid, VLOG_FILE_EXT);
+        let file_path = dir_join_id_suffix(Options::value_dir(), fid as u64, VLOG_FILE_EXT);
         let mut fp_open_opt = OpenOptions::new();
         fp_open_opt.read(true).write(true).create_new(true);
         let (log_file, _) = LogFile::open(

@@ -3,12 +3,11 @@
     ptr_sub_ptr,
     slice_as_chunks,
     async_fn_in_trait,
-    unchecked_math
+    unchecked_math,
+    async_closure
 )]
 #[macro_use]
 extern crate lazy_static;
-mod bloom;
-mod closer;
 pub mod db;
 pub(crate) mod default;
 pub mod errors;
@@ -18,18 +17,13 @@ mod fb;
 mod iter;
 mod key_registry;
 mod kv;
-mod lock;
 mod lsm;
 mod manifest;
-mod metrics;
+mod memtable;
 pub mod options;
 mod pb;
-mod publisher;
-mod rayon;
-mod skl;
-mod sys;
+mod read;
 mod table;
-mod tire;
 pub mod txn;
 mod util;
 mod vlog;
