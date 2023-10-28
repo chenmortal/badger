@@ -1,7 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
+    env::JoinPathsError,
     fs::{rename, File, OpenOptions},
     io::{BufReader, Read, Seek, SeekFrom, Write},
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -11,9 +13,9 @@ use parking_lot::Mutex;
 use prost::Message;
 
 use crate::{
-    default::{MANIFEST_FILE_NAME, MANIFEST_REWRITE_FILE_NAME},
+    default::{DEFAULT_DIR, MANIFEST_FILE_NAME, MANIFEST_REWRITE_FILE_NAME},
     errors::err_file,
-    options::{CompressionType, Options},
+    options::{CompressionType, DBDir, ModifiedOptions, Options, RequiredOptions},
     pb::badgerpb4::{manifest_change, ManifestChange, ManifestChangeSet},
     util::sys::sync_dir,
 };
@@ -39,94 +41,122 @@ pub(crate) struct ManifestFile {
     file_handle: File,
     pub(crate) manifest: Arc<Mutex<Manifest>>,
 }
-pub(crate) fn open_create_manifestfile() -> anyhow::Result<ManifestFile> {
-    let path = Options::dir().join(MANIFEST_FILE_NAME);
-    match OpenOptions::new()
-        .read(true)
-        .write(!Options::read_only())
-        .open(&path)
-    {
-        Ok(mut file_handle) => {
-            let (manifest, trunc_offset) =
-                replay_manifest_file(&file_handle, Options::external_magic_version())?;
-            if !Options::read_only() {
-                file_handle.set_len(trunc_offset)?;
-            }
-            file_handle.seek(SeekFrom::End(0))?;
-            let manifest_file = ManifestFile {
-                file_handle,
-                manifest: Arc::new(Mutex::new(manifest)),
-            };
-            Ok(manifest_file)
+#[derive(Debug, Clone)]
+pub struct ManifestBuilder {
+    dir: PathBuf,
+    read_only: bool,
+    // Magic version used by the application using badger to ensure that it doesn't open the DB
+    // with incompatible data format.
+    external_magic_version: u16,
+}
+impl Default for ManifestBuilder {
+    fn default() -> Self {
+        Self {
+            dir: PathBuf::from(DEFAULT_DIR),
+            read_only: false,
+            external_magic_version: 0,
         }
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                if Options::read_only() {
-                    bail!(err_file(
-                        e,
-                        &path,
-                        "no manifest found, required for read-only db"
-                    ));
+    }
+}
+impl ManifestBuilder {
+    pub fn set_dir(&mut self, dir: PathBuf) {
+        self.dir = dir;
+    }
+
+    pub fn set_external_magic_version(&mut self, external_magic_version: u16) {
+        self.external_magic_version = external_magic_version;
+    }
+    pub(crate) fn build(&self) -> anyhow::Result<ManifestFile> {
+        let path = self.dir.join(MANIFEST_FILE_NAME);
+        match OpenOptions::new()
+            .read(true)
+            .write(!self.read_only)
+            .open(&path)
+        {
+            Ok(mut file_handle) => {
+                let (manifest, trunc_offset) =
+                    replay_manifest_file(&file_handle, self.external_magic_version)?;
+                if !self.read_only {
+                    file_handle.set_len(trunc_offset)?;
                 }
-                let manifest = Manifest::default();
-                let (file_handle, net_creations) = help_rewrite(&manifest)?;
-                assert_eq!(net_creations, 0);
+                file_handle.seek(SeekFrom::End(0))?;
                 let manifest_file = ManifestFile {
                     file_handle,
                     manifest: Arc::new(Mutex::new(manifest)),
                 };
                 Ok(manifest_file)
             }
-            _ => bail!(e),
-        },
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    if self.read_only {
+                        bail!(err_file(
+                            e,
+                            &path,
+                            "no manifest found, required for read-only db"
+                        ));
+                    }
+                    let manifest = Manifest::default();
+                    let (file_handle, net_creations) = self.help_rewrite(&manifest)?;
+                    assert_eq!(net_creations, 0);
+                    let manifest_file = ManifestFile {
+                        file_handle,
+                        manifest: Arc::new(Mutex::new(manifest)),
+                    };
+                    Ok(manifest_file)
+                }
+                _ => bail!(e),
+            },
+        }
+    }
+    fn help_rewrite(&self, manifest: &Manifest) -> anyhow::Result<(File, usize)> {
+        let rewrite_path = self.dir.join(MANIFEST_REWRITE_FILE_NAME);
+        let mut fp = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&rewrite_path)?;
+
+        // magic bytes are structured as
+        // +---------------------+-------------------------+-----------------------+
+        // | magicText (4 bytes) | externalMagic (2 bytes) | badgerMagic (2 bytes) |
+        // +---------------------+-------------------------+-----------------------+
+
+        let mut buf = Vec::with_capacity(8);
+        buf.put(&MAGIC_TEXT[..]);
+        buf.put_u16(self.external_magic_version);
+        buf.put_u16(BADGER_MAGIC_VERSION);
+
+        let net_creations = manifest.tables.len();
+        let changes = manifest.as_changes();
+        let set = ManifestChangeSet { changes };
+        let change_set_buf = set.encode_to_vec();
+
+        let mut len_crc_buf = Vec::with_capacity(8);
+        len_crc_buf.put_u32(change_set_buf.len() as u32);
+        len_crc_buf.put_u32(crc32fast::hash(&change_set_buf));
+
+        buf.extend_from_slice(&len_crc_buf);
+        buf.extend_from_slice(&change_set_buf);
+        fp.write_all(&buf)?;
+        fp.sync_all()?;
+        drop(fp);
+
+        let manifest_path = self.dir.join(MANIFEST_FILE_NAME);
+        rename(rewrite_path, &manifest_path)?;
+        let mut fp = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(manifest_path)?;
+        fp.seek(SeekFrom::End(0))?;
+        sync_dir(&self.dir)?;
+        Ok((fp, net_creations))
     }
 }
+
 const BADGER_MAGIC_VERSION: u16 = 8;
 const MAGIC_TEXT: &[u8; 4] = b"Bdgr";
-fn help_rewrite(manifest: &Manifest) -> anyhow::Result<(File, usize)> {
-    let rewrite_path = Options::dir().join(MANIFEST_REWRITE_FILE_NAME);
-    let mut fp = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&rewrite_path)?;
 
-    // magic bytes are structured as
-    // +---------------------+-------------------------+-----------------------+
-    // | magicText (4 bytes) | externalMagic (2 bytes) | badgerMagic (2 bytes) |
-    // +---------------------+-------------------------+-----------------------+
-
-    let mut buf = Vec::with_capacity(8);
-    buf.put(&MAGIC_TEXT[..]);
-    buf.put_u16(Options::external_magic_version());
-    buf.put_u16(BADGER_MAGIC_VERSION);
-
-    let net_creations = manifest.tables.len();
-    let changes = manifest.as_changes();
-    let set = ManifestChangeSet { changes };
-    let change_set_buf = set.encode_to_vec();
-
-    let mut len_crc_buf = Vec::with_capacity(8);
-    len_crc_buf.put_u32(change_set_buf.len() as u32);
-    len_crc_buf.put_u32(crc32fast::hash(&change_set_buf));
-
-    buf.extend_from_slice(&len_crc_buf);
-    buf.extend_from_slice(&change_set_buf);
-    fp.write_all(&buf)?;
-    fp.sync_all()?;
-    drop(fp);
-
-    let manifest_path = Options::dir().join(MANIFEST_FILE_NAME);
-    rename(rewrite_path, &manifest_path)?;
-    let mut fp = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(manifest_path)?;
-    fp.seek(SeekFrom::End(0))?;
-    sync_dir(Options::dir())?;
-    Ok((fp, net_creations))
-}
 fn replay_manifest_file(fp: &File, ext_magic: u16) -> anyhow::Result<(Manifest, u64)> {
     let mut reader = BufReader::new(fp);
     let mut magic_buf = [0; 8];

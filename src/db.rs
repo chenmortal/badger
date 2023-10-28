@@ -13,7 +13,7 @@ use crate::{
     key_registry::KeyRegistry,
     kv::{KeyTs, ValueStruct},
     lsm::levels::LevelsController,
-    manifest::open_create_manifestfile,
+    // manifest::open_create_manifestfile,
     memtable::{new_mem_table, MemTable},
     options::Options,
     table::block::{self, Block},
@@ -87,7 +87,7 @@ pub struct DBInner {
 }
 impl DBInner {
     pub async fn open(opt: Options) -> anyhow::Result<DB> {
-        Options::init(opt)?;
+        Options::init(opt.clone())?;
         let mut dir_lock_guard = None;
         let mut value_dir_lock_guard = None;
 
@@ -105,7 +105,7 @@ impl DBInner {
         }
         // }
         set_global_rayon_pool()?;
-        let manifest_file = open_create_manifestfile()?;
+        let manifest_file = opt.manifest.build()?;
 
         let mut block_cache = None;
         if Options::block_cache_size() > 0 {
