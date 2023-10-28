@@ -1,9 +1,12 @@
 use std::fs::{create_dir_all, set_permissions, Permissions};
+use std::ops::Deref;
 use std::os::unix::prelude::PermissionsExt;
+use std::path::Path;
 use std::{path::PathBuf, time::Duration};
 
 use crate::default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD};
 use crate::errors::DBError;
+use crate::manifest::ManifestBuilder;
 use crate::pb::badgerpb4;
 use crate::pb::badgerpb4::checksum::Algorithm;
 use crate::table::opt::ChecksumVerificationMode;
@@ -62,6 +65,61 @@ impl CompressionType {
 }
 // static OPT:Options=Options::default();
 // const MAX_VALUE_THRESHOLD: i64 = 1 << 20;
+#[derive(Debug, Clone)]
+pub(crate) struct RequiredOptions {
+    dir: PathBuf,
+    value_dir: PathBuf,
+}
+
+impl RequiredOptions {
+    pub(crate) fn dir(&self) -> &PathBuf {
+        &self.dir
+    }
+}
+pub(crate) struct ModifiedOptions {
+    sync_writes: bool,
+    num_versions_to_keep: isize,
+    read_only: bool,
+    log_level: LevelFilter,
+    compression: CompressionType,
+    aes_is_siv: bool,
+    metrics_enabled: bool,
+}
+
+impl ModifiedOptions {
+    pub(crate) fn read_only(&self) -> bool {
+        self.read_only
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DBDir(PathBuf);
+impl Default for DBDir {
+    fn default() -> Self {
+        Self(PathBuf::from("./tmp/badger"))
+    }
+}
+impl Deref for DBDir {
+    type Target = PathBuf;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+#[derive(Debug, Clone)]
+pub(crate) struct ValueDir(PathBuf);
+impl Default for ValueDir {
+    fn default() -> Self {
+        Self(PathBuf::from("./tmp/badger"))
+    }
+}
+impl Deref for ValueDir {
+    type Target = PathBuf;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -136,7 +194,8 @@ pub struct Options {
 
     // Magic version used by the application using badger to ensure that it doesn't open the DB
     // with incompatible data format.
-    external_magic_version: u16,
+    // external_magic_version: u16,
+    pub manifest: ManifestBuilder,
 
     // Transaction start and commit timestamps are managed by end-user.
     // This is only useful for databases built on top of Badger (like Dgraph).
@@ -188,7 +247,7 @@ impl Default for Options {
             bypass_lock_guard: Default::default(),
             detect_conflicts: true,
             name_space_offset: None,
-            external_magic_version: Default::default(),
+            // external_magic_version: Default::default(),
             managed_txns: Default::default(),
             max_batch_count: Default::default(),
             max_batch_size: Default::default(),
@@ -198,13 +257,18 @@ impl Default for Options {
             checksum_verification_mode: Default::default(),
             checksum_algo: Default::default(),
             aes_is_siv: true,
+            manifest: Default::default(),
         }
     }
 }
+impl Options {}
 impl Options {
-    pub fn set_dir(mut self, dir: String) -> Self {
-        assert_ne!(dir, "");
-        self.dir = dir.into();
+    pub fn set_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
+        let p = dir.as_ref().to_path_buf();
+        assert_ne!(p, PathBuf::from(""));
+        // self.manifest.dir = p.clone();
+
+        self.dir = p;
         self
     }
     pub fn set_value_dir(mut self, value_dir: String) -> Self {
@@ -226,6 +290,7 @@ impl Options {
     }
     pub fn set_read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
+        self.manifest.read_only = read_only;
         self
     }
     pub fn set_metrics_enabled(mut self, metrics_enabled: bool) -> Self {
@@ -340,7 +405,8 @@ impl Options {
         self
     }
     pub fn set_external_magic_version(mut self, magic: u16) -> Self {
-        self.external_magic_version = magic;
+        self.manifest.external_magic_version = magic;
+        // self.external_magic_version = magic;
         self
     }
 
@@ -588,9 +654,9 @@ impl Options {
         Self::get_static().name_space_offset
     }
 
-    pub(crate) fn external_magic_version() -> u16 {
-        Self::get_static().external_magic_version
-    }
+    // pub(crate) fn external_magic_version() -> u16 {
+    //     Self::get_static().external_magic_version
+    // }
 
     pub(crate) fn managed_txns() -> bool {
         Self::get_static().managed_txns
