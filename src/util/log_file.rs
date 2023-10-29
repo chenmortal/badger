@@ -9,9 +9,9 @@ use std::{
 use crate::{
     default::DEFAULT_IS_SIV,
     key_registry::{AesCipher, KeyRegistry},
-    util::mmap::MmapFile,
     options::Options,
     pb::badgerpb4::DataKey,
+    util::mmap::MmapFile,
     vlog::VLOG_HEADER_SIZE,
 };
 use anyhow::{anyhow, bail};
@@ -97,12 +97,10 @@ impl LogFile {
         let mut buf_ref: &[u8] = buf.as_ref();
         let key_id = buf_ref.get_u64();
 
-        let registry_r = log_file.key_registry.read().await;
-        if let Some(dk) = registry_r.get_data_key(key_id).await? {
-            log_file.cipher = AesCipher::new(dk.data.as_slice(), Options::aes_is_siv())?.into();
-            log_file.datakey = Some(dk);
-        }
-        drop(registry_r);
+        if let Some(datakey) = log_file.key_registry.get_data_key(key_id).await? {
+            log_file.cipher = log_file.key_registry.get_cipher(&datakey)?.into();
+            log_file.datakey = datakey.into();
+        };
         let nonce = buf_ref.get(0..12);
         log_file.base_nonce = nonce.unwrap().to_vec();
 
@@ -127,15 +125,9 @@ impl LogFile {
     // +----------------+------------------+------------------+
     #[tracing::instrument]
     async fn bootstrap(&mut self) -> anyhow::Result<()> {
-        let mut key_registry_w = self.key_registry.write().await;
-        let datakey = key_registry_w
-            .latest_datakey()
-            .await
-            .map_err(|e| anyhow!("Error while retrieving datakey in LogFile.bootstarp {}", e))?;
-        drop(key_registry_w);
-        self.datakey = datakey;
+        self.datakey = self.key_registry.latest_datakey().await?;
         if let Some(dk) = &self.datakey {
-            self.cipher = AesCipher::new(&dk.data, Options::aes_is_siv())?.into();
+            self.cipher = self.key_registry.get_cipher(dk)?.into();
         }
         self.base_nonce = AesCipher::generate_nonce().to_vec();
 

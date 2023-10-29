@@ -3,6 +3,7 @@ use anyhow::Error;
 use bytes::BufMut;
 pub(crate) mod arena;
 pub(crate) mod bloom;
+pub(crate) mod cache;
 pub(crate) mod closer;
 pub(crate) mod lock;
 pub(crate) mod log_file;

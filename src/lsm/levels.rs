@@ -19,7 +19,6 @@ use tokio::{
 };
 
 use crate::{
-    db::{BlockCache, IndexCache},
     default::SSTABLE_FILE_EXT,
     key_registry::KeyRegistry,
     lsm::compaction::LevelCompactStatus,
@@ -34,8 +33,12 @@ use crate::{
     },
     txn::oracle::Oracle,
     util::closer::Closer,
-    util::{metrics::{add_num_compaction_tables, sub_num_compaction_tables}, mmap::MmapFile},
     util::sys::sync_dir,
+    util::{
+        cache::{BlockCache, IndexCache},
+        metrics::{add_num_compaction_tables, sub_num_compaction_tables},
+        mmap::MmapFile,
+    },
     util::{compare_key, dir_join_id_suffix, get_sst_id_set, key_with_ts, parse_key, Throttle},
 };
 
@@ -157,13 +160,11 @@ impl LevelsController {
 
             let future = async move {
                 let read_only = Options::read_only();
-                let registry_r = key_registry_clone.read().await;
-                let data_key = registry_r.get_data_key(tm.keyid).await?;
-                drop(registry_r);
                 let mut table_opt =
                     TableOption::new(&key_registry_clone, &block_cache_clone, &index_cache_clone)
                         .await;
-                table_opt.set_cipher_with_key(data_key);
+                let cipher = key_registry_clone.latest_cipher().await;
+                table_opt.set_cipher(Arc::new(cipher));
                 table_opt.set_compression(tm.compression);
                 let mut fp_open_opt = OpenOptions::new();
                 fp_open_opt.read(true).write(!read_only);

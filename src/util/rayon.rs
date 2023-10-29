@@ -52,7 +52,7 @@ where
     AsyncRayonHandle { rx }
 }
 #[deny(unused)]
-pub fn set_global_rayon_pool() -> Result<(), rayon::ThreadPoolBuildError> {
+pub fn init_global_rayon_pool() -> Result<(), rayon::ThreadPoolBuildError> {
     let cpus = num_cpus::get();
     rayon::ThreadPoolBuilder::new()
         .num_threads(cpus * 2)

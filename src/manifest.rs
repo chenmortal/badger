@@ -62,9 +62,15 @@ impl ManifestBuilder {
     pub fn set_dir(&mut self, dir: PathBuf) {
         self.dir = dir;
     }
+    pub fn dir(&self) -> &PathBuf {
+        &self.dir
+    }
 
     pub fn set_external_magic_version(&mut self, external_magic_version: u16) {
         self.external_magic_version = external_magic_version;
+    }
+    pub(crate) fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
     }
     pub(crate) fn build(&self) -> anyhow::Result<ManifestFile> {
         let path = self.dir.join(MANIFEST_FILE_NAME);

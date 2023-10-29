@@ -6,10 +6,13 @@ use std::{path::PathBuf, time::Duration};
 
 use crate::default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD};
 use crate::errors::DBError;
+use crate::key_registry::{KeyRegistry, KeyRegistryBuilder};
 use crate::manifest::ManifestBuilder;
 use crate::pb::badgerpb4;
 use crate::pb::badgerpb4::checksum::Algorithm;
 use crate::table::opt::ChecksumVerificationMode;
+use crate::util::cache::{BlockCacheBuilder, IndexCacheBuilder};
+use crate::util::lock::DBLockGuardBuilder;
 use crate::util::skip_list::SKL_MAX_NODE_SIZE;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -133,7 +136,6 @@ pub struct Options {
     read_only: bool,
     log_level: LevelFilter,
     compression: CompressionType,
-    aes_is_siv: bool,
     // pub(crate) in_memory: bool,
     metrics_enabled: bool,
     // Sets the Stream.numGo field
@@ -155,9 +157,10 @@ pub struct Options {
     block_size: usize,
     checksum_algo: badgerpb4::checksum::Algorithm,
     bloom_false_positive: f64,
-    block_cache_size: usize,
-    index_cache_size: i64,
-
+    // block_cache_size: usize,
+    pub block_cache: BlockCacheBuilder,
+    pub index_cache: IndexCacheBuilder,
+    // index_cache_size: i64,
     num_level_zero_tables: usize,
     num_level_zero_tables_stall: usize,
 
@@ -172,15 +175,15 @@ pub struct Options {
     // When set, checksum will be validated for each entry read from the value log file.
     verify_value_checksum: bool,
 
-    // Encryption related options.
-    encryption_key: Vec<u8>,                    // encryption key
-    encryption_key_rotation_duration: Duration, // key rotation duration
-
-    // BypassLockGuard will bypass the lock guard on badger. Bypassing lock
-    // guard can cause data corruption if multiple badger instances are using
-    // the same directory. Use this options with caution.
-    bypass_lock_guard: bool,
-
+    // // Encryption related options.
+    // encryption_key: Vec<u8>,                    // encryption key
+    // encryption_key_rotation_duration: Duration, // key rotation duration
+    pub key_registry: KeyRegistryBuilder,
+    // // BypassLockGuard will bypass the lock guard on badger. Bypassing lock
+    // // guard can cause data corruption if multiple badger instances are using
+    // // the same directory. Use this options with caution.
+    // bypass_lock_guard: bool,
+    pub lock_guard: DBLockGuardBuilder,
     // ChecksumVerificationMode decides when db should verify checksums for SSTable blocks.
     checksum_verification_mode: ChecksumVerificationMode,
 
@@ -233,8 +236,8 @@ impl Default for Options {
             num_memtables: 5,
             block_size: 4 * 1024,
             bloom_false_positive: 0.01,
-            block_cache_size: 256 << 20,
-            index_cache_size: 0,
+            // block_cache_size: 256 << 20,
+            // index_cache_size: 0,
             num_level_zero_tables: 5,
             num_level_zero_tables_stall: 15,
             vlog_file_size: 1 << 30 - 1,
@@ -244,7 +247,6 @@ impl Default for Options {
             lmax_compaction: Default::default(),
             zstd_compression_level: 1,
             verify_value_checksum: false,
-            bypass_lock_guard: Default::default(),
             detect_conflicts: true,
             name_space_offset: None,
             // external_magic_version: Default::default(),
@@ -252,22 +254,31 @@ impl Default for Options {
             max_batch_count: Default::default(),
             max_batch_size: Default::default(),
             max_value_threshold: Default::default(),
-            encryption_key: Vec::new(),
-            encryption_key_rotation_duration: Duration::from_secs(10 * 24 * 60 * 60),
+
             checksum_verification_mode: Default::default(),
             checksum_algo: Default::default(),
-            aes_is_siv: true,
+            // aes_is_siv: true,
             manifest: Default::default(),
+            lock_guard: Default::default(),
+            block_cache: Default::default(),
+            index_cache: Default::default(),
+            key_registry: Default::default(),
         }
     }
 }
-impl Options {}
+impl Options {
+    #[deny(unused)]
+    pub(crate) fn init_lock_guard(&mut self) {
+        self.lock_guard.insert(self.manifest.dir().clone());
+        self.lock_guard.insert(self.key_registry.dir().clone());
+    }
+}
 impl Options {
     pub fn set_dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
         let p = dir.as_ref().to_path_buf();
         assert_ne!(p, PathBuf::from(""));
-        // self.manifest.dir = p.clone();
-
+        self.manifest.set_dir(p.clone());
+        self.key_registry.set_dir(p.clone());
         self.dir = p;
         self
     }
@@ -290,7 +301,9 @@ impl Options {
     }
     pub fn set_read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
-        self.manifest.read_only = read_only;
+        self.manifest.set_read_only(read_only);
+        self.lock_guard.set_read_only(read_only);
+        self.key_registry.set_read_only(read_only);
         self
     }
     pub fn set_metrics_enabled(mut self, metrics_enabled: bool) -> Self {
@@ -335,6 +348,7 @@ impl Options {
     }
     pub fn set_block_size(mut self, block_size: usize) -> Self {
         self.block_size = block_size;
+        self.block_cache.set_block_size(block_size);
         self
     }
     pub fn set_num_level_zero_tables(mut self, num_level_zero_tables: usize) -> Self {
@@ -377,10 +391,10 @@ impl Options {
         self.verify_value_checksum = verify_value_checksum;
         self
     }
-    pub fn set_block_cache_size(mut self, block_cache_size: usize) -> Self {
-        self.block_cache_size = block_cache_size;
-        self
-    }
+    // pub fn set_block_cache_size(mut self, block_cache_size: usize) -> Self {
+    //     self.block_cache_size = block_cache_size;
+    //     self
+    // }
     // pub fn set_in_memory(mut self, in_memory: bool) -> Self {
     //     self.in_memory = in_memory;
     //     self
@@ -388,14 +402,11 @@ impl Options {
     // pub fn zstd_compression_level(mut self,level:isize)->Self{
     //     self
     // }
-    pub fn set_bypass_lock_guard(mut self, bypass_lock_guard: bool) -> Self {
-        self.bypass_lock_guard = bypass_lock_guard;
-        self
-    }
-    pub fn set_index_cache_size(mut self, index_cache_size: i64) -> Self {
-        self.index_cache_size = index_cache_size;
-        self
-    }
+
+    // pub fn set_index_cache_size(mut self, index_cache_size: i64) -> Self {
+    //     self.index_cache_size = index_cache_size;
+    //     self
+    // }
     pub fn set_name_space_offset(mut self, offset: usize) -> Self {
         self.name_space_offset = offset.into();
         self
@@ -404,24 +415,19 @@ impl Options {
         self.detect_conflicts = detect_conflicts;
         self
     }
-    pub fn set_external_magic_version(mut self, magic: u16) -> Self {
-        self.manifest.external_magic_version = magic;
-        // self.external_magic_version = magic;
-        self
-    }
 
-    pub fn set_encryption_key(mut self, encryption_key: Vec<u8>) -> Self {
-        self.encryption_key = encryption_key;
-        self
-    }
+    // pub fn set_encryption_key(mut self, encryption_key: Vec<u8>) -> Self {
+    //     self.encryption_key = encryption_key;
+    //     self
+    // }
 
-    pub fn set_encryption_key_rotation_duration(
-        mut self,
-        encryption_key_rotation_duration: Duration,
-    ) -> Self {
-        self.encryption_key_rotation_duration = encryption_key_rotation_duration;
-        self
-    }
+    // pub fn set_encryption_key_rotation_duration(
+    //     mut self,
+    //     encryption_key_rotation_duration: Duration,
+    // ) -> Self {
+    //     self.encryption_key_rotation_duration = encryption_key_rotation_duration;
+    //     self
+    // }
     // ChecksumVerificationMode indicates when the db should verify checksums for SSTable blocks.
     //
     // The default value of VerifyValueChecksum is options.NoVerification.
@@ -437,10 +443,10 @@ impl Options {
         self.table_size_multiplier = table_size_multiplier;
         self
     }
-    pub fn set_aes_is_siv(mut self, is_siv: bool) -> Self {
-        self.aes_is_siv = is_siv;
-        self
-    }
+    // pub fn set_aes_is_siv(mut self, is_siv: bool) -> Self {
+    //     self.aes_is_siv = is_siv;
+    //     self
+    // }
 }
 static OPT: OnceCell<Options> = once_cell::sync::OnceCell::new();
 impl Options {
@@ -481,7 +487,7 @@ impl Options {
             crate::options::CompressionType::None => true,
             _ => false,
         };
-        if need_cache && self.block_cache_size == 0 {
+        if need_cache && self.block_cache.block_cache_size() == 0 {
             panic!("Block_Cache_Size should be set since compression are enabled")
         }
         Ok(())
@@ -508,12 +514,15 @@ impl Options {
     pub(super) fn init(mut self) -> anyhow::Result<()> {
         self.check_set_options()?;
         self.create_dirs()?;
+        self.init_lock_guard();
+        self.index_cache.init(self.memtable_size as usize);
         match OPT.set(self) {
             Ok(_) => {}
             Err(e) => {
                 panic!("cannot set static OPT with {:?}", e);
             }
         };
+
         Ok(())
     }
     fn get_static() -> &'static Self {
@@ -588,13 +597,13 @@ impl Options {
         Self::get_static().bloom_false_positive
     }
 
-    pub(crate) fn block_cache_size() -> usize {
-        Self::get_static().block_cache_size
-    }
+    // pub(crate) fn block_cache_size() -> usize {
+    //     Self::get_static().block_cache_size
+    // }
 
-    pub(crate) fn index_cache_size() -> i64 {
-        Self::get_static().index_cache_size
-    }
+    // pub(crate) fn index_cache_size() -> i64 {
+    //     Self::get_static().index_cache_size
+    // }
 
     pub(crate) fn num_level_zero_tables() -> usize {
         Self::get_static().num_level_zero_tables
@@ -624,20 +633,16 @@ impl Options {
         Self::get_static().zstd_compression_level
     }
 
-    pub(crate) fn encryption_key() -> &'static [u8] {
-        Self::get_static().encryption_key.as_ref()
-    }
+    // pub(crate) fn encryption_key() -> &'static [u8] {
+    //     Self::get_static().encryption_key.as_ref()
+    // }
 
-    pub(crate) fn encryption_key_rotation_duration() -> Duration {
-        Self::get_static().encryption_key_rotation_duration
-    }
-    pub(crate) fn aes_is_siv() -> bool {
-        Self::get_static().aes_is_siv
-    }
-
-    pub(crate) fn bypass_lock_guard() -> bool {
-        Self::get_static().bypass_lock_guard
-    }
+    // pub(crate) fn encryption_key_rotation_duration() -> Duration {
+    //     Self::get_static().encryption_key_rotation_duration
+    // }
+    // pub(crate) fn aes_is_siv() -> bool {
+    //     Self::get_static().aes_is_siv
+    // }
 
     pub(crate) fn checksum_verification_mode() -> ChecksumVerificationMode {
         Self::get_static().checksum_verification_mode
