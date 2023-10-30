@@ -1,5 +1,6 @@
+use crate::default::DEFAULT_DIR;
 use crate::util::{now_since_unix, secs_to_systime, sys::sync_dir};
-use crate::{errors::DBError, options::Options, pb::badgerpb4::DataKey};
+use crate::{errors::DBError, pb::badgerpb4::DataKey};
 use aes_gcm::AeadCore;
 use aes_gcm::{aead::Aead, Aes128Gcm, Aes256Gcm, KeyInit};
 
@@ -11,8 +12,9 @@ use bytes::{Buf, BufMut};
 use log::error;
 use prost::Message;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -26,14 +28,23 @@ const KEY_REGISTRY_REWRITE_FILE_NAME: &str = "REWRITE-KEYREGISTRY";
 const SANITYTEXT: &[u8] = b"Hello Badger";
 pub const NONCE_SIZE: usize = 12;
 #[derive(Debug, Default, Clone)]
-pub(crate) struct KeyRegistry(Arc<RwLock<KeyRegistryInner>>);
+pub(crate) struct KeyRegistry {
+    inner: Arc<RwLock<KeyRegistryInner>>,
+    is_siv: bool,
+}
 impl Deref for KeyRegistry {
     type Target = Arc<RwLock<KeyRegistryInner>>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.inner
     }
 }
+
+// impl KeyRegistry {
+//     pub(crate) async fn open() -> anyhow::Result<Self> {
+//         Ok(Self(Arc::new(RwLock::new(KeyRegistryInner::open().await?))))
+//     }
+// }
 #[derive(Debug, Default)]
 pub(crate) struct KeyRegistryInner {
     data_keys: HashMap<u64, DataKey>,
@@ -41,29 +52,108 @@ pub(crate) struct KeyRegistryInner {
     next_key_id: u64,
     fp: Option<File>,
     cipher: Option<AesCipher>,
+    data_key_rotation_duration: Duration,
+    is_siv: bool,
     // dir: PathBuf,
     // read_only: bool,
     // cipher_rotation_duration: Duration,
 }
-
-struct KeyRegistryIter<'a> {
-    reader: BufReader<&'a File>,
-    cipher: &'a Option<AesCipher>,
-    len_crc_buf: Vec<u8>,
+#[derive(Debug, Clone)]
+pub struct KeyRegistryBuilder {
+    // Encryption related options.
+    encrypt_key: Vec<u8>,                 // encryption key
+    data_key_rotation_duration: Duration, // key rotation duration
+    is_siv: bool,                         //use aes_gcm or aes_gcm_siv
+    read_only: bool,
+    dir: PathBuf,
 }
-impl KeyRegistry {
-    pub(crate) async fn open() -> anyhow::Result<Self> {
-        Ok(Self(Arc::new(RwLock::new(KeyRegistryInner::open().await?))))
+impl Default for KeyRegistryBuilder {
+    fn default() -> Self {
+        Self {
+            encrypt_key: Default::default(),
+            data_key_rotation_duration: Duration::from_secs(10 * 24 * 60 * 60),
+            is_siv: true,
+            read_only: false,
+            dir: PathBuf::from(DEFAULT_DIR),
+        }
+    }
+}
+impl KeyRegistryBuilder {
+    pub(crate) async fn build(&self) -> anyhow::Result<KeyRegistry> {
+        let mut key_registry = KeyRegistryInner::new(
+            &self.encrypt_key,
+            self.data_key_rotation_duration,
+            self.is_siv,
+        )?;
+
+        // let read_only = Options::read_only();
+        let key_registry_path = self.dir.join(KEY_REGISTRY_FILE_NAME);
+        if !key_registry_path.exists() {
+            if self.read_only {
+                return Ok(KeyRegistry {
+                    inner: Arc::new(RwLock::new(key_registry)),
+                    is_siv: self.is_siv,
+                });
+            }
+            key_registry
+                .write_to_file(&self.dir)
+                .await
+                .map_err(|e| anyhow!("Error while writing key registry. {}", e))?;
+        }
+
+        let key_registry_fp = OpenOptions::new()
+            .read(true)
+            .write(!self.read_only)
+            .custom_flags(libc::O_DSYNC)
+            .open(key_registry_path)
+            .map_err(|e| anyhow!("Error while opening key registry. {}", e))?;
+
+        key_registry.read(&key_registry_fp).await?;
+        if !self.read_only {
+            key_registry.fp = Some(key_registry_fp);
+            // return Ok(key_registry.into());
+        }
+
+        return Ok(KeyRegistry {
+            inner: Arc::new(RwLock::new(key_registry)),
+            is_siv: self.is_siv,
+        });
+    }
+
+    pub fn set_dir(&mut self, dir: PathBuf) {
+        self.dir = dir;
+    }
+    pub(crate) fn dir(&self) -> &PathBuf {
+        &self.dir
+    }
+    pub(crate) fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    pub fn set_is_siv(&mut self, is_siv: bool) {
+        self.is_siv = is_siv;
+    }
+
+    pub fn set_data_key_rotation_duration(&mut self, data_key_rotation_duration: Duration) {
+        self.data_key_rotation_duration = data_key_rotation_duration;
+    }
+
+    pub fn set_encrypt_key(&mut self, encrypt_key: Vec<u8>) {
+        self.encrypt_key = encrypt_key;
     }
 }
 impl KeyRegistryInner {
-    fn new() -> anyhow::Result<Self> {
-        let keys_len = Options::encryption_key().len();
+    fn new(
+        encrypt_key: &[u8],
+        data_key_rotation_duration: Duration,
+        is_siv: bool,
+    ) -> anyhow::Result<Self> {
+        let keys_len = encrypt_key.len();
         if keys_len > 0 && !vec![16, 32].contains(&keys_len) {
             bail!("{:?} During OpenKeyRegistry", DBError::InvalidEncryptionKey);
         }
         let cipher: Option<AesCipher> = if keys_len > 0 {
-            AesCipher::new(Options::encryption_key(), Options::aes_is_siv()).ok()
+            AesCipher::new(encrypt_key, is_siv).ok()
         } else {
             None
         };
@@ -74,44 +164,18 @@ impl KeyRegistryInner {
             next_key_id: 0,
             fp: None,
             cipher,
+            data_key_rotation_duration,
+            is_siv,
             // dir: opt.dir.clone(),
             // read_only: opt.read_only,
             // cipher_rotation_duration: opt.encryption_key_rotation_duration,
         })
     }
-    async fn open() -> anyhow::Result<Self> {
-        let mut key_registry = KeyRegistryInner::new()?;
-        let read_only = Options::read_only();
-        let key_registry_path = Options::dir().join(KEY_REGISTRY_FILE_NAME);
-        if !key_registry_path.exists() {
-            if read_only {
-                return Ok(key_registry);
-            }
-            key_registry
-                .write()
-                .await
-                .map_err(|e| anyhow!("Error while writing key registry. {}", e))?;
-        }
-
-        let key_registry_fp = OpenOptions::new()
-            .read(true)
-            .write(!read_only)
-            .custom_flags(libc::O_DSYNC)
-            .open(key_registry_path)
-            .map_err(|e| anyhow!("Error while opening key registry. {}", e))?;
-
-        key_registry.read(&key_registry_fp).await?;
-        if read_only {
-            return Ok(key_registry);
-        }
-        key_registry.fp = Some(key_registry_fp);
-        return Ok(key_registry);
-    }
     //     Structure of Key Registry.
     // +-------------------+---------------------+--------------------+--------------+------------------+------------------+------------------+
     // |   Nonce   |  SanityText.len() u32 | e_Sanity Text  | DataKey1(len_crc_buf(e_data_key.len,crc),e_data_key(..,e_data,..))     | DataKey2     | ...              |
     // +-------------------+---------------------+--------------------+--------------+------------------+------------------+------------------+
-    async fn write(&mut self) -> anyhow::Result<()> {
+    async fn write_to_file(&mut self, dir: &PathBuf) -> anyhow::Result<()> {
         let nonce: Nonce = AesCipher::generate_nonce();
         let mut e_sanity = SANITYTEXT.to_vec();
 
@@ -132,7 +196,7 @@ impl KeyRegistryInner {
                 .map_err(|e| anyhow!("Error while storing datakey in WriteKeyRegistry {}", e))?;
         }
 
-        let rewrite_path = Options::dir().join(KEY_REGISTRY_REWRITE_FILE_NAME);
+        let rewrite_path = dir.join(KEY_REGISTRY_REWRITE_FILE_NAME);
         let mut rewrite_fp = OpenOptions::new()
             .create(true)
             .write(true)
@@ -145,9 +209,9 @@ impl KeyRegistryInner {
             .write_all(&buf)
             .map_err(|e| anyhow!("Error while writing buf in WriteKeyRegistry {}", e))?;
 
-        rename(rewrite_path, Options::dir().join(KEY_REGISTRY_FILE_NAME))
+        rename(rewrite_path, dir.join(KEY_REGISTRY_FILE_NAME))
             .map_err(|e| anyhow!("Error while renaming file in WriteKeyRegistry {}", e))?;
-        sync_dir(Options::dir())?;
+        sync_dir(dir)?;
         Ok(())
     }
 
@@ -206,69 +270,91 @@ impl KeyRegistryInner {
         }
         Ok(())
     }
-    pub(crate) async fn latest_cipher(&mut self) -> Option<AesCipher> {
+}
+impl KeyRegistry {
+    pub(crate) async fn latest_cipher(&self) -> Option<AesCipher> {
         if let Ok(d) = self.latest_datakey().await {
             if let Some(data_key) = d {
-                return AesCipher::new(&data_key.data, Options::aes_is_siv()).ok();
+                return AesCipher::new(&data_key.data, self.is_siv).ok();
             }
         }
         None
     }
-    pub(crate) async fn latest_datakey(&mut self) -> anyhow::Result<Option<DataKey>> {
-        if self.cipher.is_none() {
+    pub(crate) fn get_cipher(&self, datakey: &DataKey) -> anyhow::Result<AesCipher> {
+        return AesCipher::new(&datakey.data, self.is_siv);
+    }
+
+    pub(crate) async fn latest_datakey(&self) -> anyhow::Result<Option<DataKey>> {
+        let inner_r = self.read().await;
+        if inner_r.cipher.is_none() {
             return Ok(None);
         }
-        for _ in 0..2 {
-            let last = secs_to_systime(self.last_created);
 
+        let valid_key = |inner: &KeyRegistryInner| {
+            let last = secs_to_systime(inner.last_created);
             if let Ok(diff) = SystemTime::now().duration_since(last) {
-                if diff < Options::encryption_key_rotation_duration() {
-                    // let data_keys_r = self.data_keys.read().await;
-                    let r = match self.data_keys.get(&self.next_key_id) {
-                        Some(d) => Some(d.clone()),
-                        None => None,
-                    };
-                    // drop(data_keys_r);
-                    return Ok(r);
+                if diff < inner.data_key_rotation_duration {
+                    return (
+                        inner
+                            .data_keys
+                            .get(&inner.next_key_id)
+                            .and_then(|x| x.clone().into()),
+                        true,
+                    );
                 }
             };
+            return (None, false);
+        };
+        let (key, valid) = valid_key(&inner_r);
+        if valid {
+            return Ok(key);
+        }
+        drop(inner_r);
+        let mut inner_w = self.write().await;
+        let (key, valid) = valid_key(&inner_w);
+        if valid {
+            return Ok(key);
         }
 
-        let cipher = self.cipher.as_ref().unwrap();
+        let cipher = inner_w.cipher.as_ref().unwrap();
 
         let key = cipher.generate_key();
         let nonce: Nonce = AesCipher::generate_nonce();
-        self.next_key_id += 1;
+        inner_w.next_key_id += 1;
+        let key_id = inner_w.next_key_id;
         let mut data_key = DataKey {
-            key_id: self.next_key_id,
+            key_id,
             data: key,
             iv: nonce.to_vec(),
             created_at: now_since_unix().as_secs(),
         };
         let mut buf = Vec::new();
-        Self::store_data_key(&mut buf, &self.cipher, &mut data_key)?;
-        if let Some(f) = &mut self.fp {
+        KeyRegistryInner::store_data_key(&mut buf, &inner_w.cipher, &mut data_key)?;
+        if let Some(f) = &mut inner_w.fp {
             f.write_all(&buf)?;
         }
 
-        self.last_created = data_key.created_at;
-        // let mut data_key_w = self.data_keys.write().await;
-        self.data_keys.insert(self.next_key_id, data_key.clone());
-        // drop(data_key_w);
+        inner_w.last_created = data_key.created_at;
+        inner_w.data_keys.insert(key_id, data_key.clone());
         Ok(Some(data_key))
     }
-
     pub(crate) async fn get_data_key(&self, id: u64) -> anyhow::Result<Option<DataKey>> {
+        let inner_r = self.read().await;
         if id == 0 {
             return Ok(None);
         }
-        match self.data_keys.get(&id) {
+        match inner_r.data_keys.get(&id) {
             Some(s) => Ok(Some(s.clone())),
             None => {
                 bail!("{} Error for the KEY ID {}", DBError::InvalidDataKeyID, id)
             }
         }
     }
+}
+struct KeyRegistryIter<'a> {
+    reader: BufReader<&'a File>,
+    cipher: &'a Option<AesCipher>,
+    len_crc_buf: Vec<u8>,
 }
 impl<'a> KeyRegistryIter<'a> {
     fn valid(&mut self) -> anyhow::Result<()> {
@@ -326,10 +412,7 @@ impl<'a> Iterator for KeyRegistryIter<'a> {
                 match e.kind() {
                     std::io::ErrorKind::UnexpectedEof => {}
                     _ => {
-                        error!(
-                            "While reading data_key.len and crc in keyRegistryIter.next {}",
-                            e
-                        );
+                        error!("While reading data_key.len and crc in keyRegistryIter.next {e}",);
                     }
                 }
                 return None;
@@ -337,7 +420,7 @@ impl<'a> Iterator for KeyRegistryIter<'a> {
         };
         let mut len_crc_buf_ref: &[u8] = self.len_crc_buf.as_ref();
         let e_data_key_len = len_crc_buf_ref.get_u32();
-        let e_data_key_crc = len_crc_buf_ref.get_u32();
+        let e_data_key_crc: u32 = len_crc_buf_ref.get_u32();
 
         let mut e_data_key = vec![0 as u8; e_data_key_len as usize];
         match self.reader.read_exact(e_data_key.as_mut()) {
@@ -346,7 +429,7 @@ impl<'a> Iterator for KeyRegistryIter<'a> {
                 match e.kind() {
                     std::io::ErrorKind::UnexpectedEof => {}
                     _ => {
-                        error!("While reading data in keyRegistryIter.next {}", e);
+                        error!("While reading data in keyRegistryIter.next {e}");
                     }
                 }
                 return None;

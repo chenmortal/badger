@@ -21,104 +21,69 @@ lazy_static! {
     static ref NUM_PUTS: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_GETS: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_MEMTABLE_GETS: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_GETS_WITH_RESULTS: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_BYTES_WRITTEN_TO_L0: AtomicUsize = AtomicUsize::new(0);
 }
 
 #[inline]
-pub(crate) fn get_metrics_enabled() -> bool {
-    Options::metrics_enabled()
-}
-#[inline]
 pub(crate) async fn set_lsm_size(k: &PathBuf, v: u64) {
-    if !get_metrics_enabled() {
-        return;
-    }
     let mut lsm_size_w = LSM_SIZE.write();
     lsm_size_w.insert(k.clone(), v);
     drop(lsm_size_w)
 }
 #[inline]
 pub(crate) async fn set_pending_writes(dir: PathBuf, req_len: Arc<AtomicUsize>) {
-    if !get_metrics_enabled() {
-        return;
-    }
     let mut pending_writes_w = PENDING_WRITES.write();
     pending_writes_w.insert(dir, req_len);
     drop(pending_writes_w);
 }
 #[inline]
 pub(crate) async fn set_vlog_size(k: &PathBuf, v: u64) {
-    if !get_metrics_enabled() {
-        return;
-    }
     let mut vlog_size_w = VLOG_SIZE.write();
     vlog_size_w.insert(k.clone(), v);
     drop(vlog_size_w)
 }
 #[inline]
 pub(crate) fn add_num_bytes_written_user(size: usize) {
-    if !get_metrics_enabled() {
-        return;
-    }
-    NUM_BYTES_WRITTEN_USER.fetch_add(size, std::sync::atomic::Ordering::SeqCst);
+    NUM_BYTES_WRITTEN_USER.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
 }
 #[inline]
 pub(crate) fn add_num_writes_vlog(size: usize) {
-    if !get_metrics_enabled() {
-        return;
-    }
     NUM_WRITES_VLOG.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[inline]
 pub(crate) fn add_num_bytes_vlog_written(size: usize) {
-    if !get_metrics_enabled() {
-        return;
-    }
     NUM_BYTES_VLOG_WRITTEN.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[inline]
 pub(crate) fn add_num_compaction_tables(val: usize) {
-    if !get_metrics_enabled() {
-        return;
-    }
-    NUM_COMPACTION_TABLES.fetch_add(val, std::sync::atomic::Ordering::SeqCst);
+    NUM_COMPACTION_TABLES.fetch_add(val, std::sync::atomic::Ordering::Relaxed);
 }
 #[inline]
 pub(crate) fn add_num_puts(size: usize) {
-    if !get_metrics_enabled() {
-        return;
-    }
-    NUM_PUTS.fetch_add(size, Ordering::Acquire);
+    NUM_PUTS.fetch_add(size, Ordering::Relaxed);
 }
 #[inline]
 pub(crate) fn add_num_gets(size: usize) {
-    if !get_metrics_enabled() {
-        return;
-    }
-    NUM_GETS.fetch_add(size, Ordering::Acquire);
+    NUM_GETS.fetch_add(size, Ordering::Relaxed);
 }
 #[inline]
 pub(crate) fn add_num_memtable_gets(size: usize) {
-    if !get_metrics_enabled() {
-        return;
-    }
-    NUM_MEMTABLE_GETS.fetch_add(size, Ordering::Acquire);
+    NUM_MEMTABLE_GETS.fetch_add(size, Ordering::Relaxed);
+}
+#[inline]
+pub(crate) fn add_num_gets_with_result(size: usize) {
+    NUM_GETS_WITH_RESULTS.fetch_add(size, Ordering::Relaxed);
 }
 #[inline]
 pub(crate) fn add_num_bytes_written_to_l0(size: usize) {
-    if !get_metrics_enabled() {
-        return;
-    }
     NUM_BYTES_WRITTEN_TO_L0.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[inline]
 pub(crate) fn sub_num_compaction_tables(val: usize) {
-    if !get_metrics_enabled() {
-        return;
-    }
     NUM_COMPACTION_TABLES.fetch_sub(val, std::sync::atomic::Ordering::SeqCst);
 }
 
@@ -133,6 +98,7 @@ pub(crate) async fn calculate_size() {
             (0, 0)
         }
     };
+    #[cfg(feature = "metrics")]
     set_lsm_size(dir, lsm_size).await;
     if value_dir != dir {
         match total_size(value_dir) {
@@ -145,6 +111,7 @@ pub(crate) async fn calculate_size() {
             }
         };
     }
+    #[cfg(feature = "metrics")]
     set_vlog_size(value_dir, vlog_size).await;
 }
 

@@ -2,12 +2,13 @@ use std::{hash::Hasher, io::Write, mem, sync::atomic::Ordering};
 
 use bytes::BufMut;
 
+#[cfg(feature = "metrics")]
+use crate::util::metrics::{add_num_bytes_vlog_written, add_num_writes_vlog};
 use crate::{
     default::DEFAULT_PAGE_SIZE,
     kv::{Entry, Meta, TxnTs, ValuePointer},
     options::Options,
     util::log_file::LogFile,
-    util::metrics::{add_num_bytes_vlog_written, add_num_writes_vlog},
     write::WriteReq,
 };
 
@@ -79,7 +80,9 @@ impl ValueLog {
                 written += 1;
                 bytes_written += buf.len();
             }
+            #[cfg(feature = "metrics")]
             add_num_writes_vlog(written);
+            #[cfg(feature = "metrics")]
             add_num_bytes_vlog_written(bytes_written);
             self.num_entries_written
                 .fetch_add(written, Ordering::SeqCst);

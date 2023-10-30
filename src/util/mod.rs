@@ -3,6 +3,7 @@ use anyhow::Error;
 use bytes::BufMut;
 pub(crate) mod arena;
 pub(crate) mod bloom;
+pub(crate) mod cache;
 pub(crate) mod closer;
 pub(crate) mod lock;
 pub(crate) mod log_file;
@@ -62,6 +63,93 @@ use crate::default::SSTABLE_FILE_EXT;
 //         a.send(());
 //         let p = b.await;
 //         self.semaphore.acquire_many(self.wait).await
+//     }
+// }
+// pub(crate) struct Fileid(usize);
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DBFileSuffix {
+    Memtable,
+    SSTable,
+    Vlog,
+}
+impl Into<&str> for DBFileSuffix {
+    fn into(self) -> &'static str {
+        match self {
+            DBFileSuffix::Memtable => ".mem",
+            DBFileSuffix::SSTable => ".sst",
+            DBFileSuffix::Vlog => ".vlog",
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum DBFileId {
+    MemTable(usize),
+    SSTable(usize),
+    Vlog(u32),
+}
+impl Into<PathBuf> for DBFileId {
+    fn into(self) -> PathBuf {
+        PathBuf::from(match self {
+            DBFileId::MemTable(id) => {
+                let suffix: &'static str = DBFileSuffix::Memtable.into();
+                format!("{:06}{}", id, suffix)
+            }
+            DBFileId::SSTable(id) => {
+                let suffix: &'static str = DBFileSuffix::SSTable.into();
+                format!("{:06}{}", id, suffix)
+            }
+            DBFileId::Vlog(id) => {
+                let suffix: &'static str = DBFileSuffix::Vlog.into();
+                format!("{:06}{}", id, suffix)
+            }
+        })
+    }
+}
+impl Into<usize> for DBFileId {
+    fn into(self) -> usize {
+        match self {
+            DBFileId::MemTable(id) => id,
+            DBFileId::SSTable(id) => id,
+            DBFileId::Vlog(id) => id as usize,
+        }
+    }
+}
+impl Into<u32> for DBFileId {
+    fn into(self) -> u32 {
+        let k = match self {
+            DBFileId::MemTable(id) => id,
+            DBFileId::SSTable(id) => id,
+            DBFileId::Vlog(id) => id as usize,
+        };
+        k as u32
+    }
+}
+impl DBFileId {
+    pub(crate) fn parse(path: &PathBuf, file_suffix: DBFileSuffix) -> Option<Self> {
+        let suffix: &'static str = file_suffix.into();
+        if let Some(name) = path.file_name() {
+            if let Some(name) = name.to_str() {
+                if name.ends_with(suffix) {
+                    let name = name.trim_end_matches(suffix);
+                    if let Ok(id) = name.parse::<usize>() {
+                        return match file_suffix {
+                            DBFileSuffix::Memtable => DBFileId::MemTable(id),
+                            DBFileSuffix::SSTable => DBFileId::SSTable(id),
+                            DBFileSuffix::Vlog => DBFileId::Vlog(id as u32),
+                        }
+                        .into();
+                    };
+                };
+            }
+        };
+        None
+    }
+}
+#[test]
+fn test_id() {}
+// impl From<PathBuf> for DBFileId {
+//     fn from(value: PathBuf) -> Self {
+
 //     }
 // }
 

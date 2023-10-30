@@ -17,7 +17,7 @@ mod fb;
 mod iter;
 mod key_registry;
 mod kv;
-mod lsm;
+mod level;
 mod manifest;
 mod memtable;
 pub mod options;

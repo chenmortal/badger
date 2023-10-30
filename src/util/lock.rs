@@ -1,13 +1,62 @@
 use anyhow::anyhow;
 use log::error;
 use std::{
+    collections::HashSet,
     fs::{File, OpenOptions, Permissions},
     io::Write,
     os::unix::prelude::PermissionsExt,
     path::PathBuf,
 };
 
-use crate::util::sys::{flock, open_with_libc};
+use crate::{
+    default::LOCK_FILE,
+    util::sys::{flock, open_with_libc},
+};
+pub(crate) struct DBLockGuard {
+    lock_guards: Vec<DirLockGuard>,
+}
+#[derive(Debug, Clone)]
+pub struct DBLockGuardBuilder {
+    dirs: HashSet<PathBuf>,
+    // BypassLockGuard will bypass the lock guard on badger. Bypassing lock
+    // guard can cause data corruption if multiple badger instances are using
+    // the same directory. Use this options with caution.
+    bypass_lock_guard: bool,
+    read_only: bool,
+}
+impl Default for DBLockGuardBuilder {
+    fn default() -> Self {
+        Self {
+            dirs: Default::default(),
+            bypass_lock_guard: false,
+            read_only: false,
+        }
+    }
+}
+impl DBLockGuardBuilder {
+    pub(crate) fn try_build(&self) -> anyhow::Result<Option<DBLockGuard>> {
+        if !self.bypass_lock_guard {
+            let mut lock_guards = Vec::with_capacity(self.dirs.len());
+            for dir in self.dirs.iter() {
+                let dir_gurard = DirLockGuard::acquire_lock(dir, LOCK_FILE, self.read_only)?;
+                lock_guards.push(dir_gurard);
+            }
+            return Ok(DBLockGuard { lock_guards }.into());
+        }
+        Ok(None)
+    }
+
+    pub fn set_bypass_lock_guard(&mut self, bypass_lock_guard: bool) {
+        self.bypass_lock_guard = bypass_lock_guard;
+    }
+
+    pub(crate) fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+    pub(crate) fn insert(&mut self, p: PathBuf) {
+        self.dirs.insert(p);
+    }
+}
 pub(crate) struct DirLockGuard {
     dir_fd: File,
     abs_pid_path: PathBuf,
@@ -69,18 +118,12 @@ impl DirLockGuard {
 impl Drop for DirLockGuard {
     fn drop(&mut self) {
         if !self.read_only {
-            match std::fs::remove_file(&self.abs_pid_path) {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("cannot remove file {:?} : {}", &self.abs_pid_path, e);
-                }
-            };
-        }
-        match flock(&self.dir_fd, libc::LOCK_UN) {
-            Ok(_) => {}
-            Err(_) => {
-                error!("cannot release lock on opt.dir or opt.value_dir");
+            if let Err(e) = std::fs::remove_file(&self.abs_pid_path) {
+                error!("cannot remove file {:?} : {}", &self.abs_pid_path, e);
             }
-        };
+        }
+        if let Err(e) = flock(&self.dir_fd, libc::LOCK_UN) {
+            error!("cannot release lock on opt.dir or opt.value_dir : {}", e);
+        }
     }
 }

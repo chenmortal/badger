@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs::{read_dir, OpenOptions},
+    path::PathBuf,
     sync::{
         atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering},
         Arc,
@@ -14,12 +15,11 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 
 use crate::{
-    default::VLOG_FILE_EXT,
     errors::err_file,
     key_registry::KeyRegistry,
-    util::log_file::LogFile,
     options::Options,
-    util::{dir_join_id_suffix, parse_file_id},
+    util::log_file::LogFile,
+    util::{DBFileId, DBFileSuffix},
     vlog::read::LogFileIter,
 };
 
@@ -53,7 +53,7 @@ pub enum VlogError {
 }
 #[derive(Debug)]
 pub(crate) struct ValueLog {
-    fid_logfile: RwLock<BTreeMap<u32, Arc<RwLock<LogFile>>>>,
+    fid_logfile: RwLock<BTreeMap<DBFileId, Arc<RwLock<LogFile>>>>,
     max_fid: AtomicU32,
     files_to_be_deleted: Vec<u32>,
     num_active_iter: AtomicI32,
@@ -122,8 +122,8 @@ impl ValueLog {
         for ele in read_dir(dir).map_err(|e| err_file(e, dir, "Unable to open log dir."))? {
             let entry = ele.map_err(|e| err_file(e, dir, "Unable to read dir entry"))?;
             let path = entry.path();
-            if let Some(fid) = parse_file_id(&path, VLOG_FILE_EXT) {
-                let fid = fid as u32;
+            if let Some(fid) = DBFileId::parse(&path, DBFileSuffix::Vlog) {
+                // let fid_u32:u32 = fid.into();
                 if !found.insert(fid) {
                     bail!("Duplicate file found. Please delete one.")
                 };
@@ -145,7 +145,7 @@ impl ValueLog {
                     })?;
                 }
                 fid_logfile_w.insert(fid, Arc::new(RwLock::new(log_file)));
-                self.max_fid.fetch_max(fid, Ordering::SeqCst);
+                self.max_fid.fetch_max(fid.into(), Ordering::SeqCst);
             };
         }
         drop(fid_logfile_w);
@@ -153,7 +153,8 @@ impl ValueLog {
     }
     async fn create_vlog_file(&self) -> anyhow::Result<Arc<RwLock<LogFile>>> {
         let fid = self.max_fid.fetch_add(1, Ordering::SeqCst) + 1;
-        let file_path = dir_join_id_suffix(Options::value_dir(), fid as u64, VLOG_FILE_EXT);
+        let fid = DBFileId::Vlog(fid);
+        let file_path = Options::value_dir().join::<&PathBuf>(&fid.into());
         let mut fp_open_opt = OpenOptions::new();
         fp_open_opt.read(true).write(true).create_new(true);
         let (log_file, _) = LogFile::open(
@@ -176,7 +177,7 @@ impl ValueLog {
         Ok(new_logfile)
     }
     #[inline]
-    pub(crate) async fn get_logfile(&self, fid: u32) -> Option<Arc<RwLock<LogFile>>> {
+    pub(crate) async fn get_logfile(&self, fid: DBFileId) -> Option<Arc<RwLock<LogFile>>> {
         let p = self.fid_logfile.read().await;
         let r = if let Some(s) = p.get(&fid) {
             Some(s.clone())
@@ -189,7 +190,7 @@ impl ValueLog {
     #[inline]
     pub(crate) async fn get_latest_logfile(&self) -> anyhow::Result<Arc<RwLock<LogFile>>> {
         let p = self.fid_logfile.read().await;
-        let r = if let Some(s) = p.get(&self.max_fid.load(Ordering::SeqCst)) {
+        let r = if let Some(s) = p.get(&&DBFileId::Vlog(self.max_fid.load(Ordering::SeqCst))) {
             s.clone()
         } else {
             bail!("Failed to get latest_logfile");

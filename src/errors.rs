@@ -1,9 +1,9 @@
-use std::{path::PathBuf, io::Error};
+use std::{io::Error, path::PathBuf};
 
-use thiserror::Error;
 use anyhow::anyhow;
-#[derive(Debug,Error)]
-pub enum DBError{
+use thiserror::Error;
+#[derive(Debug, Error)]
+pub enum DBError {
     #[error("Invalid ValueLogFileSize, must be in range [1MB,2GB)")]
     ValuelogSize,
     #[error("Key not found")]
@@ -32,12 +32,13 @@ pub enum DBError{
     InvalidDataKeyID,
     #[error("DB Closed")]
     DBClosed,
+    #[error("Log truncate required to run DB. This might result in data loss ; end offset: {0} < size: {1} ")]
+    TruncateNeeded(usize, usize),
     #[error("Writes are blocked, possibly due to DropAll or Close")]
-    BlockedWrites
-    // ErrInvalidEncryptionKey is returned if length of encryption keys is invalid.
+    BlockedWrites, // ErrInvalidEncryptionKey is returned if length of encryption keys is invalid.
 }
-pub(crate) fn err_file(err:Error,path:&PathBuf,msg:&str)->anyhow::Error{
-    anyhow!("{}. Path={:?}. Error={}",msg,path,err)
+pub(crate) fn err_file(err: Error, path: &PathBuf, msg: &str) -> anyhow::Error {
+    anyhow!("{}. Path={:?}. Error={}", msg, path, err)
 }
 // #[derive(Debug,Error)]
 // pub enum FileSysErr {
@@ -55,5 +56,5 @@ pub(crate) fn err_file(err:Error,path:&PathBuf,msg:&str)->anyhow::Error{
 //     }
 // }
 // impl From for FileSysErr {
-    
+
 // }

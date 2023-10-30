@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::{
-    db::{BlockCache, IndexCache},
     key_registry::{AesCipher, KeyRegistry},
     options::{CompressionType, Options},
     pb::badgerpb4::{self, checksum::Algorithm, DataKey},
+    util::cache::{BlockCache, IndexCache},
 };
 // ChecksumVerificationMode tells when should DB verify checksum for SSTable blocks.
 #[derive(Debug, Clone, Copy)]
@@ -78,9 +78,7 @@ impl TableOption {
         block_cache: &Option<BlockCache>,
         index_cache: &Option<IndexCache>,
     ) -> Self {
-        let mut registry_w = key_registry.write().await;
-        let cipher = registry_w.latest_cipher().await.into();
-        drop(registry_w);
+        let cipher = key_registry.latest_cipher().await.into();
         Self {
             table_capacity: (Options::base_table_size() as f64 * 0.95) as u64,
             bloom_false_positive: Options::bloom_false_positive(),
@@ -132,13 +130,15 @@ impl TableOption {
         self.cipher.clone()
     }
 
-    pub(crate) fn set_cipher_with_key(&mut self, cipher: Option<DataKey>) {
-        if let Some(key) = cipher {
-            if let Ok(cipher) = AesCipher::new(&key.data, Options::aes_is_siv()) {
-                self.cipher = Arc::new(cipher.into())
-            }
-        }
-    }
+    // pub(crate) fn set_cipher_with_key(&mut self, cipher: Option<DataKey>) {
+
+    //     if let Some(key) = cipher {
+            
+    //         // if let Ok(cipher) = AesCipher::new(&key.data, Options::aes_is_siv()) {
+    //         //     self.cipher = Arc::new(cipher.into())
+    //         // }
+    //     }
+    // }
 
     pub(crate) fn compression(&self) -> CompressionType {
         self.compression
@@ -150,5 +150,9 @@ impl TableOption {
 
     pub(crate) fn bloom_false_positive(&self) -> f64 {
         self.bloom_false_positive
+    }
+
+    pub(crate) fn set_cipher(&mut self, cipher: Arc<Option<AesCipher>>) {
+        self.cipher = cipher;
     }
 }

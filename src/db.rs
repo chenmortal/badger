@@ -10,19 +10,21 @@ use std::{
 use crate::{
     default::{KV_WRITES_ENTRIES_CHANNEL_CAPACITY, LOCK_FILE},
     errors::DBError,
-    key_registry::KeyRegistry,
+    key_registry::{self, KeyRegistry},
     kv::{KeyTs, ValueStruct},
-    lsm::levels::LevelsController,
+    level::levels::LevelsController,
     // manifest::open_create_manifestfile,
-    memtable::{new_mem_table, MemTable},
+    memtable::MemTable,
     options::Options,
     table::block::{self, Block},
     txn::oracle::Oracle,
     util::closer::Closer,
-    util::lock::DirLockGuard,
     util::metrics::calculate_size,
-    util::publisher::Publisher,
-    util::rayon::set_global_rayon_pool,
+    util::{
+        cache::{BlockCache, IndexCache},
+        publisher::Publisher,
+        rayon::init_global_rayon_pool,
+    },
     vlog::{threshold::VlogThreshold, ValueLog},
     write::WriteReq,
 };
@@ -35,8 +37,8 @@ use tokio::sync::{
     Mutex,
 };
 
-pub(crate) type BlockCache = AsyncCache<Vec<u8>, Block>;
-pub(crate) type IndexCache = AsyncCache<u64, Vec<u8>>;
+// pub(crate) type BlockCache = AsyncCache<Vec<u8>, Block>;
+// pub(crate) type IndexCache = AsyncCache<u64, Vec<u8>>;
 #[derive(Debug)]
 pub(crate) struct NextId(AtomicU32);
 impl NextId {
@@ -84,62 +86,20 @@ pub struct DBInner {
     pub(crate) publisher: Publisher,
     is_closed: AtomicBool,
     pub(crate) block_writes: AtomicBool,
+    pub(crate) opt: Options,
 }
 impl DBInner {
-    pub async fn open(opt: Options) -> anyhow::Result<DB> {
+    pub async fn open(mut opt: Options) -> anyhow::Result<DB> {
         Options::init(opt.clone())?;
-        let mut dir_lock_guard = None;
-        let mut value_dir_lock_guard = None;
 
-        if !Options::bypass_lock_guard() {
-            dir_lock_guard =
-                DirLockGuard::acquire_lock(Options::dir(), LOCK_FILE, Options::read_only())?.into();
-            if Options::value_dir().canonicalize()? != Options::dir().canonicalize()? {
-                value_dir_lock_guard = DirLockGuard::acquire_lock(
-                    &Options::value_dir(),
-                    LOCK_FILE,
-                    Options::read_only(),
-                )?
-                .into();
-            };
-        }
-        // }
-        set_global_rayon_pool()?;
+        let lock_guard = opt.lock_guard.try_build()?;
+
+        init_global_rayon_pool()?;
         let manifest_file = opt.manifest.build()?;
+        let block_cache = opt.block_cache.try_build()?;
+        let index_cache = opt.index_cache.try_build()?;
 
-        let mut block_cache = None;
-        if Options::block_cache_size() > 0 {
-            let mut num_in_cache = Options::block_cache_size() / Options::block_size();
-            if num_in_cache == 0 {
-                num_in_cache = 1;
-            }
-            block_cache = stretto::AsyncCacheBuilder::<Vec<u8>, block::Block>::new(
-                num_in_cache * 8,
-                Options::block_cache_size() as i64,
-            )
-            .set_buffer_items(64)
-            .set_metrics(true)
-            .finalize(tokio::spawn)?
-            .into();
-        }
-        let mut index_cache = None;
-        if Options::index_cache_size() > 0 {
-            let index_sz = (Options::memtable_size() as f64 * 0.05) as usize;
-            let mut num_in_cache = Options::index_cache_size() as usize / index_sz;
-            if num_in_cache == 0 {
-                num_in_cache = 1;
-            }
-            index_cache = stretto::AsyncCacheBuilder::<u64, Vec<u8>>::new(
-                num_in_cache * 8,
-                Options::index_cache_size(),
-            )
-            .set_buffer_items(64)
-            .set_metrics(true)
-            .finalize(tokio::spawn)?
-            .into();
-        }
-
-        let key_registry = KeyRegistry::open().await?;
+        let key_registry = opt.key_registry.build().await?;
 
         calculate_size().await;
         // let mut update_size_closer = Closer::new();
@@ -148,12 +108,7 @@ impl DBInner {
         let next_mem_fid = NextId::new();
         let mut memtable = None;
         if !Options::read_only() {
-            memtable = Arc::new(RwLock::new(
-                new_mem_table(&key_registry, &next_mem_fid)
-                    .await
-                    .map_err(|e| anyhow!("Cannot create memtable {}", e))?,
-            ))
-            .into();
+            memtable = Arc::new(RwLock::new(opt.memtable.new(&key_registry).await?)).into();
         }
 
         let level_controller = LevelsController::new(
@@ -161,6 +116,7 @@ impl DBInner {
             key_registry.clone(),
             &block_cache,
             &index_cache,
+            opt.memtable.memtable_size(),
         )
         .await?;
         let threshold = VlogThreshold::new();
@@ -188,12 +144,14 @@ impl DBInner {
             is_closed: AtomicBool::new(false),
             block_writes: AtomicBool::new(false),
             recv_memtable: recv_memtable.into(),
+            opt,
         }));
         let flush_memtable = Closer::new(1);
         let _p = tokio::spawn(db.clone().flush_memtable(flush_memtable.clone()));
-        drop(value_dir_lock_guard);
-        drop(dir_lock_guard);
+        // drop(value_dir_lock_guard);
+        // drop(dir_lock_guard);
 
+        drop(lock_guard);
         Ok(db)
     }
 

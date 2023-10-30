@@ -9,17 +9,18 @@ use std::{
 use crate::{
     default::DEFAULT_IS_SIV,
     key_registry::{AesCipher, KeyRegistry},
-    util::mmap::MmapFile,
-    options::Options,
     pb::badgerpb4::DataKey,
+    util::mmap::MmapFile,
     vlog::VLOG_HEADER_SIZE,
 };
 use anyhow::{anyhow, bail};
 use bytes::{Buf, BufMut};
 
+use super::DBFileId;
+
 #[derive(Debug)]
 pub(crate) struct LogFile {
-    fid: u32,
+    fid: DBFileId,
     key_registry: KeyRegistry,
     datakey: Option<DataKey>,
     cipher: Option<AesCipher>,
@@ -43,7 +44,7 @@ impl DerefMut for LogFile {
 }
 impl LogFile {
     pub(crate) async fn open(
-        fid: u32,
+        fid: DBFileId,
         file_path: &PathBuf,
         fp_open_opt: OpenOptions,
         fsize: usize,
@@ -97,12 +98,10 @@ impl LogFile {
         let mut buf_ref: &[u8] = buf.as_ref();
         let key_id = buf_ref.get_u64();
 
-        let registry_r = log_file.key_registry.read().await;
-        if let Some(dk) = registry_r.get_data_key(key_id).await? {
-            log_file.cipher = AesCipher::new(dk.data.as_slice(), Options::aes_is_siv())?.into();
-            log_file.datakey = Some(dk);
-        }
-        drop(registry_r);
+        if let Some(datakey) = log_file.key_registry.get_data_key(key_id).await? {
+            log_file.cipher = log_file.key_registry.get_cipher(&datakey)?.into();
+            log_file.datakey = datakey.into();
+        };
         let nonce = buf_ref.get(0..12);
         log_file.base_nonce = nonce.unwrap().to_vec();
 
@@ -127,15 +126,9 @@ impl LogFile {
     // +----------------+------------------+------------------+
     #[tracing::instrument]
     async fn bootstrap(&mut self) -> anyhow::Result<()> {
-        let mut key_registry_w = self.key_registry.write().await;
-        let datakey = key_registry_w
-            .latest_datakey()
-            .await
-            .map_err(|e| anyhow!("Error while retrieving datakey in LogFile.bootstarp {}", e))?;
-        drop(key_registry_w);
-        self.datakey = datakey;
+        self.datakey = self.key_registry.latest_datakey().await?;
         if let Some(dk) = &self.datakey {
-            self.cipher = AesCipher::new(&dk.data, Options::aes_is_siv())?.into();
+            self.cipher = self.key_registry.get_cipher(dk)?.into();
         }
         self.base_nonce = AesCipher::generate_nonce().to_vec();
 
@@ -209,7 +202,7 @@ impl LogFile {
         self.size.store(size, Ordering::SeqCst)
     }
 
-    pub(crate) fn fid(&self) -> u32 {
+    pub(crate) fn fid(&self) -> DBFileId {
         self.fid
     }
 }
