@@ -10,7 +10,7 @@ use tokio::sync::oneshot::Receiver;
 use crate::{
     db::DB,
     errors::DBError,
-    kv::{Meta, TxnTs, Entry},
+    kv::{Entry, Meta, TxnTs},
     options::Options,
     txn::{BADGER_PREFIX, HASH},
     util::now_since_unix,
@@ -80,13 +80,13 @@ impl Txn {
             )
         };
         let threshold = Options::value_threshold();
+        let max_batch_count = self.db().opt.max_batch_count();
+        let max_batch_size = self.db().opt.max_batch_size();
         let mut check_size = |e: &mut Entry| {
             let count = self.count + 1;
             e.try_set_value_threshold(threshold);
             let size = self.size + e.estimate_size(threshold) + 10;
-            if count >= Options::max_batch_count() as usize
-                || size >= Options::max_batch_size() as usize
-            {
+            if count >= max_batch_count || size >= max_batch_size {
                 bail!(DBError::TxnTooBig)
             }
             self.count = count;
@@ -111,7 +111,11 @@ impl Txn {
             exceeds_size("Key", MAX_KEY_SIZE, e.key())?;
         }
         if e.value().len() > Options::vlog_file_size() {
-            exceeds_size("Value", Options::vlog_file_size() as usize, e.value().as_ref())?
+            exceeds_size(
+                "Value",
+                Options::vlog_file_size() as usize,
+                e.value().as_ref(),
+            )?
         }
         self.db.is_banned(&e.key()).await?;
 

@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    env::JoinPathsError,
     fs::{rename, File, OpenOptions},
     io::{BufReader, Read, Seek, SeekFrom, Write},
     path::PathBuf,
@@ -15,7 +14,7 @@ use prost::Message;
 use crate::{
     default::{DEFAULT_DIR, MANIFEST_FILE_NAME, MANIFEST_REWRITE_FILE_NAME},
     errors::err_file,
-    options::{CompressionType, DBDir, ModifiedOptions, Options, RequiredOptions},
+    options::CompressionType,
     pb::badgerpb4::{manifest_change, ManifestChange, ManifestChangeSet},
     util::sys::sync_dir,
 };

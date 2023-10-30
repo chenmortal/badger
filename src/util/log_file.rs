@@ -9,7 +9,6 @@ use std::{
 use crate::{
     default::DEFAULT_IS_SIV,
     key_registry::{AesCipher, KeyRegistry},
-    options::Options,
     pb::badgerpb4::DataKey,
     util::mmap::MmapFile,
     vlog::VLOG_HEADER_SIZE,
@@ -17,9 +16,11 @@ use crate::{
 use anyhow::{anyhow, bail};
 use bytes::{Buf, BufMut};
 
+use super::DBFileId;
+
 #[derive(Debug)]
 pub(crate) struct LogFile {
-    fid: u32,
+    fid: DBFileId,
     key_registry: KeyRegistry,
     datakey: Option<DataKey>,
     cipher: Option<AesCipher>,
@@ -43,7 +44,7 @@ impl DerefMut for LogFile {
 }
 impl LogFile {
     pub(crate) async fn open(
-        fid: u32,
+        fid: DBFileId,
         file_path: &PathBuf,
         fp_open_opt: OpenOptions,
         fsize: usize,
@@ -201,7 +202,7 @@ impl LogFile {
         self.size.store(size, Ordering::SeqCst)
     }
 
-    pub(crate) fn fid(&self) -> u32 {
+    pub(crate) fn fid(&self) -> DBFileId {
         self.fid
     }
 }

@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    kv::{Meta, TxnTs, ValuePointer, Entry},
+    kv::{Entry, Meta, TxnTs, ValuePointer},
     util::log_file::LogFile,
 };
 
@@ -53,6 +53,12 @@ impl<'a> LogFileIter<'a> {
         let mut kv_buf = vec![0; key_len + value_len];
         hash_reader.read_exact(&mut kv_buf)?;
 
+        if kv_buf.len() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "kv len can't be zero",
+            ));
+        }
         if let Some(s) = self.log_file.try_decrypt(&kv_buf, self.record_offset) {
             kv_buf = s;
         };

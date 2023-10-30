@@ -3,7 +3,10 @@ use integer_encoding::VarInt;
 // use serde::{Deserialize, Serialize};
 use std::{mem, ops::Deref};
 
-use crate::{util::now_since_unix, vlog::header::VlogEntryHeader};
+use crate::{
+    util::{now_since_unix, DBFileId},
+    vlog::header::VlogEntryHeader,
+};
 
 #[derive(Debug, Default, Clone)]
 pub struct Entry {
@@ -412,9 +415,9 @@ pub(crate) struct ValuePointer {
 }
 impl ValuePointer {
     const SIZE: usize = mem::size_of::<ValuePointer>();
-    pub(crate) fn new(fid: u32, len: usize, offset: usize) -> Self {
+    pub(crate) fn new(fid: DBFileId, len: usize, offset: usize) -> Self {
         Self {
-            fid,
+            fid: fid.into(),
             len: len as u32,
             offset: offset as u32,
         }
@@ -512,5 +515,10 @@ mod tests {
         v.meta = Meta(1);
         assert_eq!(v.serialized_size(), 9);
         assert_eq!(v, ValueMeta::deserialize(&v.serialize()));
+    }
+    #[test]
+    fn test_meta() {
+        assert!(Meta(0).is_empty());
+        assert!(!Meta(1).is_empty())
     }
 }

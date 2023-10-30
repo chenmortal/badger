@@ -8,6 +8,7 @@ use crate::default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD};
 use crate::errors::DBError;
 use crate::key_registry::{KeyRegistry, KeyRegistryBuilder};
 use crate::manifest::ManifestBuilder;
+use crate::memtable::MemTableBuilder;
 use crate::pb::badgerpb4;
 use crate::pb::badgerpb4::checksum::Algorithm;
 use crate::table::opt::ChecksumVerificationMode;
@@ -69,33 +70,6 @@ impl CompressionType {
 // static OPT:Options=Options::default();
 // const MAX_VALUE_THRESHOLD: i64 = 1 << 20;
 #[derive(Debug, Clone)]
-pub(crate) struct RequiredOptions {
-    dir: PathBuf,
-    value_dir: PathBuf,
-}
-
-impl RequiredOptions {
-    pub(crate) fn dir(&self) -> &PathBuf {
-        &self.dir
-    }
-}
-pub(crate) struct ModifiedOptions {
-    sync_writes: bool,
-    num_versions_to_keep: isize,
-    read_only: bool,
-    log_level: LevelFilter,
-    compression: CompressionType,
-    aes_is_siv: bool,
-    metrics_enabled: bool,
-}
-
-impl ModifiedOptions {
-    pub(crate) fn read_only(&self) -> bool {
-        self.read_only
-    }
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct DBDir(PathBuf);
 impl Default for DBDir {
     fn default() -> Self {
@@ -137,12 +111,13 @@ pub struct Options {
     log_level: LevelFilter,
     compression: CompressionType,
     // pub(crate) in_memory: bool,
-    metrics_enabled: bool,
+    // metrics_enabled: bool,
     // Sets the Stream.numGo field
     num_goroutines: usize,
 
     // Fine tuning options.
-    memtable_size: u32,
+    // memtable_size: u32,
+    pub memtable: MemTableBuilder,
     base_table_size: usize,
     base_level_size: usize,
     level_size_multiplier: usize,
@@ -207,8 +182,8 @@ pub struct Options {
 
     // 4. Flags for testing purposes
     // ------------------------------
-    max_batch_count: u32, // max entries in batch
-    max_batch_size: u32,  // max batch size in bytes
+    max_batch_count: usize, // max entries in batch
+    max_batch_size: usize,  // max batch size in bytes
 
     max_value_threshold: f64,
 }
@@ -223,9 +198,9 @@ impl Default for Options {
             log_level: log::LevelFilter::Info,
             compression: Default::default(),
             // in_memory: Default::default(),
-            metrics_enabled: true,
+            // metrics_enabled: true,
             num_goroutines: 8,
-            memtable_size: 64 << 20,
+            // memtable_size: 64 << 20,
             base_table_size: 2 << 20,
             base_level_size: 10 << 20,
             level_size_multiplier: 10,
@@ -263,6 +238,7 @@ impl Default for Options {
             block_cache: Default::default(),
             index_cache: Default::default(),
             key_registry: Default::default(),
+            memtable: Default::default(),
         }
     }
 }
@@ -271,6 +247,15 @@ impl Options {
     pub(crate) fn init_lock_guard(&mut self) {
         self.lock_guard.insert(self.manifest.dir().clone());
         self.lock_guard.insert(self.key_registry.dir().clone());
+        self.lock_guard.insert(self.memtable.dir().clone());
+    }
+
+    pub(crate) fn max_batch_count(&self) -> usize {
+        self.max_batch_count
+    }
+
+    pub(crate) fn max_batch_size(&self) -> usize {
+        self.max_batch_size
     }
 }
 impl Options {
@@ -304,12 +289,13 @@ impl Options {
         self.manifest.set_read_only(read_only);
         self.lock_guard.set_read_only(read_only);
         self.key_registry.set_read_only(read_only);
+        self.memtable.set_read_only(read_only);
         self
     }
-    pub fn set_metrics_enabled(mut self, metrics_enabled: bool) -> Self {
-        self.metrics_enabled = metrics_enabled;
-        self
-    }
+    // pub fn set_metrics_enabled(mut self, metrics_enabled: bool) -> Self {
+    //     self.metrics_enabled = metrics_enabled;
+    //     self
+    // }
     pub fn set_log_level(mut self, log_level: LevelFilter) -> Self {
         self.log_level = log_level;
         self
@@ -338,10 +324,10 @@ impl Options {
         self.num_memtables = num_memtables;
         self
     }
-    pub fn set_memtable_size(mut self, memtable_size: u32) -> Self {
-        self.memtable_size = memtable_size;
-        self
-    }
+    // pub fn set_memtable_size(mut self, memtable_size: u32) -> Self {
+    //     self.memtable_size = memtable_size;
+    //     self
+    // }
     pub fn set_bloom_false_positive(mut self, bloom_false_positive: f64) -> Self {
         self.bloom_false_positive = bloom_false_positive;
         self
@@ -459,9 +445,15 @@ impl Options {
         //     bail!("Cannot use badger in Disk-less mode with Dir or ValueDir set");
         // }
         log::set_max_level(self.log_level);
-        self.max_batch_size = (15 * self.memtable_size) / 100;
+        self.max_batch_size = (15 * self.memtable.memtable_size()) / 100;
         self.max_batch_count = self.max_batch_size / (SKL_MAX_NODE_SIZE);
-        self.max_value_threshold = MAX_VALUE_THRESHOLD.min(self.max_batch_size) as f64;
+        self.memtable.set_arena_size(
+            self.memtable.memtable_size()
+                + self.max_batch_size
+                + self.max_batch_count * SKL_MAX_NODE_SIZE,
+        );
+
+        self.max_value_threshold = MAX_VALUE_THRESHOLD.min(self.max_batch_size as u32) as f64;
         if self.vlog_percentile < 0.0 || self.vlog_percentile > 1.0 {
             bail!("vlog_percentile must be within range of 0.0-1.0")
         }
@@ -471,7 +463,7 @@ impl Options {
                 MAX_VALUE_THRESHOLD
             );
         }
-        if self.value_threshold > self.max_batch_size {
+        if self.value_threshold > self.max_batch_size as u32 {
             bail!("Valuethreshold {} greater than max batch size of {}. Either reduce Valuethreshold or increase max_table_size",self.value_threshold,self.max_batch_size);
         }
         if !(self.vlog_file_size >= 1 << 20 && self.vlog_file_size < 2 << 30) {
@@ -515,7 +507,8 @@ impl Options {
         self.check_set_options()?;
         self.create_dirs()?;
         self.init_lock_guard();
-        self.index_cache.init(self.memtable_size as usize);
+        self.index_cache.init(self.memtable.memtable_size());
+
         match OPT.set(self) {
             Ok(_) => {}
             Err(e) => {
@@ -553,13 +546,13 @@ impl Options {
         Self::get_static().compression
     }
 
-    pub(crate) fn metrics_enabled() -> bool {
-        Self::get_static().metrics_enabled
-    }
+    // pub(crate) fn metrics_enabled() -> bool {
+    //     Self::get_static().metrics_enabled
+    // }
 
-    pub(crate) fn memtable_size() -> u32 {
-        Self::get_static().memtable_size
-    }
+    // pub(crate) fn memtable_size() -> u32 {
+    //     Self::get_static().memtable_size
+    // }
 
     pub(crate) fn base_table_size() -> usize {
         Self::get_static().base_table_size
@@ -667,13 +660,13 @@ impl Options {
         Self::get_static().managed_txns
     }
 
-    pub(crate) fn max_batch_count() -> u32 {
-        Self::get_static().max_batch_count
-    }
+    // pub(crate) fn max_batch_count() -> u32 {
+    //     Self::get_static().max_batch_count
+    // }
 
-    pub(crate) fn max_batch_size() -> u32 {
-        Self::get_static().max_batch_size
-    }
+    // pub(crate) fn max_batch_size() -> u32 {
+    //     Self::get_static().max_batch_size
+    // }
 
     pub(crate) fn max_value_threshold() -> f64 {
         Self::get_static().max_value_threshold

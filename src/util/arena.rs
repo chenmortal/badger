@@ -37,7 +37,7 @@ pub(crate) struct Arena {
     layout: Layout,
 }
 impl Arena {
-    pub(crate) fn new(size: u32) -> Arena {
+    pub(crate) fn new(size: usize) -> Arena {
         let chunk_align = CHUNK_ALIGN;
         let size = size as usize + 8;
         let mut request_size = Self::round_up_to(size, chunk_align).unwrap();

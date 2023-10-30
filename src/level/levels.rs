@@ -18,10 +18,16 @@ use tokio::{
     sync::{Mutex, Notify, Semaphore},
 };
 
+use super::{
+    compaction::{CompactStatus, KeyRange},
+    level_handler::LevelHandler,
+};
+#[cfg(feature = "metrics")]
+use crate::util::metrics::{add_num_compaction_tables, sub_num_compaction_tables};
 use crate::{
     default::SSTABLE_FILE_EXT,
     key_registry::KeyRegistry,
-    lsm::compaction::LevelCompactStatus,
+    level::compaction::LevelCompactStatus,
     manifest::Manifest,
     options::Options,
     pb::ERR_CHECKSUM_MISMATCH,
@@ -36,15 +42,9 @@ use crate::{
     util::sys::sync_dir,
     util::{
         cache::{BlockCache, IndexCache},
-        metrics::{add_num_compaction_tables, sub_num_compaction_tables},
         mmap::MmapFile,
     },
     util::{compare_key, dir_join_id_suffix, get_sst_id_set, key_with_ts, parse_key, Throttle},
-};
-
-use super::{
-    compaction::{CompactStatus, KeyRange},
-    level_handler::LevelHandler,
 };
 #[derive(Debug)]
 pub(crate) struct LevelsController {
@@ -52,6 +52,7 @@ pub(crate) struct LevelsController {
     l0_stalls_ms: AtomicI64,
     levels: Vec<LevelHandler>,
     compact_status: CompactStatus,
+    memtable_size: usize,
 }
 struct Targets {
     base_level: usize,
@@ -85,6 +86,7 @@ impl LevelsController {
         key_registry: KeyRegistry,
         block_cache: &Option<BlockCache>,
         index_cache: &Option<IndexCache>,
+        memtable_size: usize,
     ) -> anyhow::Result<LevelsController> {
         debug_assert!(Options::num_level_zero_tables_stall() > Options::num_level_zero_tables());
 
@@ -94,6 +96,7 @@ impl LevelsController {
             l0_stalls_ms: Default::default(),
             levels: Vec::with_capacity(Options::max_levels()),
             compact_status,
+            memtable_size,
         };
 
         let mut compact_status_w = levels_control.compact_status.0.write();
@@ -163,8 +166,6 @@ impl LevelsController {
                 let mut table_opt =
                     TableOption::new(&key_registry_clone, &block_cache_clone, &index_cache_clone)
                         .await;
-                let cipher = key_registry_clone.latest_cipher().await;
-                table_opt.set_cipher(Arc::new(cipher));
                 table_opt.set_compression(tm.compression);
                 let mut fp_open_opt = OpenOptions::new();
                 fp_open_opt.read(true).write(!read_only);
@@ -371,8 +372,10 @@ impl LevelsController {
         }
 
         let num_tables = compact_def.top.len() + compact_def.bottom.len();
+        #[cfg(feature = "metrics")]
         add_num_compaction_tables(num_tables);
         let result = self.compact_build_tables(level, compact_def).await;
+        #[cfg(feature = "metrics")]
         sub_num_compaction_tables(num_tables);
         result?;
         Ok(())
@@ -442,7 +445,7 @@ impl LevelsController {
         let mut table_size = Options::base_table_size();
         for i in 0..levels_len {
             targets.file_size[i] = if i == 0 {
-                Options::memtable_size() as usize
+                self.memtable_size
             } else if i <= targets.base_level {
                 table_size
             } else {

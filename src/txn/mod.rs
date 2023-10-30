@@ -131,9 +131,9 @@ impl Txn {
     pub async fn set<B: Into<Bytes>>(&mut self, key: B, value: B) -> anyhow::Result<()> {
         self.set_entry(Entry::new(key.into(), value.into())).await
     }
-    pub async fn delete(&mut self, key: &[u8]) -> anyhow::Result<()> {
+    pub async fn delete<B: Into<Bytes>>(&mut self, key: B) -> anyhow::Result<()> {
         let mut e = Entry::default();
-        e.set_key(key.to_vec());
+        e.set_key(key);
         e.set_meta(Meta::DELETE);
         self.set_entry(e).await
     }

@@ -7,6 +7,18 @@ use std::{
     },
 };
 
+#[cfg(feature = "metrics")]
+use crate::util::metrics::{add_num_bytes_written_user, add_num_puts, set_pending_writes};
+use crate::{
+    db::DB,
+    default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
+    errors::DBError,
+    kv::{Entry, Meta, ValuePointer},
+    options::Options,
+    util::closer::Closer,
+};
+use anyhow::anyhow;
+use anyhow::bail;
 use log::{debug, error};
 use scopeguard::defer;
 use tokio::{
@@ -17,19 +29,6 @@ use tokio::{
         Notify,
     },
 };
-
-use crate::{
-    db::DB,
-    default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
-    errors::DBError,
-    kv::{ValuePointer, Meta, Entry},
-    memtable::new_mem_table,
-    options::Options,
-    util::closer::Closer,
-    util::metrics::{add_num_bytes_written_user, add_num_puts, set_pending_writes},
-};
-use anyhow::anyhow;
-use anyhow::bail;
 pub(crate) struct WriteReq {
     entries_vptrs: Vec<(Entry, ValuePointer)>,
     result: anyhow::Result<()>,
@@ -84,10 +83,12 @@ impl DB {
             bail!(DBError::BlockedWrites)
         };
         let entires_len = entries.len();
+        #[cfg(feature = "metrics")]
         add_num_bytes_written_user(entries_size);
         let (send_result, receiver) = oneshot::channel::<anyhow::Result<()>>();
         let w_req = WriteReq::new(entries, send_result);
         self.send_write_req.send(w_req).await?;
+        #[cfg(feature = "metrics")]
         add_num_puts(entires_len);
         Ok(receiver)
     }
@@ -106,6 +107,7 @@ impl DB {
             notify_send.notify_one();
         }
         let req_len = Arc::new(AtomicUsize::new(0));
+        #[cfg(feature = "metrics")]
         set_pending_writes(Options::dir().clone(), req_len.clone()).await;
         loop {
             select! {
@@ -186,7 +188,7 @@ impl DB {
 
         debug!("Making room for writes");
 
-        let new_memtable = new_mem_table(&self.key_registry, &self.next_mem_fid).await?;
+        let new_memtable = self.opt.memtable.new(&self.key_registry).await?;
 
         let mut memtable_w = memtable.write().await;
         let old_memtable = replace(&mut *memtable_w, new_memtable);

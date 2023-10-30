@@ -12,9 +12,9 @@ use crate::{
     errors::DBError,
     key_registry::{self, KeyRegistry},
     kv::{KeyTs, ValueStruct},
-    lsm::levels::LevelsController,
+    level::levels::LevelsController,
     // manifest::open_create_manifestfile,
-    memtable::{new_mem_table, MemTable},
+    memtable::MemTable,
     options::Options,
     table::block::{self, Block},
     txn::oracle::Oracle,
@@ -86,6 +86,7 @@ pub struct DBInner {
     pub(crate) publisher: Publisher,
     is_closed: AtomicBool,
     pub(crate) block_writes: AtomicBool,
+    pub(crate) opt: Options,
 }
 impl DBInner {
     pub async fn open(mut opt: Options) -> anyhow::Result<DB> {
@@ -107,12 +108,7 @@ impl DBInner {
         let next_mem_fid = NextId::new();
         let mut memtable = None;
         if !Options::read_only() {
-            memtable = Arc::new(RwLock::new(
-                new_mem_table(&key_registry, &next_mem_fid)
-                    .await
-                    .map_err(|e| anyhow!("Cannot create memtable {}", e))?,
-            ))
-            .into();
+            memtable = Arc::new(RwLock::new(opt.memtable.new(&key_registry).await?)).into();
         }
 
         let level_controller = LevelsController::new(
@@ -120,6 +116,7 @@ impl DBInner {
             key_registry.clone(),
             &block_cache,
             &index_cache,
+            opt.memtable.memtable_size(),
         )
         .await?;
         let threshold = VlogThreshold::new();
@@ -147,6 +144,7 @@ impl DBInner {
             is_closed: AtomicBool::new(false),
             block_writes: AtomicBool::new(false),
             recv_memtable: recv_memtable.into(),
+            opt,
         }));
         let flush_memtable = Closer::new(1);
         let _p = tokio::spawn(db.clone().flush_memtable(flush_memtable.clone()));
