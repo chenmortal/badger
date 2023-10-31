@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use anyhow::bail;
 
 use crate::options::CompressionType;
@@ -7,7 +9,7 @@ use crate::pb::badgerpb4::checksum::Algorithm;
 pub mod badgerpb4;
 impl ManifestChange {
     pub fn new_create_change(
-        id: u64,
+        id: u32,
         level: u32,
         key_id: u64,
         compression: CompressionType,
@@ -31,7 +33,21 @@ impl Algorithm {
         }
     }
 }
-
+#[derive(Debug)]
+pub struct ChecksumError {
+    actual: u64,
+    expected: u64,
+}
+impl Display for ChecksumError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "checksum mismatch actual: {} , expected: {}",
+            self.actual, self.expected
+        )
+    }
+}
+impl std::error::Error for ChecksumError {}
 impl Checksum {
     pub(crate) fn new(algo: Algorithm, data: &[u8]) -> Self {
         let mut checksum = Checksum::default();
@@ -39,15 +55,13 @@ impl Checksum {
         checksum.sum = algo.calculate(data);
         checksum
     }
-    pub(crate) fn verify(&self, data: &[u8]) -> anyhow::Result<()> {
+    pub(crate) fn verify(&self, data: &[u8]) -> Result<(), ChecksumError> {
         let sum = self.algo().calculate(data);
         if self.sum != sum {
-            bail!(
-                "checksum mismatch actual: {} , expected: {} {}",
-                sum,
-                self.sum,
-                ERR_CHECKSUM_MISMATCH
-            );
+            return Err(ChecksumError {
+                actual: sum,
+                expected: self.sum,
+            });
         };
         Ok(())
     }

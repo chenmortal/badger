@@ -1,10 +1,11 @@
 pub(crate) mod read;
 pub(crate) mod write;
 use std::{
+    collections::VecDeque,
     fs::{read_dir, OpenOptions},
     path::PathBuf,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU32, Ordering},
         Arc,
     },
 };
@@ -14,14 +15,14 @@ use crate::{
     key_registry::KeyRegistry,
     kv::{KeyTsBorrow, TxnTs},
     util::log_file::LogFile,
-    util::{skip_list::SkipList, DBFileId, DBFileSuffix},
+    util::{skip_list::SkipList, DBFileId, MemTableId},
 };
 use anyhow::bail;
 
 #[derive(Debug)]
 pub(crate) struct MemTable {
     pub(super) skip_list: SkipList,
-    pub(super) wal: LogFile,
+    pub(super) wal: LogFile<MemTableId>,
     pub(super) max_version: TxnTs,
     pub(super) buf: Vec<u8>, // buf: BytesMut,
     memtable_size: usize,
@@ -35,34 +36,45 @@ pub struct MemTableBuilder {
     arena_size: usize,
     // max_batch_size: usize,
     // max_batch_count: usize,
-    next_fid: Arc<AtomicUsize>,
+    num_memtables: usize,
+    next_fid: Arc<AtomicU32>,
 }
 impl Default for MemTableBuilder {
     fn default() -> Self {
-        Self {
+        let mem_table_builder = Self {
             dir: PathBuf::from(DEFAULT_DIR),
             read_only: false,
             memtable_size: 64 << 20,
             arena_size: 64 << 20,
             next_fid: Default::default(),
-        }
+            num_memtables: 5,
+        };
+        mem_table_builder
     }
 }
 
 impl MemTableBuilder {
-    pub(crate) async fn open_many(&self, key_registry: &KeyRegistry) -> anyhow::Result<()> {
+    pub(crate) async fn open_many(
+        &self,
+        key_registry: &KeyRegistry,
+    ) -> anyhow::Result<VecDeque<Arc<MemTable>>> {
         let dir = read_dir(&self.dir)?;
 
         let mut fids = dir
             .filter_map(|ele| ele.ok())
             .map(|e| e.path())
-            .filter_map(|p| DBFileId::parse(&p, DBFileSuffix::Memtable))
+            .filter_map(|p| MemTableId::parse(p).ok())
             .collect::<Vec<_>>();
         fids.sort();
+        let mut immut_memtable = VecDeque::with_capacity(self.num_memtables);
         for fid in fids.iter() {
             let mut open_opt = OpenOptions::new();
             open_opt.read(true).write(!self.read_only);
-            let p = self.open(key_registry, *fid, open_opt).await?;
+            let (memtable, _) = self.open(key_registry, *fid, open_opt).await?;
+            if memtable.skip_list.is_empty() {
+                continue;
+            }
+            immut_memtable.push_back(Arc::new(memtable));
         }
         if fids.len() != 0 {
             self.next_fid
@@ -71,15 +83,15 @@ impl MemTableBuilder {
             self.next_fid.fetch_add(1, Ordering::SeqCst);
         }
 
-        Ok(())
+        Ok(immut_memtable)
     }
     pub(crate) async fn open(
         &self,
         key_registry: &KeyRegistry,
-        fid: DBFileId,
+        fid: MemTableId,
         open_opt: OpenOptions,
     ) -> anyhow::Result<(MemTable, bool)> {
-        let mem_file_path = self.dir.join::<&PathBuf>(&fid.into());
+        let mem_file_path = fid.join_dir(&self.dir);
 
         let skip_list = SkipList::new(self.arena_size, KeyTsBorrow::cmp);
 
@@ -109,7 +121,8 @@ impl MemTableBuilder {
     pub(crate) async fn new(&self, key_registry: &KeyRegistry) -> anyhow::Result<MemTable> {
         let mut open_opt = OpenOptions::new();
         open_opt.read(true).write(true).create(true);
-        let fid = DBFileId::MemTable(self.next_fid.fetch_add(1, Ordering::SeqCst));
+
+        let fid = self.next_fid.fetch_add(1, Ordering::SeqCst).into();
         let (memtable, is_new) = self.open(key_registry, fid, open_opt).await?;
         if !is_new {
             bail!("File {:?} already exists", &memtable.wal.path());
@@ -143,6 +156,10 @@ impl MemTableBuilder {
     pub fn memtable_size(&self) -> usize {
         self.memtable_size
     }
+
+    pub fn set_num_memtables(&mut self, num_memtables: usize) {
+        self.num_memtables = num_memtables;
+    }
 }
 
 impl MemTable {
@@ -154,11 +171,11 @@ impl MemTable {
         self.wal.write_offset() >= self.memtable_size
     }
 
-    pub(crate) fn wal(&self) -> &LogFile {
+    pub(crate) fn wal(&self) -> &LogFile<MemTableId> {
         &self.wal
     }
 
-    pub(crate) fn wal_mut(&mut self) -> &mut LogFile {
+    pub(crate) fn wal_mut(&mut self) -> &mut LogFile<MemTableId> {
         &mut self.wal
     }
 }

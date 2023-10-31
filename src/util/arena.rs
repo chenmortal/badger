@@ -1,7 +1,7 @@
 use std::alloc::{alloc, dealloc, Layout};
 
 use std::ptr::{self, NonNull, Unique};
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize};
+use std::sync::atomic::AtomicUsize;
 
 use crate::default::DEFAULT_PAGE_SIZE;
 
@@ -208,7 +208,7 @@ impl Drop for Arena {
 
 #[cfg(test)]
 mod tests {
-    use std::{mem::size_of, sync::Arc};
+    use std::{mem::size_of, sync::{Arc, atomic::AtomicPtr}};
     struct Ar {
         p: Option<AtomicPtr<u8>>,
         len: usize,
@@ -254,7 +254,7 @@ mod tests {
         dbg!(&p);
         // let t = p as *const u8;
         let k = p as *const KeyTs;
-        let p=k as *const u8;
+        let p = k as *const u8;
         let offset = arena.offset(k);
         dbg!(&offset);
         let p = unsafe { arena.get_mut::<KeyTs>(offset.unwrap()) }.unwrap();

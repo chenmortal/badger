@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs::{read_dir, OpenOptions},
-    path::PathBuf,
     sync::{
         atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering},
         Arc,
@@ -18,8 +17,7 @@ use crate::{
     errors::err_file,
     key_registry::KeyRegistry,
     options::Options,
-    util::log_file::LogFile,
-    util::{DBFileId, DBFileSuffix},
+    util::{log_file::LogFile, DBFileId, VlogId},
     vlog::read::LogFileIter,
 };
 
@@ -53,7 +51,7 @@ pub enum VlogError {
 }
 #[derive(Debug)]
 pub(crate) struct ValueLog {
-    fid_logfile: RwLock<BTreeMap<DBFileId, Arc<RwLock<LogFile>>>>,
+    fid_logfile: RwLock<BTreeMap<VlogId, Arc<RwLock<LogFile<VlogId>>>>>,
     max_fid: AtomicU32,
     files_to_be_deleted: Vec<u32>,
     num_active_iter: AtomicI32,
@@ -122,8 +120,7 @@ impl ValueLog {
         for ele in read_dir(dir).map_err(|e| err_file(e, dir, "Unable to open log dir."))? {
             let entry = ele.map_err(|e| err_file(e, dir, "Unable to read dir entry"))?;
             let path = entry.path();
-            if let Some(fid) = DBFileId::parse(&path, DBFileSuffix::Vlog) {
-                // let fid_u32:u32 = fid.into();
+            if let Ok(fid) = VlogId::parse(&path) {
                 if !found.insert(fid) {
                     bail!("Duplicate file found. Please delete one.")
                 };
@@ -151,10 +148,9 @@ impl ValueLog {
         drop(fid_logfile_w);
         Ok(())
     }
-    async fn create_vlog_file(&self) -> anyhow::Result<Arc<RwLock<LogFile>>> {
-        let fid = self.max_fid.fetch_add(1, Ordering::SeqCst) + 1;
-        let fid = DBFileId::Vlog(fid);
-        let file_path = Options::value_dir().join::<&PathBuf>(&fid.into());
+    async fn create_vlog_file(&self) -> anyhow::Result<Arc<RwLock<LogFile<VlogId>>>> {
+        let fid: VlogId = (self.max_fid.fetch_add(1, Ordering::SeqCst) + 1).into();
+        let file_path = fid.join_dir(Options::value_dir());
         let mut fp_open_opt = OpenOptions::new();
         fp_open_opt.read(true).write(true).create_new(true);
         let (log_file, _) = LogFile::open(
@@ -177,7 +173,7 @@ impl ValueLog {
         Ok(new_logfile)
     }
     #[inline]
-    pub(crate) async fn get_logfile(&self, fid: DBFileId) -> Option<Arc<RwLock<LogFile>>> {
+    pub(crate) async fn get_logfile(&self, fid: VlogId) -> Option<Arc<RwLock<LogFile<VlogId>>>> {
         let p = self.fid_logfile.read().await;
         let r = if let Some(s) = p.get(&fid) {
             Some(s.clone())
@@ -188,9 +184,10 @@ impl ValueLog {
         r
     }
     #[inline]
-    pub(crate) async fn get_latest_logfile(&self) -> anyhow::Result<Arc<RwLock<LogFile>>> {
+    pub(crate) async fn get_latest_logfile(&self) -> anyhow::Result<Arc<RwLock<LogFile<VlogId>>>> {
         let p = self.fid_logfile.read().await;
-        let r = if let Some(s) = p.get(&&DBFileId::Vlog(self.max_fid.load(Ordering::SeqCst))) {
+        let vlog_id = self.max_fid.load(Ordering::SeqCst).into();
+        let r = if let Some(s) = p.get(&vlog_id) {
             s.clone()
         } else {
             bail!("Failed to get latest_logfile");

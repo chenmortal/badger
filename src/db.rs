@@ -22,6 +22,7 @@ use crate::{
     util::metrics::calculate_size,
     util::{
         cache::{BlockCache, IndexCache},
+        lock::DBLockGuard,
         publisher::Publisher,
         rayon::init_global_rayon_pool,
     },
@@ -70,7 +71,7 @@ impl Deref for DB {
 }
 #[derive(Debug)]
 pub struct DBInner {
-    pub(crate) next_mem_fid: NextId,
+    // pub(crate) next_mem_fid: NextId,
     pub(crate) key_registry: KeyRegistry,
     pub(crate) memtable: Option<Arc<RwLock<MemTable>>>,
     pub(crate) immut_memtable: RwLock<VecDeque<Arc<MemTable>>>,
@@ -87,6 +88,7 @@ pub struct DBInner {
     is_closed: AtomicBool,
     pub(crate) block_writes: AtomicBool,
     pub(crate) opt: Options,
+    pub(crate) lock_guard: Option<DBLockGuard>,
 }
 impl DBInner {
     pub async fn open(mut opt: Options) -> anyhow::Result<DB> {
@@ -105,20 +107,30 @@ impl DBInner {
         // let mut update_size_closer = Closer::new();
         // let update_size_handle = tokio::spawn(update_size(update_size_closer.sem_clone()));
 
-        let next_mem_fid = NextId::new();
+        // let next_mem_fid = NextId::new();
+        let immut_memtable = opt.memtable.open_many(&key_registry).await?.into();
         let mut memtable = None;
         if !Options::read_only() {
             memtable = Arc::new(RwLock::new(opt.memtable.new(&key_registry).await?)).into();
         }
 
-        let level_controller = LevelsController::new(
-            &manifest_file.manifest,
-            key_registry.clone(),
-            &block_cache,
-            &index_cache,
-            opt.memtable.memtable_size(),
-        )
-        .await?;
+        // let level_controller = LevelsController::new(
+        //     &manifest_file.manifest,
+        //     key_registry.clone(),
+        //     &block_cache,
+        //     &index_cache,
+        //     opt.memtable.memtable_size(),
+        // )
+        // .await?;
+        let level_controller = opt
+            .level_controller
+            .build(
+                &manifest_file.manifest,
+                key_registry.clone(),
+                &block_cache,
+                &index_cache,
+            )
+            .await?;
         let threshold = VlogThreshold::new();
 
         let vlog = ValueLog::new(threshold, key_registry.clone())?;
@@ -126,12 +138,10 @@ impl DBInner {
         let publisher = Publisher::new(closer.clone());
         let (send_write_req, receiver) = mpsc::channel(KV_WRITES_ENTRIES_CHANNEL_CAPACITY);
         let (flush_memtable, recv_memtable) = mpsc::channel(Options::num_memtables());
-        // recv_memtable.recv();
         let db: DB = DB(Arc::new(Self {
-            next_mem_fid,
             key_registry,
             memtable,
-            immut_memtable: VecDeque::with_capacity(Options::num_memtables()).into(),
+            immut_memtable,
             block_cache,
             index_cache,
             level_controller,
@@ -145,13 +155,13 @@ impl DBInner {
             block_writes: AtomicBool::new(false),
             recv_memtable: recv_memtable.into(),
             opt,
+            lock_guard,
         }));
         let flush_memtable = Closer::new(1);
         let _p = tokio::spawn(db.clone().flush_memtable(flush_memtable.clone()));
         // drop(value_dir_lock_guard);
         // drop(dir_lock_guard);
 
-        drop(lock_guard);
         Ok(db)
     }
 

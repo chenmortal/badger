@@ -7,6 +7,7 @@ use std::{path::PathBuf, time::Duration};
 use crate::default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD};
 use crate::errors::DBError;
 use crate::key_registry::{KeyRegistry, KeyRegistryBuilder};
+use crate::level::levels::LevelsControllerBuilder;
 use crate::manifest::ManifestBuilder;
 use crate::memtable::MemTableBuilder;
 use crate::pb::badgerpb4;
@@ -135,6 +136,7 @@ pub struct Options {
     // block_cache_size: usize,
     pub block_cache: BlockCacheBuilder,
     pub index_cache: IndexCacheBuilder,
+    pub level_controller:LevelsControllerBuilder,
     // index_cache_size: i64,
     num_level_zero_tables: usize,
     num_level_zero_tables_stall: usize,
@@ -239,6 +241,7 @@ impl Default for Options {
             index_cache: Default::default(),
             key_registry: Default::default(),
             memtable: Default::default(),
+            level_controller: Default::default(),
         }
     }
 }

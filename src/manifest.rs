@@ -16,12 +16,12 @@ use crate::{
     errors::err_file,
     options::CompressionType,
     pb::badgerpb4::{manifest_change, ManifestChange, ManifestChangeSet},
-    util::sys::sync_dir,
+    util::{sys::sync_dir, SSTableId},
 };
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Manifest {
     levels: Vec<LevelManifest>,
-    pub(crate) tables: HashMap<u64, TableManifest>,
+    pub(crate) tables: HashMap<SSTableId, TableManifest>,
     creations: isize,
     deletions: isize,
 }
@@ -234,7 +234,7 @@ impl Manifest {
         let mut changes = Vec::<ManifestChange>::with_capacity(self.tables.len());
         for (id, table_manifest) in self.tables.iter() {
             changes.push(ManifestChange::new_create_change(
-                *id,
+                (*id).into(),
                 table_manifest.level as u32,
                 table_manifest.keyid,
                 table_manifest.compression,
@@ -252,11 +252,11 @@ impl Manifest {
     fn apply_manifest_change(&mut self, change: &ManifestChange) -> anyhow::Result<()> {
         match change.op() {
             manifest_change::Operation::Create => {
-                if self.tables.get(&change.id).is_some() {
+                if self.tables.get(&change.id.into()).is_some() {
                     bail!("MANIFEST invalid, table {} exists", change.id);
                 }
                 self.tables.insert(
-                    change.id,
+                    change.id.into(),
                     TableManifest {
                         level: change.level as u8,
                         keyid: change.key_id,
@@ -266,15 +266,15 @@ impl Manifest {
                 if self.levels.len() <= change.level as usize {
                     self.levels.push(LevelManifest::default());
                 }
-                self.levels[change.level as usize].tables.insert(change.id);
+                self.levels[change.level as usize].tables.insert(change.id.into());
                 self.creations += 1;
             }
             manifest_change::Operation::Delete => {
-                if self.tables.get(&change.id).is_none() {
+                if self.tables.get(&change.id.into()).is_none() {
                     bail!("MANIFEST removes non-existing table {}", change.id);
                 }
-                self.levels[change.level as usize].tables.remove(&change.id);
-                self.tables.remove(&change.id);
+                self.levels[change.level as usize].tables.remove(&change.id.into());
+                self.tables.remove(&change.id.into());
                 self.deletions += 1;
             }
         }

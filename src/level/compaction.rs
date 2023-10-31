@@ -2,13 +2,13 @@ use std::{collections::HashSet, ops::Deref};
 
 use crate::{
     table::Table,
-    util::{compare_key, key_with_ts, parse_key},
+    util::{compare_key, key_with_ts, parse_key, SSTableId},
 };
 use parking_lot::RwLock;
 
 use super::levels::CompactDef;
-#[derive(Debug)]
-pub(crate) struct CompactStatus(pub(crate) RwLock<CompactStatusInner>);
+#[derive(Debug,Default)]
+pub(crate) struct CompactStatus(RwLock<CompactStatusInner>);
 impl Deref for CompactStatus {
     type Target = RwLock<CompactStatusInner>;
 
@@ -16,10 +16,28 @@ impl Deref for CompactStatus {
         &self.0
     }
 }
-#[derive(Debug)]
+#[derive(Debug,Default)]
 pub(crate) struct CompactStatusInner {
-    pub(crate) levels: Vec<LevelCompactStatus>,
-    pub(super) tables: HashSet<u64>,
+    levels: Vec<LevelCompactStatus>,
+    tables: HashSet<SSTableId>,
+}
+
+impl CompactStatusInner {
+    pub(crate) fn levels_mut(&mut self) -> &mut Vec<LevelCompactStatus> {
+        &mut self.levels
+    }
+
+    pub(crate) fn tables_mut(&mut self) -> &mut HashSet<SSTableId> {
+        &mut self.tables
+    }
+
+    pub(crate) fn tables(&self) -> &HashSet<SSTableId> {
+        &self.tables
+    }
+
+    pub(crate) fn levels(&self) -> &[LevelCompactStatus] {
+        self.levels.as_ref()
+    }
 }
 impl CompactStatus {
     pub(crate) fn new(max_levels: usize) -> Self {

@@ -19,7 +19,9 @@ use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 
 use std::cmp::Ordering;
+use std::fmt::Debug;
 use std::future::Future;
+use std::path::Path;
 use std::{
     collections::HashSet,
     fs::read_dir,
@@ -29,129 +31,103 @@ use std::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::default::SSTABLE_FILE_EXT;
+pub(crate) trait DBFileId: From<u32> + Into<u32> + Debug + Copy {
+    const SUFFIX: &'static str;
 
-// #[derive(Debug, Clone)]
-// pub(crate) struct Closer {
-//     semaphore: Arc<Semaphore>,
-//     wait: u32,
-// }
-
-// impl Closer {
-//     pub(crate) fn sem_clone(&mut self) -> Arc<Semaphore> {
-//         self.wait += 1;
-//         self.semaphore.clone()
-//     }
-//     pub(crate) fn new() -> Self {
-//         Self {
-//             semaphore: Arc::new(Semaphore::new(0)),
-//             wait: 0,
-//         }
-//     }
-//     pub(crate) fn done_all(&self) {
-//         self.semaphore.add_permits(self.wait as usize);
-//     }
-//     pub(crate) fn done_one(&self) {
-//         self.semaphore.add_permits(1);
-//     }
-//     #[inline]
-//     pub(crate) async fn wait_all(
-//         &self,
-//     ) -> Result<tokio::sync::SemaphorePermit<'_>, tokio::sync::AcquireError> {
-//         Notify::new();
-//         let (a, b) = tokio::sync::oneshot::channel::<()>();
-//         a.send(());
-//         let p = b.await;
-//         self.semaphore.acquire_many(self.wait).await
-//     }
-// }
-// pub(crate) struct Fileid(usize);
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum DBFileSuffix {
-    Memtable,
-    SSTable,
-    Vlog,
-}
-impl Into<&str> for DBFileSuffix {
-    fn into(self) -> &'static str {
-        match self {
-            DBFileSuffix::Memtable => ".mem",
-            DBFileSuffix::SSTable => ".sst",
-            DBFileSuffix::Vlog => ".vlog",
-        }
-    }
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum DBFileId {
-    MemTable(usize),
-    SSTable(usize),
-    Vlog(u32),
-}
-impl Into<PathBuf> for DBFileId {
-    fn into(self) -> PathBuf {
-        PathBuf::from(match self {
-            DBFileId::MemTable(id) => {
-                let suffix: &'static str = DBFileSuffix::Memtable.into();
-                format!("{:06}{}", id, suffix)
-            }
-            DBFileId::SSTable(id) => {
-                let suffix: &'static str = DBFileSuffix::SSTable.into();
-                format!("{:06}{}", id, suffix)
-            }
-            DBFileId::Vlog(id) => {
-                let suffix: &'static str = DBFileSuffix::Vlog.into();
-                format!("{:06}{}", id, suffix)
-            }
-        })
-    }
-}
-impl Into<usize> for DBFileId {
-    fn into(self) -> usize {
-        match self {
-            DBFileId::MemTable(id) => id,
-            DBFileId::SSTable(id) => id,
-            DBFileId::Vlog(id) => id as usize,
-        }
-    }
-}
-impl Into<u32> for DBFileId {
-    fn into(self) -> u32 {
-        let k = match self {
-            DBFileId::MemTable(id) => id,
-            DBFileId::SSTable(id) => id,
-            DBFileId::Vlog(id) => id as usize,
-        };
-        k as u32
-    }
-}
-impl DBFileId {
-    pub(crate) fn parse(path: &PathBuf, file_suffix: DBFileSuffix) -> Option<Self> {
-        let suffix: &'static str = file_suffix.into();
-        if let Some(name) = path.file_name() {
+    fn parse<P: AsRef<Path>>(path: P) -> anyhow::Result<Self>
+    where
+        Self: Sized,
+    {
+        let path_buf = path.as_ref();
+        if let Some(name) = path_buf.file_name() {
             if let Some(name) = name.to_str() {
-                if name.ends_with(suffix) {
-                    let name = name.trim_end_matches(suffix);
-                    if let Ok(id) = name.parse::<usize>() {
-                        return match file_suffix {
-                            DBFileSuffix::Memtable => DBFileId::MemTable(id),
-                            DBFileSuffix::SSTable => DBFileId::SSTable(id),
-                            DBFileSuffix::Vlog => DBFileId::Vlog(id as u32),
-                        }
-                        .into();
+                if name.ends_with(Self::SUFFIX) {
+                    let name = name.trim_end_matches(Self::SUFFIX);
+                    if let Ok(id) = name.parse::<u32>() {
+                        return Ok(id.into());
                     };
                 };
             }
         };
-        None
+        bail!(
+            "failed parse PathBuf {:?} , maybe not ends with {}",
+            path_buf,
+            Self::SUFFIX
+        )
+    }
+    fn join_dir<P: AsRef<Path>>(self, parent_dir: P) -> PathBuf {
+        let dir = parent_dir.as_ref();
+        let id: u32 = self.into();
+        dir.join(format!("{:06}{}", id, Self::SUFFIX))
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct MemTableId(u32);
+impl From<u32> for MemTableId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+impl Into<u32> for MemTableId {
+    fn into(self) -> u32 {
+        self.0
+    }
+}
+impl DBFileId for MemTableId {
+    const SUFFIX: &'static str = ".mem";
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct SSTableId(u32);
+impl From<u32> for SSTableId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+impl Into<u32> for SSTableId {
+    fn into(self) -> u32 {
+        self.0
+    }
+}
+impl DBFileId for SSTableId {
+    const SUFFIX: &'static str = ".sst";
+}
+impl SSTableId {
+    pub(crate) fn parse_set_from_dir<P: AsRef<Path>>(dir: P) -> HashSet<SSTableId> {
+        let mut id_set = HashSet::new();
+        let dir = dir.as_ref();
+        if let Ok(read_dir) = read_dir(dir) {
+            for ele in read_dir {
+                if let Ok(entry) = ele {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Ok(id) = Self::parse(path) {
+                            id_set.insert(id);
+                        };
+                    }
+                }
+            }
+        };
+        return id_set;
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct VlogId(u32);
+impl From<u32> for VlogId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+impl Into<u32> for VlogId {
+    fn into(self) -> u32 {
+        self.0
+    }
+}
+impl DBFileId for VlogId {
+    const SUFFIX: &'static str = ".vlog";
+}
+
 #[test]
 fn test_id() {}
-// impl From<PathBuf> for DBFileId {
-//     fn from(value: PathBuf) -> Self {
-
-//     }
-// }
 
 pub(crate) struct Throttle {
     semaphore: Arc<Semaphore>,
@@ -165,12 +141,12 @@ pub(crate) struct ThrottlePermit {
 }
 impl ThrottlePermit {
     #[inline]
-    pub(crate) async fn done_with_future(
+    pub(crate) async fn done_with_future<T>(
         self,
-        future: impl Future<Output = Result<(), anyhow::Error>>,
-    ) {
+        future: impl Future<Output = Result<T, anyhow::Error>>,
+    ) -> Option<T> {
         match future.await {
-            Ok(_) => {}
+            Ok(t) => t.into(),
             Err(error) => {
                 match self.sender.send(error).await {
                     Ok(_) => {}
@@ -178,6 +154,7 @@ impl ThrottlePermit {
                         panic!("Throttle done send error mismatch,{}", e);
                     }
                 };
+                None
             }
         }
     }
@@ -226,11 +203,13 @@ impl Throttle {
     }
     #[inline]
     pub(crate) async fn finish(&mut self) -> anyhow::Result<()> {
-        let permit = self.semaphore.acquire_many(self.max_permits).await?;
-        if let Some(e) = self.receiver.recv().await {
-            bail!(e);
+        let _permit = self.semaphore.acquire_many(self.max_permits).await?;
+        match self.receiver.try_recv() {
+            Ok(e) => {
+                bail!(e)
+            }
+            Err(_) => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -248,42 +227,6 @@ pub(crate) fn secs_to_systime(secs: u64) -> SystemTime {
         .unwrap()
 }
 
-#[inline(always)]
-pub(crate) fn parse_file_id(path: &PathBuf, suffix: &str) -> Option<u64> {
-    if let Some(name) = path.file_name() {
-        if let Some(name) = name.to_str() {
-            if name.ends_with(suffix) {
-                let name = name.trim_end_matches(suffix);
-                if let Ok(id) = name.parse::<u64>() {
-                    return Some(id);
-                };
-            };
-        }
-    };
-    None
-}
-
-#[inline]
-pub(crate) fn get_sst_id_set(dir: &PathBuf) -> HashSet<u64> {
-    let mut id_set = HashSet::new();
-    if let Ok(read_dir) = read_dir(dir) {
-        for ele in read_dir {
-            if let Ok(entry) = ele {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Some(id) = parse_file_id(&path, SSTABLE_FILE_EXT) {
-                        id_set.insert(id);
-                    };
-                }
-            }
-        }
-    };
-    return id_set;
-}
-#[inline(always)]
-pub(crate) fn dir_join_id_suffix(dir: &PathBuf, id: u64, suffix: &str) -> PathBuf {
-    dir.join(format!("{:06}{}", id, suffix))
-}
 #[inline(always)]
 pub(crate) fn compare_key(a: &[u8], b: &[u8]) -> Ordering {
     match a[..a.len() - 8].cmp(&b[..b.len() - 8]) {

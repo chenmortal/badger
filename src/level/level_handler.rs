@@ -49,7 +49,7 @@ impl LevelHandler {
     }
     #[inline]
     pub(crate) fn get_str_level(&self) -> String {
-        format!("l{}", self.level)
+        format!("level:{}", self.level)
     }
     #[inline]
     pub(crate) async fn get_total_size(&self) -> usize {
@@ -58,16 +58,20 @@ impl LevelHandler {
         drop(inner_r);
         total_size
     }
-    pub(crate) async fn init_tables(&self, tables: &Vec<Table>) {
+    pub(crate) async fn init_tables(&self, tables: Vec<Table>) {
         let mut inner_w = self.0.handler_tables.write().await;
-        inner_w.tables = tables.clone();
-        inner_w.total_size = 0;
-        inner_w.total_stale_size = 0;
 
-        tables.iter().for_each(|t| {
-            inner_w.total_size += t.size();
-            inner_w.total_stale_size = t.stale_data_size();
+        inner_w.tables = tables;
+        let mut total_size=0;
+        let mut total_stale_size=0;
+
+        inner_w.tables.iter().for_each(|t| {
+            total_size += t.size();
+            total_stale_size = t.stale_data_size();
         });
+
+        inner_w.total_size=total_size;
+        inner_w.total_stale_size=total_stale_size;
 
         if self.0.level == 0 {
             inner_w.tables.sort_by(|a, b| a.id().cmp(&b.id()));
@@ -91,9 +95,9 @@ impl LevelHandler {
 
             if compare_key(&pre_biggest_r, now.smallest()).is_ge() {
                 let e = anyhow!(
-                    "Inter: Biggest(j-1)[{}] 
+                    "Inter: Biggest(j-1)[{:?}] 
 {:?}
-vs Smallest(j)[{}]: 
+vs Smallest(j)[{:?}]: 
 {:?}
 : level={} j={} num_tables={}",
                     pre.id(),

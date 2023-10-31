@@ -5,22 +5,22 @@ use std::{
 
 use crate::{
     kv::{Entry, Meta, TxnTs, ValuePointer},
-    util::log_file::LogFile,
+    util::{log_file::LogFile, DBFileId},
 };
 
 use super::header::VlogEntryHeader;
 use anyhow::bail;
 use bytes::Buf;
 #[derive(Debug)]
-pub(crate) struct LogFileIter<'a> {
-    log_file: &'a LogFile,
+pub(crate) struct LogFileIter<'a, F: DBFileId> {
+    log_file: &'a LogFile<F>,
     record_offset: usize,
     reader: BufReader<&'a [u8]>,
     entries_vptrs: Vec<(Entry, ValuePointer)>,
     valid_end_offset: usize,
 }
-impl<'a> LogFileIter<'a> {
-    pub(crate) fn new(log_file: &'a LogFile, offset: usize) -> Self {
+impl<'a, F: DBFileId> LogFileIter<'a, F> {
+    pub(crate) fn new(log_file: &'a LogFile<F>, offset: usize) -> Self {
         let buf_reader = BufReader::new(&log_file.as_ref()[offset..]);
         Self {
             log_file,
@@ -86,7 +86,7 @@ impl<'a> LogFileIter<'a> {
         let size = header_len + key_len + value_len + crc_buf.len();
         debug_assert!(size == hash_reader.len);
 
-        let v_ptr = ValuePointer::new(self.log_file.fid(), size, self.record_offset);
+        let v_ptr = ValuePointer::new(self.log_file.fid().into(), size, self.record_offset);
         self.record_offset += size;
         Ok((entry, v_ptr))
     }

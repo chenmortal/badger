@@ -6,6 +6,7 @@ pub(crate) mod opt;
 pub(crate) mod write;
 use std::io::{self};
 use std::mem;
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::{sync::Arc, time::SystemTime};
 
@@ -26,19 +27,17 @@ use crate::key_registry::AesCipher;
 use crate::key_registry::NONCE_SIZE;
 use crate::kv::TxnTs;
 use crate::pb::badgerpb4::Checksum;
-use crate::{
-    default::SSTABLE_FILE_EXT, options::CompressionType, util::mmap::MmapFile, util::parse_file_id,
-};
+use crate::util::{DBFileId, SSTableId};
+use crate::{options::CompressionType, util::mmap::MmapFile};
 #[derive(Debug)]
 pub(crate) struct TableInner {
-    // lock: Mutex<()>,
     mmap_f: MmapFile,
     table_size: usize,
     smallest: Vec<u8>,
     pub(crate) biggest: RwLock<Vec<u8>>,
     index_buf: TableIndexBuf,
     cheap_index: CheapIndex,
-    id: u64,
+    id: SSTableId,
     checksum: Vec<u8>,
     created_at: SystemTime,
     index_start: usize,
@@ -48,6 +47,20 @@ pub(crate) struct TableInner {
 }
 #[derive(Debug, Clone)]
 pub(crate) struct Table(pub(crate) Arc<TableInner>);
+impl Deref for Table {
+    type Target = TableInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl Drop for TableInner {
+    fn drop(&mut self) {
+        if let Err(e) = self.mmap_f.raw_sync() {
+            panic!("{}", e)
+        }
+    }
+}
 #[derive(Debug)]
 pub(crate) struct CheapIndex {
     max_version: TxnTs,
@@ -85,10 +98,15 @@ impl Table {
         if opt.block_size() == 0 && opt.compression() != CompressionType::None {
             bail!("Block size cannot be zero");
         }
-        let id = parse_file_id(&mmap_f.path(), SSTABLE_FILE_EXT).ok_or(anyhow!(
-            "Invalid filename: {:?} for mmap_file",
-            &mmap_f.path()
-        ))?;
+        let id = SSTableId::parse(mmap_f.path())?;
+        // let id = DBFileId::parse(&mmap_f.path(), DBFileSuffix::SSTable).ok_or(anyhow!(
+        //     "Invalid filename: {:?} for mmap_file",
+        //     &mmap_f.path()
+        // ))?;
+        // let id = parse_file_id(&mmap_f.path(), SSTABLE_FILE_EXT).ok_or(anyhow!(
+        //     "Invalid filename: {:?} for mmap_file",
+        //     &mmap_f.path()
+        // ))?;
 
         let table_size = mmap_f.get_file_size()? as usize;
         let created_at = mmap_f.get_modified_time()?;
@@ -160,10 +178,10 @@ impl Table {
         let table_index = self.0.index_buf.to_table_index();
         table_index.stale_data_size()
     }
-    #[inline]
-    pub(crate) fn id(&self) -> u64 {
-        self.0.id
-    }
+    // #[inline]
+    // pub(crate) fn id(&self) -> u64 {
+    //     self.0.id
+    // }
     #[inline]
     pub(crate) fn smallest(&self) -> &[u8] {
         self.0.smallest.as_ref()
@@ -362,13 +380,17 @@ impl TableInner {
     #[inline]
     fn get_block_cache_key(&self, idx: u32) -> Vec<u8> {
         let mut buf = Vec::with_capacity(8);
-        buf.put_u32(self.id as u32);
+        buf.put_u32(self.id.into());
         buf.put_u32(idx);
         buf
     }
     #[inline]
     fn get_file_path(&self) -> &PathBuf {
         &self.mmap_f.path()
+    }
+
+    pub(crate) fn id(&self) -> SSTableId {
+        self.id
     }
 }
 fn try_decrypt(cipher: Option<&AesCipher>, data: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -385,7 +407,7 @@ fn try_decrypt(cipher: Option<&AesCipher>, data: &[u8]) -> anyhow::Result<Vec<u8
 }
 fn try_encrypt(cipher: Option<&AesCipher>, data: &[u8]) -> anyhow::Result<Vec<u8>> {
     if let Some(c) = cipher {
-        let nonce:Nonce = AesCipher::generate_nonce();
+        let nonce: Nonce = AesCipher::generate_nonce();
         let mut ciphertext = c.encrypt(&nonce, data).ok_or(anyhow!("while encrypt"))?;
         ciphertext.extend_from_slice(nonce.as_ref());
         return Ok(ciphertext);

@@ -26,6 +26,7 @@ impl<T> Future for AsyncRayonHandle<T> {
         })
     }
 }
+#[allow(dead_code)]
 pub fn spawn<F, R>(func: F) -> AsyncRayonHandle<R>
 where
     F: FnOnce() -> R + Send + 'static,

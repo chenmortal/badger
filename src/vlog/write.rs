@@ -8,7 +8,7 @@ use crate::{
     default::DEFAULT_PAGE_SIZE,
     kv::{Entry, Meta, TxnTs, ValuePointer},
     options::Options,
-    util::log_file::LogFile,
+    util::{log_file::LogFile, DBFileId},
     write::WriteReq,
 };
 
@@ -65,7 +65,7 @@ impl ValueLog {
                 let len = cur_logfile_w.encode_entry(&mut buf, &dec_entry, offset);
 
                 dec_entry.set_meta(tmp_meta);
-                *vptr = ValuePointer::new(fid, len, offset);
+                *vptr = ValuePointer::new(fid.into(), len, offset);
 
                 if buf.len() != 0 {
                     let buf_len = buf.len();
@@ -151,7 +151,7 @@ impl ValueLog {
         self.writable_log_offset.fetch_add(size, Ordering::SeqCst)
     }
 }
-impl LogFile {
+impl<F:DBFileId> LogFile<F> {
     pub(crate) fn encode_entry(&self, buf: &mut Vec<u8>, entry: &Entry, offset: usize) -> usize {
         let header = VlogEntryHeader::new(&entry);
         let mut hash_writer = HashWriter {
