@@ -12,6 +12,7 @@ use crate::{
     default::LOCK_FILE,
     util::sys::{flock, open_with_libc},
 };
+#[derive(Debug)]
 pub(crate) struct DBLockGuard {
     lock_guards: Vec<DirLockGuard>,
 }
@@ -57,6 +58,7 @@ impl DBLockGuardBuilder {
         self.dirs.insert(p);
     }
 }
+#[derive(Debug)]
 pub(crate) struct DirLockGuard {
     dir_fd: File,
     abs_pid_path: PathBuf,

@@ -4,12 +4,12 @@ use log::error;
 use scopeguard::defer;
 
 use crate::{
-    util::closer::Closer,
     db::DB,
-    default::SSTABLE_FILE_EXT,
+    memtable::MemTable,
     options::Options,
     table::{opt::TableOption, write::TableBuilder},
-    util::dir_join_id_suffix, memtable::MemTable,
+    util::closer::Closer,
+    util::DBFileId,
 };
 
 impl DB {
@@ -51,7 +51,7 @@ impl DB {
             return Ok(());
         }
         let file_id = self.level_controller.get_reserve_file_id();
-        let file_path = dir_join_id_suffix(Options::dir(), file_id, SSTABLE_FILE_EXT);
+        let file_path = file_id.join_dir(Options::dir());
         let table = table_builder.build(file_path).await?;
         // todo!();
         Ok(())

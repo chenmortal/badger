@@ -439,7 +439,7 @@ impl SkipList {
     }
 
     #[inline]
-    pub(crate) fn mem_size(&self) ->usize{
+    pub(crate) fn mem_size(&self) -> usize {
         self.skip_list.arena.len()
     }
     #[inline]
@@ -461,6 +461,10 @@ impl SkipList {
             ));
         };
         None
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.find_last().is_none()
     }
 }
 pub(crate) struct SkipListIter<'a> {

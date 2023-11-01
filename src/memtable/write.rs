@@ -6,7 +6,7 @@ use crate::util::metrics::add_num_bytes_written_to_l0;
 use crate::{
     errors::DBError,
     kv::{Entry, Meta},
-    util::log_file::LogFile,
+    util::{log_file::LogFile, MemTableId},
     vlog::{read::LogFileIter, VLOG_HEADER_SIZE},
 };
 
@@ -45,7 +45,7 @@ impl MemTable {
         Ok(())
     }
 }
-impl LogFile {
+impl LogFile<MemTableId> {
     #[tracing::instrument]
     fn write_entry(&mut self, buf: &mut Vec<u8>, entry: &Entry) -> std::io::Result<()> {
         buf.clear();

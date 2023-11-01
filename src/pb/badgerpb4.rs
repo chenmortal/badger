@@ -31,8 +31,8 @@ pub struct ManifestChangeSet {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ManifestChange {
     /// Table ID.
-    #[prost(uint64, tag = "1")]
-    pub id: u64,
+    #[prost(uint32, tag = "1")]
+    pub id: u32,
     #[prost(enumeration = "manifest_change::Operation", tag = "2")]
     pub op: i32,
     /// Only used for CREATE.

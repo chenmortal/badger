@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::iter::Iter;
+use crate::{iter::Iter, util::SSTableId};
 
 use super::{
     block::Block,
@@ -24,7 +24,7 @@ pub(crate) struct BlockIter {
     entry_offsets: Vec<u32>,
     block: Block,
 
-    table_id: u64,
+    table_id: SSTableId,
     block_id: u32,
 
     prev_overlap: usize,
@@ -98,7 +98,7 @@ impl TableIter {
     }
 }
 impl BlockIter {
-    pub(crate) fn new(table_id: u64, block_id: u32, block: Block) -> Self {
+    pub(crate) fn new(table_id: SSTableId, block_id: u32, block: Block) -> Self {
         Self {
             // data: block.get_actual_data().to_vec(),
             entry_pos: 0,

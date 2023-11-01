@@ -4,7 +4,7 @@ use integer_encoding::VarInt;
 use std::{mem, ops::Deref};
 
 use crate::{
-    util::{now_since_unix, DBFileId},
+    util::{now_since_unix, DBFileId, VlogId},
     vlog::header::VlogEntryHeader,
 };
 
@@ -415,9 +415,9 @@ pub(crate) struct ValuePointer {
 }
 impl ValuePointer {
     const SIZE: usize = mem::size_of::<ValuePointer>();
-    pub(crate) fn new(fid: DBFileId, len: usize, offset: usize) -> Self {
+    pub(crate) fn new(fid: u32, len: usize, offset: usize) -> Self {
         Self {
-            fid: fid.into(),
+            fid: fid,
             len: len as u32,
             offset: offset as u32,
         }

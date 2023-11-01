@@ -7,20 +7,19 @@ use std::{
 };
 
 use crate::{
-    default::DEFAULT_IS_SIV,
     key_registry::{AesCipher, KeyRegistry},
     pb::badgerpb4::DataKey,
     util::mmap::MmapFile,
     vlog::VLOG_HEADER_SIZE,
 };
-use anyhow::{anyhow, bail};
+use anyhow::bail;
 use bytes::{Buf, BufMut};
 
 use super::DBFileId;
 
 #[derive(Debug)]
-pub(crate) struct LogFile {
-    fid: DBFileId,
+pub(crate) struct LogFile<F: DBFileId> {
+    fid: F,
     key_registry: KeyRegistry,
     datakey: Option<DataKey>,
     cipher: Option<AesCipher>,
@@ -30,26 +29,26 @@ pub(crate) struct LogFile {
     // write_at: usize,
 }
 
-impl Deref for LogFile {
+impl<F:DBFileId> Deref for LogFile<F> {
     type Target = MmapFile;
 
     fn deref(&self) -> &Self::Target {
         &self.mmap
     }
 }
-impl DerefMut for LogFile {
+impl<F:DBFileId> DerefMut for LogFile<F> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.mmap
     }
 }
-impl LogFile {
+impl<F:DBFileId> LogFile<F> {
     pub(crate) async fn open(
-        fid: DBFileId,
+        fid: F,
         file_path: &PathBuf,
         fp_open_opt: OpenOptions,
         fsize: usize,
         key_registry: KeyRegistry,
-    ) -> anyhow::Result<(LogFile, bool)> {
+    ) -> anyhow::Result<(LogFile<F>, bool)> {
         let (mmap, is_new) = MmapFile::open(file_path, fp_open_opt, fsize)?;
 
         let mut log_file = Self {
@@ -202,7 +201,7 @@ impl LogFile {
         self.size.store(size, Ordering::SeqCst)
     }
 
-    pub(crate) fn fid(&self) -> DBFileId {
+    pub(crate) fn fid(&self) -> F {
         self.fid
     }
 }
