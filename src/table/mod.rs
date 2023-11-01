@@ -4,6 +4,7 @@ pub(crate) mod iter;
 pub(crate) mod merge;
 pub(crate) mod opt;
 pub(crate) mod write;
+pub(crate) mod read;
 use std::io::{self};
 use std::mem;
 use std::ops::Deref;
@@ -338,7 +339,7 @@ impl TableInner {
                     e
                 )
             })?;
-
+            
         let de_raw_data = try_decrypt(self.opt.cipher(), raw_data_ref)?;
         let raw_data = self
             .opt
@@ -353,8 +354,8 @@ impl TableInner {
                     e
                 )
             })?;
-
-        let block = Block::new(blk_offset.offset(), raw_data)?;
+        
+        let block = Block::deserialize(self.id(),idx.into(),blk_offset.offset(), raw_data)?;
 
         match self.opt.checksum_verify_mode() {
             ChecksumVerificationMode::OnBlockRead

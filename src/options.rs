@@ -2,11 +2,11 @@ use std::fs::{create_dir_all, set_permissions, Permissions};
 use std::ops::Deref;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 
 use crate::default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD};
 use crate::errors::DBError;
-use crate::key_registry::{KeyRegistry, KeyRegistryBuilder};
+use crate::key_registry::KeyRegistryBuilder;
 use crate::level::levels::LevelsControllerBuilder;
 use crate::manifest::ManifestBuilder;
 use crate::memtable::MemTableBuilder;
@@ -123,8 +123,7 @@ pub struct Options {
     base_level_size: usize,
     level_size_multiplier: usize,
     table_size_multiplier: usize,
-    max_levels: usize,
-
+    // max_levels: usize,
     vlog_percentile: f64,
     value_threshold: u32,
     num_memtables: usize,
@@ -136,11 +135,10 @@ pub struct Options {
     // block_cache_size: usize,
     pub block_cache: BlockCacheBuilder,
     pub index_cache: IndexCacheBuilder,
-    pub level_controller:LevelsControllerBuilder,
+    pub level_controller: LevelsControllerBuilder,
     // index_cache_size: i64,
-    num_level_zero_tables: usize,
-    num_level_zero_tables_stall: usize,
-
+    // num_level_zero_tables: usize,
+    // num_level_zero_tables_stall: usize,
     vlog_file_size: usize,
     vlog_max_entries: usize,
 
@@ -207,7 +205,7 @@ impl Default for Options {
             base_level_size: 10 << 20,
             level_size_multiplier: 10,
             table_size_multiplier: 2,
-            max_levels: 7,
+            // max_levels: 7,
             vlog_percentile: 0.0,
             value_threshold: MAX_VALUE_THRESHOLD,
             num_memtables: 5,
@@ -215,8 +213,8 @@ impl Default for Options {
             bloom_false_positive: 0.01,
             // block_cache_size: 256 << 20,
             // index_cache_size: 0,
-            num_level_zero_tables: 5,
-            num_level_zero_tables_stall: 15,
+            // num_level_zero_tables: 5,
+            // num_level_zero_tables_stall: 15,
             vlog_file_size: 1 << 30 - 1,
             vlog_max_entries: 1000_000,
             num_compactors: 4,
@@ -311,10 +309,10 @@ impl Options {
         self.level_size_multiplier = level_size_multiplier;
         self
     }
-    pub fn set_max_levels(mut self, max_levels: usize) -> Self {
-        self.max_levels = max_levels;
-        self
-    }
+    // pub fn set_max_levels(mut self, max_levels: usize) -> Self {
+    //     self.max_levels = max_levels;
+    //     self
+    // }
     pub fn set_value_threshold(mut self, value_threshold: u32) -> Self {
         self.value_threshold = value_threshold;
         self
@@ -340,14 +338,14 @@ impl Options {
         self.block_cache.set_block_size(block_size);
         self
     }
-    pub fn set_num_level_zero_tables(mut self, num_level_zero_tables: usize) -> Self {
-        self.num_level_zero_tables = num_level_zero_tables;
-        self
-    }
-    pub fn set_num_level_zero_tables_stall(mut self, num_level_zero_tables_stall: usize) -> Self {
-        self.num_level_zero_tables_stall = num_level_zero_tables_stall;
-        self
-    }
+    // pub fn set_num_level_zero_tables(mut self, num_level_zero_tables: usize) -> Self {
+    //     self.num_level_zero_tables = num_level_zero_tables;
+    //     self
+    // }
+    // pub fn set_num_level_zero_tables_stall(mut self, num_level_zero_tables_stall: usize) -> Self {
+    //     self.num_level_zero_tables_stall = num_level_zero_tables_stall;
+    //     self
+    // }
     pub fn set_base_level_size(mut self, base_level_size: usize) -> Self {
         self.base_level_size = base_level_size;
         self
@@ -569,9 +567,9 @@ impl Options {
         Self::get_static().level_size_multiplier
     }
 
-    pub(crate) fn max_levels() -> usize {
-        Self::get_static().max_levels
-    }
+    // pub(crate) fn max_levels() -> usize {
+    //     Self::get_static().max_levels
+    // }
 
     pub(crate) fn vlog_percentile() -> f64 {
         Self::get_static().vlog_percentile
@@ -601,13 +599,13 @@ impl Options {
     //     Self::get_static().index_cache_size
     // }
 
-    pub(crate) fn num_level_zero_tables() -> usize {
-        Self::get_static().num_level_zero_tables
-    }
+    // pub(crate) fn num_level_zero_tables() -> usize {
+    //     Self::get_static().num_level_zero_tables
+    // }
 
-    pub(crate) fn num_level_zero_tables_stall() -> usize {
-        Self::get_static().num_level_zero_tables_stall
-    }
+    // pub(crate) fn num_level_zero_tables_stall() -> usize {
+    //     Self::get_static().num_level_zero_tables_stall
+    // }
 
     pub(crate) fn vlog_file_size() -> usize {
         Self::get_static().vlog_file_size

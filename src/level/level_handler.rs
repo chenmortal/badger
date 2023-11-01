@@ -9,7 +9,7 @@ use crate::{table::Table, util::compare_key};
 
 use super::compaction::KeyRange;
 #[derive(Debug, Clone)]
-pub(crate) struct LevelHandler(pub(crate) Arc<LevelHandlerInner>);
+pub(crate) struct LevelHandler(Arc<LevelHandlerInner>);
 impl Deref for LevelHandler {
     type Target = Arc<LevelHandlerInner>;
 
@@ -19,8 +19,14 @@ impl Deref for LevelHandler {
 }
 #[derive(Debug)]
 pub(crate) struct LevelHandlerInner {
-    pub(crate) handler_tables: RwLock<LevelHandlerTables>,
+    handler_tables: RwLock<LevelHandlerTables>,
     level: usize,
+}
+
+impl LevelHandlerInner {
+    pub(crate) fn level(&self) -> usize {
+        self.level
+    }
 }
 impl Deref for LevelHandlerInner {
     type Target = RwLock<LevelHandlerTables>;

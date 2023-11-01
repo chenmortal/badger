@@ -2,10 +2,10 @@ use rand::Rng;
 
 use crate::{
     iter::{
-        DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIterator,
-        SinkIter, SinkIterator,
+        DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIter, SinkIter,
+        SinkIterator,
     },
-    kv::ValueMeta,
+    kv::{KeyTsBorrow, ValueMeta},
     util::arena::Arena,
 };
 
@@ -470,9 +470,7 @@ impl SkipList {
 pub(crate) struct SkipListIter<'a> {
     inner: &'a SkipListInner,
     node: Option<&'a Node>,
-    value: Option<ValueMeta>,
     node_back: Option<&'a Node>,
-    value_back: Option<ValueMeta>,
 }
 impl<'a> SkipListIter<'a> {
     fn new(inner: &'a SkipListInner) -> Self {
@@ -482,8 +480,6 @@ impl<'a> SkipListIter<'a> {
             inner,
             node,
             node_back,
-            value: None,
-            value_back: None,
         }
     }
 }
@@ -543,68 +539,38 @@ impl<'a> DoubleEndedSinkIterator for SkipListIter<'a> {
         Ok(false)
     }
 }
-impl<'a> KvSinkIterator<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
-    fn key(&self) -> Option<&'a [u8]> {
+impl<'a> KvSinkIter<ValueMeta> for SkipListIter<'a> {
+    fn key(&self) -> Option<KeyTsBorrow<'_>> {
         if let Some(item) = self.item() {
-            item.get_key(&self.inner.arena)
+            item.get_key(&self.inner.arena).and_then(|x| Some(x.into()))
         } else {
             None
         }
     }
 
-    fn value_ref(&mut self) -> Option<&ValueMeta> {
-        if let None = self.value {
-            if let Some(item) = self.item() {
-                if let Some(data) = item.get_value(&self.inner.arena) {
-                    self.value = ValueMeta::deserialize(data).into();
-                }
+    fn value(&self) -> Option<ValueMeta> {
+        if let Some(item) = self.item() {
+            if let Some(data) = item.get_value(&self.inner.arena) {
+                return ValueMeta::deserialize(data).into();
             }
-        }
-        self.value.as_ref()
-    }
-
-    fn take_value(&mut self) -> Option<ValueMeta> {
-        if let None = self.value {
-            if let Some(item) = self.item() {
-                if let Some(data) = item.get_value(&self.inner.arena) {
-                    return ValueMeta::deserialize(data).into();
-                }
-            }
-        } else {
-            return replace(&mut self.value, None);
         }
         None
     }
 }
-impl<'a> KvDoubleEndedSinkIter<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
-    fn key_back(&self) -> Option<&'a [u8]> {
+impl<'a> KvDoubleEndedSinkIter<ValueMeta> for SkipListIter<'a> {
+    fn key_back(&self) -> Option<KeyTsBorrow<'_>> {
         if let Some(item) = self.item_back() {
-            item.get_key(&self.inner.arena)
+            item.get_key(&self.inner.arena).and_then(|x| Some(x.into()))
         } else {
             None
         }
     }
 
-    fn value_back_ref(&mut self) -> Option<&ValueMeta> {
-        if let None = self.value {
-            if let Some(item) = self.item_back() {
-                if let Some(data) = item.get_value(&self.inner.arena) {
-                    self.value = ValueMeta::deserialize(data).into();
-                }
+    fn value_back(&self) -> Option<ValueMeta> {
+        if let Some(item) = self.item_back() {
+            if let Some(data) = item.get_value(&self.inner.arena) {
+                return ValueMeta::deserialize(data).into();
             }
-        }
-        self.value.as_ref()
-    }
-
-    fn take_value_back(&mut self) -> Option<ValueMeta> {
-        if let None = self.value {
-            if let Some(item) = self.item_back() {
-                if let Some(data) = item.get_value(&self.inner.arena) {
-                    return ValueMeta::deserialize(data).into();
-                }
-            }
-        } else {
-            return replace(&mut self.value, None);
         }
         None
     }
@@ -618,7 +584,7 @@ mod tests {
 
     use crate::{
         iter::{
-            DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIterator,
+            DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIter,
             SinkIter, SinkIterator,
         },
         kv::KeyTsBorrow,
@@ -658,7 +624,7 @@ mod tests {
         assert!(iter.item().is_none());
         for i in 0..end {
             assert!(iter.next().unwrap());
-            assert_eq!(iter.key().unwrap(), i.to_be_bytes());
+            assert_eq!(iter.key().unwrap(), i.to_be_bytes().as_ref().into());
         }
         assert_eq!(iter.next().unwrap(), false);
     }
@@ -676,7 +642,7 @@ mod tests {
         assert!(iter.item_back().is_none());
         for i in (0..end).rev() {
             assert!(iter.next_back().unwrap());
-            assert_eq!(iter.key_back().unwrap(), i.to_be_bytes())
+            assert_eq!(iter.key_back().unwrap(), i.to_be_bytes().as_ref().into())
         }
         assert_eq!(iter.next_back().unwrap(), false);
     }
@@ -694,11 +660,11 @@ mod tests {
         let mut iter = SkipListIter::new(&skip_list);
         for i in 0..split {
             assert!(iter.next().unwrap());
-            assert_eq!(iter.key().unwrap(), i.to_be_bytes());
+            assert_eq!(iter.key().unwrap(), i.to_be_bytes().as_ref().into());
         }
         for i in (split..end).rev() {
             assert!(iter.next_back().unwrap());
-            assert_eq!(iter.key_back().unwrap(), i.to_be_bytes());
+            assert_eq!(iter.key_back().unwrap(), i.to_be_bytes().as_ref().into());
         }
         assert_eq!(iter.next().unwrap(), false);
         assert_eq!(iter.next_back().unwrap(), false);
@@ -719,7 +685,7 @@ mod tests {
         assert!(iter_rev.item().is_none());
         for i in (0..end).rev() {
             assert!(iter_rev.next().unwrap());
-            assert_eq!(iter_rev.key().unwrap(), i.to_be_bytes());
+            assert_eq!(iter_rev.key().unwrap(), i.to_be_bytes().as_ref().into());
         }
         assert_eq!(iter_rev.next().unwrap(), false);
     }
@@ -739,7 +705,10 @@ mod tests {
         assert!(iter_rev.item().is_none());
         for i in 0..end {
             assert!(iter_rev.next_back().unwrap());
-            assert_eq!(iter_rev.key_back().unwrap(), i.to_be_bytes());
+            assert_eq!(
+                iter_rev.key_back().unwrap(),
+                i.to_be_bytes().as_ref().into()
+            );
         }
         assert_eq!(iter_rev.next_back().unwrap(), false);
     }
@@ -758,11 +727,14 @@ mod tests {
         let mut iter_rev = iter.rev();
         for i in 0..split {
             assert!(iter_rev.next_back().unwrap());
-            assert_eq!(iter_rev.key_back().unwrap(), i.to_be_bytes());
+            assert_eq!(
+                iter_rev.key_back().unwrap(),
+                i.to_be_bytes().as_ref().into()
+            );
         }
         for i in (split..end).rev() {
             assert!(iter_rev.next().unwrap());
-            assert_eq!(iter_rev.key().unwrap(), i.to_be_bytes());
+            assert_eq!(iter_rev.key().unwrap(), i.to_be_bytes().as_ref().into());
         }
         assert_eq!(iter_rev.next().unwrap(), false);
         assert_eq!(iter_rev.next_back().unwrap(), false);
@@ -781,7 +753,7 @@ mod tests {
         assert!(iter.item().is_none());
         for i in 0..end {
             assert!(iter.next().unwrap());
-            assert_eq!(iter.key().unwrap(), i.to_be_bytes());
+            assert_eq!(iter.key().unwrap(), i.to_be_bytes().as_ref().into());
         }
         assert_eq!(iter.next().unwrap(), false);
     }

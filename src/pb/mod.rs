@@ -24,7 +24,6 @@ impl ManifestChange {
         }
     }
 }
-pub(crate) const ERR_CHECKSUM_MISMATCH: &str = "CHECKSUM_MISMATCH";
 impl Algorithm {
     pub(crate) fn calculate(&self, data: &[u8]) -> u64 {
         match self {

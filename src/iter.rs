@@ -59,40 +59,31 @@ where
         self.iter.next().await
     }
 }
-impl<'a, T, K, V> KvSinkIterator<'a, K, V> for SinkIterRev<T>
+impl<'a, T, V> KvSinkIter<V> for SinkIterRev<T>
 where
-    T: KvDoubleEndedSinkIter<'a, K, V>,
-    K: Into<KeyTsBorrow<'a>>,
+    T: KvDoubleEndedSinkIter< V>,
     V: Into<ValueMeta>,
 {
-    fn key(&self) -> Option<K> {
+    fn key(&self) -> Option<KeyTsBorrow<'_>> {
         self.iter.key_back()
     }
 
-    fn value_ref(&mut self) -> Option<&V> {
-        self.iter.value_back_ref()
-    }
 
-    fn take_value(&mut self) -> Option<V> {
-        self.iter.take_value_back()
+    fn value(&self) -> Option<V> {
+        self.iter.value_back()
     }
 }
-impl<'a, T, K, V> KvDoubleEndedSinkIter<'a, K, V> for SinkIterRev<T>
+impl<T,V> KvDoubleEndedSinkIter<V> for SinkIterRev<T>
 where
-    T: KvSinkIterator<'a, K, V> + KvDoubleEndedSinkIter<'a, K, V>,
-    K: Into<KeyTsBorrow<'a>>,
+    T: KvSinkIter< V> + KvDoubleEndedSinkIter<V>,
     V: Into<ValueMeta>,
 {
-    fn key_back(&self) -> Option<K> {
+    fn key_back(&self) -> Option<KeyTsBorrow<'_>> {
         self.iter.key()
     }
 
-    fn value_back_ref(&mut self) -> Option<&V> {
-        self.iter.value_ref()
-    }
-
-    fn take_value_back(&mut self) -> Option<V> {
-        self.iter.take_value()
+    fn value_back(&self) -> Option<V> {
+        self.iter.value()
     }
 }
 pub(crate) trait SinkIter {
@@ -128,22 +119,17 @@ pub(crate) trait AsyncDoubleEndedSinkIterator:
 {
     async fn next_back(&mut self) -> Result<(), anyhow::Error>;
 }
-pub(crate) trait KvSinkIterator<'a, K, V>: SinkIter
+pub(crate) trait KvSinkIter<V>: SinkIter
 where
-    K: Into<KeyTsBorrow<'a>>,
     V: Into<ValueMeta>,
 {
-    fn key(&self) -> Option<K>;
-    fn value_ref(&mut self) -> Option<&V>;
-    fn take_value(&mut self) -> Option<V>;
+    fn key(&self) -> Option<KeyTsBorrow<'_>>;
+    fn value(&self) -> Option<V>;
 }
-pub(crate) trait KvDoubleEndedSinkIter<'a, K, V>:
-    DoubleEndedSinkIter + KvSinkIterator<'a, K, V>
+pub(crate) trait KvDoubleEndedSinkIter<V>: DoubleEndedSinkIter
 where
-    K: Into<KeyTsBorrow<'a>>,
     V: Into<ValueMeta>,
 {
-    fn key_back(&self) -> Option<K>;
-    fn value_back_ref(&mut self) -> Option<&V>;
-    fn take_value_back(&mut self) -> Option<V>;
+    fn key_back(&self) -> Option<KeyTsBorrow<'_>>;
+    fn value_back(&self) -> Option<V>;
 }

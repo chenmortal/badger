@@ -338,6 +338,11 @@ impl<'a> AsRef<[u8]> for KeyTsBorrow<'a> {
         &self.0
     }
 }
+impl<'a> Into<&'a [u8]> for KeyTsBorrow<'a> {
+    fn into(self) -> &'a [u8] {
+        &self.0
+    }
+}
 #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Meta(u8);
 bitflags::bitflags! {
