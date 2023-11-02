@@ -125,6 +125,7 @@ impl DBInner {
         let level_controller = opt
             .level_controller
             .build(
+                opt.table.clone(),
                 &manifest_file.manifest,
                 key_registry.clone(),
                 &block_cache,

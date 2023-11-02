@@ -59,7 +59,7 @@ pub(crate) struct KeyRegistryInner {
     // cipher_rotation_duration: Duration,
 }
 #[derive(Debug, Clone)]
-pub struct KeyRegistryBuilder {
+pub struct KeyRegistryConfig {
     // Encryption related options.
     encrypt_key: Vec<u8>,                 // encryption key
     data_key_rotation_duration: Duration, // key rotation duration
@@ -67,7 +67,7 @@ pub struct KeyRegistryBuilder {
     read_only: bool,
     dir: PathBuf,
 }
-impl Default for KeyRegistryBuilder {
+impl Default for KeyRegistryConfig {
     fn default() -> Self {
         Self {
             encrypt_key: Default::default(),
@@ -78,7 +78,7 @@ impl Default for KeyRegistryBuilder {
         }
     }
 }
-impl KeyRegistryBuilder {
+impl KeyRegistryConfig {
     pub(crate) async fn build(&self) -> anyhow::Result<KeyRegistry> {
         let mut key_registry = KeyRegistryInner::new(
             &self.encrypt_key,

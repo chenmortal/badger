@@ -9,7 +9,7 @@ pub(crate) const MANIFEST_REWRITE_FILE_NAME: &str = "MANIFEST-REWEITE";
 // pub(crate) const VLOG_FILE_EXT: &str = ".vlog";
 pub(crate) const MANIFEST_DELETIONS_REWRITE_THRESHOLD: i32 = 10000;
 pub(crate) const KV_WRITES_ENTRIES_CHANNEL_CAPACITY: usize = 1000;
-pub(crate) const DEFAULT_IS_SIV: bool = false;
+// pub(crate) const DEFAULT_IS_SIV: bool = false;
 lazy_static! {
     pub(crate) static ref DEFAULT_PAGE_SIZE: usize =
         unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };

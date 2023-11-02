@@ -41,14 +41,14 @@ pub(crate) struct ManifestFile {
     pub(crate) manifest: Arc<Mutex<Manifest>>,
 }
 #[derive(Debug, Clone)]
-pub struct ManifestBuilder {
+pub struct ManifestConfig {
     dir: PathBuf,
     read_only: bool,
     // Magic version used by the application using badger to ensure that it doesn't open the DB
     // with incompatible data format.
     external_magic_version: u16,
 }
-impl Default for ManifestBuilder {
+impl Default for ManifestConfig {
     fn default() -> Self {
         Self {
             dir: PathBuf::from(DEFAULT_DIR),
@@ -57,7 +57,7 @@ impl Default for ManifestBuilder {
         }
     }
 }
-impl ManifestBuilder {
+impl ManifestConfig {
     pub fn set_dir(&mut self, dir: PathBuf) {
         self.dir = dir;
     }

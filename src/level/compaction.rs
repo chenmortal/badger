@@ -7,7 +7,7 @@ use crate::{
 use parking_lot::RwLock;
 
 use super::levels::CompactDef;
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 pub(crate) struct CompactStatus(RwLock<CompactStatusInner>);
 impl Deref for CompactStatus {
     type Target = RwLock<CompactStatusInner>;
@@ -16,7 +16,7 @@ impl Deref for CompactStatus {
         &self.0
     }
 }
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 pub(crate) struct CompactStatusInner {
     levels: Vec<LevelCompactStatus>,
     tables: HashSet<SSTableId>,
@@ -91,10 +91,10 @@ impl CompactStatus {
             .push(compact_def.next_range.clone());
 
         for table in compact_def.top.iter() {
-            status_w.tables.insert(table.id());
+            status_w.tables.insert(table.table_id());
         }
         for table in compact_def.bottom.iter() {
-            status_w.tables.insert(table.id());
+            status_w.tables.insert(table.table_id());
         }
         drop(status_w);
         true
@@ -117,21 +117,20 @@ impl LevelCompactStatus {
     }
 }
 impl KeyRange {
-    pub(crate) async fn from_tables(tables: &[Table]) -> Option<KeyRange> {
+    pub(crate) fn from_tables(tables: &[Table]) -> Option<KeyRange> {
         if tables.len() == 0 {
             return None;
         }
         let mut smallest = tables[0].smallest();
-        let mut biggest = tables[0].0.biggest.read().await.to_vec();
+        let mut biggest = tables[0].biggest().to_vec();
         for i in 1..tables.len() {
             if compare_key(tables[i].smallest(), smallest).is_lt() {
                 smallest = tables[i].smallest();
             };
-            let biggest_i_r = tables[i].0.biggest.read().await;
-            if compare_key(biggest_i_r.as_slice(), biggest.as_slice()).is_gt() {
+            let biggest_i_r = tables[i].biggest();
+            if compare_key(biggest_i_r, biggest.as_slice()).is_gt() {
                 biggest = biggest_i_r.to_vec();
             }
-            drop(biggest_i_r)
         }
         Self {
             left: key_with_ts(parse_key(smallest), u64::MAX),
@@ -141,12 +140,11 @@ impl KeyRange {
         }
         .into()
     }
-    pub(crate) async fn from_table(table: &Table) -> Self {
+    pub(crate) fn from_table(table: &Table) -> Self {
         let smallest = table.smallest();
         let left = key_with_ts(parse_key(smallest), u64::MAX);
-        let biggest = table.0.biggest.read().await;
+        let biggest = table.biggest();
         let right = key_with_ts(parse_key(&biggest), 0);
-        drop(biggest);
         Self {
             left,
             right,

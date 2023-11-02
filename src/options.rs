@@ -6,15 +6,15 @@ use std::path::PathBuf;
 
 use crate::default::{DEFAULT_DIR, DEFAULT_VALUE_DIR, MAX_VALUE_THRESHOLD};
 use crate::errors::DBError;
-use crate::key_registry::KeyRegistryBuilder;
-use crate::level::levels::LevelsControllerBuilder;
-use crate::manifest::ManifestBuilder;
-use crate::memtable::MemTableBuilder;
+use crate::key_registry::KeyRegistryConfig;
+use crate::level::levels::LevelsControllerConfig;
+use crate::manifest::ManifestConfig;
+use crate::memtable::MemTableConfig;
 use crate::pb::badgerpb4;
 use crate::pb::badgerpb4::checksum::Algorithm;
-use crate::table::opt::ChecksumVerificationMode;
-use crate::util::cache::{BlockCacheBuilder, IndexCacheBuilder};
-use crate::util::lock::DBLockGuardBuilder;
+use crate::table::{ChecksumVerificationMode, TableConfig};
+use crate::util::cache::{BlockCacheConfig, IndexCacheConfig};
+use crate::util::lock::DBLockGuardConfig;
 use crate::util::skip_list::SKL_MAX_NODE_SIZE;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -68,7 +68,7 @@ impl CompressionType {
         }
     }
 }
-// static OPT:Options=Options::default();
+// static OPT:Config=configdefault();
 // const MAX_VALUE_THRESHOLD: i64 = 1 << 20;
 #[derive(Debug, Clone)]
 pub(crate) struct DBDir(PathBuf);
@@ -101,11 +101,11 @@ impl Deref for ValueDir {
 
 #[derive(Debug, Clone)]
 pub struct Options {
-    // Required options.
+    // Required Config.
     dir: PathBuf,
     value_dir: PathBuf,
 
-    // Usually modified options.
+    // Usually modified Config.
     sync_writes: bool,
     num_versions_to_keep: isize,
     read_only: bool,
@@ -116,9 +116,9 @@ pub struct Options {
     // Sets the Stream.numGo field
     num_goroutines: usize,
 
-    // Fine tuning options.
+    // Fine tuning Config.
     // memtable_size: u32,
-    pub memtable: MemTableBuilder,
+    pub memtable: MemTableConfig,
     base_table_size: usize,
     base_level_size: usize,
     level_size_multiplier: usize,
@@ -133,9 +133,10 @@ pub struct Options {
     checksum_algo: badgerpb4::checksum::Algorithm,
     bloom_false_positive: f64,
     // block_cache_size: usize,
-    pub block_cache: BlockCacheBuilder,
-    pub index_cache: IndexCacheBuilder,
-    pub level_controller: LevelsControllerBuilder,
+    pub block_cache: BlockCacheConfig,
+    pub index_cache: IndexCacheConfig,
+    pub level_controller: LevelsControllerConfig,
+    pub table: TableConfig,
     // index_cache_size: i64,
     // num_level_zero_tables: usize,
     // num_level_zero_tables_stall: usize,
@@ -150,15 +151,15 @@ pub struct Options {
     // When set, checksum will be validated for each entry read from the value log file.
     verify_value_checksum: bool,
 
-    // // Encryption related options.
+    // // Encryption related Config.
     // encryption_key: Vec<u8>,                    // encryption key
     // encryption_key_rotation_duration: Duration, // key rotation duration
-    pub key_registry: KeyRegistryBuilder,
+    pub key_registry: KeyRegistryConfig,
     // // BypassLockGuard will bypass the lock guard on badger. Bypassing lock
     // // guard can cause data corruption if multiple badger instances are using
-    // // the same directory. Use this options with caution.
+    // // the same directory. Use this Config with caution.
     // bypass_lock_guard: bool,
-    pub lock_guard: DBLockGuardBuilder,
+    pub lock_guard: DBLockGuardConfig,
     // ChecksumVerificationMode decides when db should verify checksums for SSTable blocks.
     checksum_verification_mode: ChecksumVerificationMode,
 
@@ -173,7 +174,7 @@ pub struct Options {
     // Magic version used by the application using badger to ensure that it doesn't open the DB
     // with incompatible data format.
     // external_magic_version: u16,
-    pub manifest: ManifestBuilder,
+    pub manifest: ManifestConfig,
 
     // Transaction start and commit timestamps are managed by end-user.
     // This is only useful for databases built on top of Badger (like Dgraph).
@@ -240,6 +241,7 @@ impl Default for Options {
             key_registry: Default::default(),
             memtable: Default::default(),
             level_controller: Default::default(),
+            table: Default::default(),
         }
     }
 }
@@ -417,7 +419,7 @@ impl Options {
     // }
     // ChecksumVerificationMode indicates when the db should verify checksums for SSTable blocks.
     //
-    // The default value of VerifyValueChecksum is options.NoVerification.
+    // The default value of VerifyValueChecksum is Config.NoVerification.
     pub fn set_checksum_verification_mode(
         mut self,
         checksum_verification_mode: ChecksumVerificationMode,
@@ -437,7 +439,7 @@ impl Options {
 }
 static OPT: OnceCell<Options> = once_cell::sync::OnceCell::new();
 impl Options {
-    pub(crate) fn check_set_options(&mut self) -> anyhow::Result<()> {
+    pub(crate) fn check_set_Config(&mut self) -> anyhow::Result<()> {
         if self.num_compactors == 1 {
             bail!("Cannot have 1 compactor. Need at least 2");
         }
@@ -477,7 +479,7 @@ impl Options {
             _ => {}
         }
         let need_cache = match self.compression {
-            crate::options::CompressionType::None => true,
+            CompressionType::None => true,
             _ => false,
         };
         if need_cache && self.block_cache.block_cache_size() == 0 {
@@ -505,7 +507,7 @@ impl Options {
     }
     #[deny(unused)]
     pub(super) fn init(mut self) -> anyhow::Result<()> {
-        self.check_set_options()?;
+        self.check_set_Config()?;
         self.create_dirs()?;
         self.init_lock_guard();
         self.index_cache.init(self.memtable.memtable_size());

@@ -1,9 +1,11 @@
-use bytes::Bytes;
+use bytes::{BufMut, Bytes};
 use stretto::AsyncCache;
 
-use crate::table::block::{self, Block};
+use crate::table::block::{self, Block, BlockId};
+
+use super::SSTableId;
 #[derive(Debug, Clone, Copy)]
-pub struct BlockCacheBuilder {
+pub struct BlockCacheConfig {
     block_cache_size: usize,
     block_size: usize,
 }
@@ -11,7 +13,7 @@ pub struct BlockCacheBuilder {
 pub(crate) struct BlockCache {
     cache: AsyncCache<Vec<u8>, block::Block>,
 }
-impl Default for BlockCacheBuilder {
+impl Default for BlockCacheConfig {
     fn default() -> Self {
         Self {
             block_cache_size: 256 << 20,
@@ -19,7 +21,7 @@ impl Default for BlockCacheBuilder {
         }
     }
 }
-impl BlockCacheBuilder {
+impl BlockCacheConfig {
     pub fn set_block_cache_size(&mut self, block_cache_size: usize) {
         self.block_cache_size = block_cache_size;
     }
@@ -46,16 +48,34 @@ impl BlockCacheBuilder {
         return Ok(None);
     }
 }
-impl BlockCache {
-    pub(crate) async fn get(&self, key: &[u8]) -> Option<stretto::ValueRef<'_, block::Block>> {
-        self.cache.get(key).await
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BlockCacheKey((SSTableId, BlockId));
+impl From<(SSTableId, BlockId)> for BlockCacheKey {
+    fn from(value: (SSTableId, BlockId)) -> Self {
+        Self(value)
     }
-    pub(crate) async fn insert(&self, key: Vec<u8>, block: Block, size: i64) -> bool {
-        self.cache.insert(key, block, size).await
+}
+impl BlockCacheKey {
+    fn serialize(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(8);
+        v.put_u32(self.0 .0.into());
+        v.put_u32(self.0 .1.into());
+        v
+    }
+}
+impl BlockCache {
+    pub(crate) async fn get(
+        &self,
+        key: BlockCacheKey,
+    ) -> Option<stretto::ValueRef<'_, block::Block>> {
+        self.cache.get(&key.serialize()).await
+    }
+    pub(crate) async fn insert(&self, key: BlockCacheKey, block: Block, size: i64) -> bool {
+        self.cache.insert(key.serialize(), block, size).await
     }
 }
 #[derive(Debug, Clone, Copy)]
-pub struct IndexCacheBuilder {
+pub struct IndexCacheConfig {
     index_cache_size: usize,
     index_size: usize,
 }
@@ -64,7 +84,7 @@ pub(crate) struct IndexCache {
     cache: AsyncCache<u64, Bytes>,
 }
 const DEFAULT_INDEX_SIZE: usize = ((64 << 20) as f64 * 0.05) as usize;
-impl Default for IndexCacheBuilder {
+impl Default for IndexCacheConfig {
     fn default() -> Self {
         Self {
             index_cache_size: 0,
@@ -73,7 +93,7 @@ impl Default for IndexCacheBuilder {
     }
 }
 
-impl IndexCacheBuilder {
+impl IndexCacheConfig {
     pub fn set_index_cache_size(&mut self, index_cache_size: usize) {
         self.index_cache_size = index_cache_size;
     }

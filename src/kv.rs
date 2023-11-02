@@ -373,11 +373,14 @@ pub(crate) struct ValueMeta {
     user_meta: u8,
     meta: Meta,
 }
-
+lazy_static! {
+    static ref VALUEMETA_MIN_SERIALIZED_SIZE: usize = ValueMeta::default().serialized_size();
+}
 impl ValueMeta {
     pub(crate) fn serialized_size(&self) -> usize {
         2 + self.expires_at.0.required_space() + self.value.len()
     }
+    
     pub(crate) fn serialize(&self) -> Vec<u8> {
         let mut v = vec![0u8; self.serialized_size()];
         v[0] = self.user_meta;
@@ -386,14 +389,21 @@ impl ValueMeta {
         v[2 + p..].copy_from_slice(self.value());
         v
     }
-    pub(crate) fn deserialize(data: &[u8]) -> Self {
-        let (expires_at, size) = unsafe { u64::decode_var(&data[2..]).unwrap_unchecked() };
-        Self {
-            value: data[2 + size..].to_vec().into(),
-            expires_at: expires_at.into(),
-            user_meta: data[0],
-            meta: Meta(data[1]),
+
+    pub(crate) fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < VALUEMETA_MIN_SERIALIZED_SIZE.to_owned() {
+            return None;
         }
+        if let Some((expires_at, size)) = u64::decode_var(&data[2..]) {
+            return Self {
+                value: data[2 + size..].to_vec().into(),
+                expires_at: expires_at.into(),
+                user_meta: data[0],
+                meta: Meta(data[1]),
+            }
+            .into();
+        }
+        None
     }
 
     pub(crate) fn meta(&self) -> Meta {
@@ -461,7 +471,7 @@ pub(crate) struct ValueStruct {
 }
 impl ValueStruct {
     // fn encode(&self) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
-    //     DefaultOptions::new()
+    //     Defaultconfignew()
     //         .with_varint_encoding()
     //         .serialize(&self.inner)
     // }
@@ -484,6 +494,8 @@ impl ValueStruct {
 #[cfg(test)]
 mod tests {
     use std::cmp::Ordering;
+
+    use bytes::Bytes;
 
     use crate::kv::{KeyTsBorrow, Meta, ValueMeta};
 
@@ -519,7 +531,16 @@ mod tests {
         v.expires_at = 123456789.into();
         v.meta = Meta(1);
         assert_eq!(v.serialized_size(), 9);
-        assert_eq!(v, ValueMeta::deserialize(&v.serialize()));
+        assert_eq!(v, ValueMeta::deserialize(&v.serialize()).unwrap());
+    }
+    #[test]
+    fn test_empty() {
+        let mut v = ValueMeta::default();
+        v.value = Bytes::from("");
+        dbg!(v.serialized_size());
+        // let mut v = ValueMeta::default().serialized_size();
+
+        // dbg!(v);
     }
     #[test]
     fn test_meta() {

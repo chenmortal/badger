@@ -142,7 +142,7 @@ pub struct DataKey {
     /// this is other encryption key
     #[prost(bytes = "vec", tag = "2")]
     pub data: ::prost::alloc::vec::Vec<u8>,
-    /// just for decrypt or  encrypt DataKey.data with options.encryptionkey
+    /// just for decrypt or  encrypt DataKey.data with Config.encryptionkey
     #[prost(bytes = "vec", tag = "3")]
     pub iv: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "4")]

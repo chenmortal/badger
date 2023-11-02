@@ -28,7 +28,7 @@ impl Default for ChecksumVerificationMode {
     }
 }
 #[derive(Debug, Clone)]
-pub(crate) struct TableOption {
+pub(crate) struct TableConfig {
     // Open tables in read only mode.
     // Maximum size of the table.
     table_size: usize,
@@ -45,17 +45,17 @@ pub(crate) struct TableOption {
 
     // DataKey is the key used to decrypt the encrypted text.
     // pub(crate) datakey: Option<DataKey>,
-    cipher: Arc<Option<AesCipher>>,
+    // cipher: Arc<Option<AesCipher>>,
 
     // Compression indicates the compression algorithm used for block compression.
     compression: CompressionType,
 
     zstd_compression_level: i32,
-    block_cache: Option<BlockCache>,
+    // block_cache: Option<BlockCache>,
 
-    index_cache: Option<IndexCache>,
+    // index_cache: Option<IndexCache>,
 }
-impl Default for TableOption {
+impl Default for TableConfig {
     fn default() -> Self {
         Self {
             table_size: 2 << 20,
@@ -65,38 +65,38 @@ impl Default for TableOption {
             block_size: 4 * 1024,
             compression: Default::default(),
             zstd_compression_level: 1,
-            block_cache: Default::default(),
-            index_cache: Default::default(),
+            // block_cache: Default::default(),
+            // index_cache: Default::default(),
             checksum_algo: Default::default(),
-            cipher: None.into(),
+            // cipher: None.into(),
         }
     }
 }
-impl TableOption {
+impl TableConfig {
     pub(crate) async fn new(
-        key_registry: &KeyRegistry,
-        block_cache: &Option<BlockCache>,
-        index_cache: &Option<IndexCache>,
+        // key_registry: &KeyRegistry,
+        // block_cache: &Option<BlockCache>,
+        // index_cache: &Option<IndexCache>,
     ) -> Self {
-        let cipher = key_registry.latest_cipher().await.into();
+        // let cipher = key_registry.latest_cipher().await.into();
         Self {
             table_capacity: (Options::base_table_size() as f64 * 0.95) as u64,
             bloom_false_positive: Options::bloom_false_positive(),
             block_size: Options::block_size(),
             compression: Options::compression(),
             zstd_compression_level: Options::zstd_compression_level(),
-            block_cache: block_cache.clone(),
-            index_cache: index_cache.clone(),
+            // block_cache: block_cache.clone(),
+            // index_cache: index_cache.clone(),
             table_size: Options::base_table_size(),
             checksum_verify_mode: Options::checksum_verification_mode(),
             checksum_algo: Options::checksum_algo(),
-            cipher,
+            // cipher,
         }
     }
 
-    pub(crate) fn block_cache(&self) -> Option<&BlockCache> {
-        self.block_cache.as_ref()
-    }
+    // pub(crate) fn block_cache(&self) -> Option<&BlockCache> {
+    //     self.block_cache.as_ref()
+    // }
 
     pub(crate) fn block_size(&self) -> usize {
         self.block_size
@@ -123,23 +123,6 @@ impl TableOption {
         self.checksum_algo
     }
 
-    pub(crate) fn cipher(&self) -> Option<&AesCipher> {
-        self.cipher.as_ref().as_ref()
-    }
-    pub(crate) fn cipher_clone(&self) -> Arc<Option<AesCipher>> {
-        self.cipher.clone()
-    }
-
-    // pub(crate) fn set_cipher_with_key(&mut self, cipher: Option<DataKey>) {
-
-    //     if let Some(key) = cipher {
-            
-    //         // if let Ok(cipher) = AesCipher::new(&key.data, Options::aes_is_siv()) {
-    //         //     self.cipher = Arc::new(cipher.into())
-    //         // }
-    //     }
-    // }
-
     pub(crate) fn compression(&self) -> CompressionType {
         self.compression
     }
@@ -152,7 +135,4 @@ impl TableOption {
         self.bloom_false_positive
     }
 
-    pub(crate) fn set_cipher(&mut self, cipher: Arc<Option<AesCipher>>) {
-        self.cipher = cipher;
-    }
 }
