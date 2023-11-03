@@ -1,4 +1,4 @@
-pub(crate) const MAX_VALUE_THRESHOLD: u32 = 1 << 20;
+pub(crate) const MAX_VALUE_THRESHOLD: usize = 1 << 20;
 pub(crate) const DEFAULT_DIR: &str = "./tmp/badger";
 pub(crate) const DEFAULT_VALUE_DIR: &str = "./tmp/badger";
 pub(crate) const LOCK_FILE: &str = "LOCK";

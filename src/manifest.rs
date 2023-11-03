@@ -14,7 +14,7 @@ use prost::Message;
 use crate::{
     default::{DEFAULT_DIR, MANIFEST_FILE_NAME, MANIFEST_REWRITE_FILE_NAME},
     errors::err_file,
-    options::CompressionType,
+    config::CompressionType,
     pb::badgerpb4::{manifest_change, ManifestChange, ManifestChangeSet},
     util::{sys::sync_dir, SSTableId},
 };

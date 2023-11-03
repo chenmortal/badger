@@ -27,7 +27,6 @@ use crate::{
     key_registry::KeyRegistry,
     level::compaction::LevelCompactStatus,
     manifest::Manifest,
-    options::Options,
     pb::ChecksumError,
     table::{
         iter::{ConcatIter, TableIter},
@@ -52,6 +51,8 @@ pub(crate) struct LevelsController {
     compact_status: CompactStatus,
     memtable_size: usize,
     max_levels: usize,
+    level_config: LevelsControllerConfig,
+    table_config: TableConfig,
 }
 struct Targets {
     base_level: usize,
@@ -87,6 +88,12 @@ pub struct LevelsControllerConfig {
     num_level_zero_tables_stall: usize,
     num_level_zero_tables: usize,
     max_levels: usize,
+    base_level_size: usize,
+    level_size_multiplier: usize,
+    table_size_multiplier: usize,
+    num_compactors: usize,
+    compactl0_on_close: bool,
+    lmax_compaction: bool,
 }
 impl Default for LevelsControllerConfig {
     fn default() -> Self {
@@ -97,7 +104,32 @@ impl Default for LevelsControllerConfig {
             num_level_zero_tables_stall: 15,
             num_level_zero_tables: 5,
             max_levels: 7,
+            base_level_size: 10 << 20,
+            level_size_multiplier: 10,
+            table_size_multiplier: 2,
+            num_compactors: 4,
+            compactl0_on_close: false,
+            lmax_compaction: false,
         }
+    }
+}
+impl LevelsControllerConfig {
+    #[deny(unused)]
+    pub(crate) fn check_levels_controller_config(&mut self) -> anyhow::Result<()> {
+        if self.num_compactors == 1 {
+            bail!("Cannot have 1 compactor. Need at least 2");
+        }
+        if self.read_only {
+            self.compactl0_on_close = false;
+        }
+        Ok(())
+    }
+    pub fn dir(&self) -> &PathBuf {
+        &self.dir
+    }
+
+    pub fn set_dir(&mut self, dir: PathBuf) {
+        self.dir = dir;
     }
 }
 impl LevelsControllerConfig {
@@ -119,7 +151,13 @@ impl LevelsControllerConfig {
         drop(compact_status_w);
 
         let (max_file_id, level_tables) = self
-            .open_tables_by_manifest(table_config,manifest, key_registry, block_cache, index_cache)
+            .open_tables_by_manifest(
+                table_config.clone(),
+                manifest,
+                key_registry,
+                block_cache,
+                index_cache,
+            )
             .await?;
         let next_file_id = AtomicU32::new(max_file_id + 1);
 
@@ -139,6 +177,8 @@ impl LevelsControllerConfig {
             compact_status,
             memtable_size: self.memtable_size,
             max_levels: self.max_levels,
+            level_config: self.clone(),
+            table_config,
         };
 
         levels_control.validate().await?;
@@ -224,7 +264,12 @@ impl LevelsControllerConfig {
                 let (mmap_f, _is_new) = MmapFile::open(&path, fp_open_opt, 0)?;
 
                 match table_config
-                    .open(mmap_f, &key_registry_clone, index_cache_clone, block_cache_clone)
+                    .open(
+                        mmap_f,
+                        &key_registry_clone,
+                        index_cache_clone,
+                        block_cache_clone,
+                    )
                     .await
                 {
                     Ok(table) => {
@@ -271,10 +316,6 @@ impl LevelsControllerConfig {
         }
         Ok((max_file_id, level_tables))
     }
-
-    pub fn dir(&self) -> &PathBuf {
-        &self.dir
-    }
 }
 impl LevelsController {
     async fn validate(&self) -> anyhow::Result<()> {
@@ -294,20 +335,18 @@ impl LevelsController {
     }
     pub(crate) async fn start_compact(
         level_controller: Arc<Self>,
-        opt: &Arc<Options>,
         closer: &mut Closer,
         sem: Arc<Semaphore>,
         oracle: &Arc<Oracle>,
     ) {
-        let num = Options::num_compactors();
+        let num = level_controller.level_config.num_compactors;
         for task_id in 0..num {
             let closer_c = closer.clone();
-            let opt_clone = opt.clone();
             let oracle_clone = oracle.clone();
             let level_controller_clone = level_controller.clone();
             tokio::spawn(async move {
                 level_controller_clone
-                    .run_compact(task_id, closer_c, opt_clone, &oracle_clone)
+                    .run_compact(task_id, closer_c, &oracle_clone)
                     .await;
             });
         }
@@ -318,7 +357,7 @@ impl LevelsController {
         task_id: usize,
         closer: Closer,
         // sem: Arc<Semaphore>,
-        opt: Arc<Options>,
+        // opt: Arc<Options>,
         oracle: &Arc<Oracle>,
     ) {
         let sleep =
@@ -346,7 +385,7 @@ impl LevelsController {
             drop_prefixes: Vec::new(),
             targets: self.level_targets().await,
         };
-        self.do_compact(task_id, priority, &opt, oracle).await;
+        self.do_compact(task_id, priority, oracle).await;
         loop {
             select! {
                 _=ticker.tick()=>{
@@ -398,7 +437,6 @@ impl LevelsController {
         &self,
         task_id: usize,
         mut priority: CompactionPriority,
-        opt: &Arc<Options>,
         oracle: &Arc<Oracle>,
     ) -> anyhow::Result<()> {
         let priority_level = priority.level;
@@ -447,22 +485,24 @@ impl LevelsController {
             file_size: vec![0; levels_len],
         };
         let mut level_size = self.last_level().get_total_size().await;
+        let base_level_size = self.level_config.base_level_size;
         for i in (1..levels_len).rev() {
-            targets.target_size[i] = level_size.max(Options::base_level_size());
-            if targets.base_level == 0 && level_size <= Options::base_level_size() {
+            targets.target_size[i] = level_size.max(base_level_size);
+            if targets.base_level == 0 && level_size <= base_level_size {
                 targets.base_level = i;
             }
-            level_size /= Options::level_size_multiplier();
+            level_size /= self.level_config.level_size_multiplier;
         }
 
-        let mut table_size = Options::base_table_size();
+        // let mut table_size = Options::base_table_size();
+        let mut table_size = self.table_config.table_size();
         for i in 0..levels_len {
             targets.file_size[i] = if i == 0 {
                 self.memtable_size
             } else if i <= targets.base_level {
                 table_size
             } else {
-                table_size *= Options::table_size_multiplier();
+                table_size *= self.level_config.table_size_multiplier;
                 table_size
             }
         }
@@ -557,9 +597,7 @@ impl LevelsController {
                     break;
                 }
                 compact_def.bottom.push(new_t.clone());
-                compact_def
-                    .next_range
-                    .extend(KeyRange::from_table(new_t));
+                compact_def.next_range.extend(KeyRange::from_table(new_t));
                 j += 1;
             }
             //

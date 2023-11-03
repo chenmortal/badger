@@ -14,7 +14,7 @@ use crate::{
     default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
     errors::DBError,
     kv::{Entry, Meta, ValuePointer},
-    options::Options,
+    config::Config,
     util::closer::Closer,
 };
 use anyhow::anyhow;
@@ -108,7 +108,7 @@ impl DB {
         }
         let req_len = Arc::new(AtomicUsize::new(0));
         #[cfg(feature = "metrics")]
-        set_pending_writes(Options::dir().clone(), req_len.clone()).await;
+        set_pending_writes(self.opt.memtable.dir().clone(), req_len.clone()).await;
         loop {
             select! {
                 Some(write_req)=recv_write_req.recv()=>{
@@ -215,7 +215,7 @@ impl DB {
             memtable_w.push(&dec_entry)?;
         }
 
-        if Options::sync_writes() {
+        if self.opt.sync_writes() {
             memtable_w.wal_mut().flush()?;
         }
         drop(memtable_w);

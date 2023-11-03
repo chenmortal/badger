@@ -8,7 +8,6 @@ use std::{
 };
 use tokio::{select, sync::Semaphore};
 
-use crate::options::Options;
 lazy_static! {
     static ref LSM_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
     static ref VLOG_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
@@ -88,39 +87,37 @@ pub(crate) fn sub_num_compaction_tables(val: usize) {
 }
 
 #[inline]
-pub(crate) async fn calculate_size() {
-    let dir = Options::dir();
-    let value_dir = Options::value_dir();
-    let (lsm_size, mut vlog_size) = match total_size(dir) {
+pub(crate) async fn calculate_size(level_dir: &PathBuf, vlog_dir: &PathBuf) {
+    let (lsm_size, mut vlog_size) = match total_size(&level_dir) {
         Ok(r) => r,
         Err(e) => {
-            debug!("Cannot calculate_size {:?} for {}", dir, e);
+            debug!("Cannot calculate_size {:?} for {}", level_dir, e);
             (0, 0)
         }
     };
     #[cfg(feature = "metrics")]
-    set_lsm_size(dir, lsm_size).await;
-    if value_dir != dir {
-        match total_size(value_dir) {
+    set_lsm_size(&level_dir, lsm_size).await;
+    if vlog_dir != level_dir {
+        match total_size(vlog_dir) {
             Ok((_, v)) => {
                 vlog_size = v;
             }
             Err(e) => {
-                debug!("Cannot calculate_size {:?} for {}", value_dir, e);
+                debug!("Cannot calculate_size {:?} for {}", vlog_dir, e);
                 vlog_size = 0;
             }
         };
     }
     #[cfg(feature = "metrics")]
-    set_vlog_size(value_dir, vlog_size).await;
+    set_vlog_size(vlog_dir, vlog_size).await;
 }
 
-pub(crate) async fn update_size(sem: Arc<Semaphore>) {
+pub(crate) async fn update_size(sem: Arc<Semaphore>, level_dir: PathBuf, vlog_dir: PathBuf) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
     loop {
         select! {
             _instant=interval.tick() =>{
-                calculate_size().await;
+                calculate_size(&level_dir,&vlog_dir).await;
             },
             _=sem.acquire()=>{
                 break;

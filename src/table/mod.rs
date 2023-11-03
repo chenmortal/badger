@@ -27,7 +27,7 @@ use crate::pb::badgerpb4::{self, Checksum};
 use crate::table::block::BlockInner;
 use crate::util::cache::{BlockCache, IndexCache};
 use crate::util::{DBFileId, SSTableId};
-use crate::{options::CompressionType, util::mmap::MmapFile};
+use crate::{config::CompressionType, util::mmap::MmapFile};
 
 // ChecksumVerificationMode tells when should DB verify checksum for SSTable blocks.
 #[derive(Debug, Clone, Copy)]
@@ -57,7 +57,7 @@ pub struct TableConfig {
     table_size: usize,
     table_capacity: usize, // 0.9x TableSize.
 
-    // ChkMode is the checksum verification mode for Table.
+    // ChecksumVerificationMode decides when db should verify checksums for SSTable blocks.
     checksum_verify_mode: ChecksumVerificationMode,
     checksum_algo: badgerpb4::checksum::Algorithm,
     // BloomFalsePositive is the false positive probabiltiy of bloom filter.
@@ -113,6 +113,18 @@ impl TableConfig {
 
     pub fn set_zstd_compression_level(&mut self, zstd_compression_level: i32) {
         self.zstd_compression_level = zstd_compression_level;
+    }
+
+    pub fn table_size(&self) -> usize {
+        self.table_size
+    }
+
+    pub fn block_size(&self) -> usize {
+        self.block_size
+    }
+
+    pub fn compression(&self) -> CompressionType {
+        self.compression
     }
 }
 impl TableConfig {
@@ -200,6 +212,7 @@ impl TableConfig {
             last_block_offset.offset(),
             uncompress_data,
         )?;
+        block.verify()?;
         let mut block_iter = block.iter();
         assert!(block_iter.next_back()?);
         let biggest = block_iter.key().unwrap().to_vec();

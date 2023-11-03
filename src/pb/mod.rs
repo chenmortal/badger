@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use anyhow::bail;
 
-use crate::options::CompressionType;
+use crate::config::CompressionType;
 
 use self::badgerpb4::{manifest_change::Operation, Checksum, EncryptionAlgo, ManifestChange};
 use crate::pb::badgerpb4::checksum::Algorithm;

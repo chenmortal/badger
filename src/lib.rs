@@ -20,7 +20,7 @@ mod kv;
 mod level;
 mod manifest;
 mod memtable;
-pub mod options;
+pub mod config;
 mod pb;
 mod read;
 mod table;

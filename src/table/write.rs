@@ -8,7 +8,7 @@ use prost::Message;
 use crate::{
     iter::{KvSinkIter, SinkIterator},
     kv::{ KeyTsBorrow, ValuePointer, TxnTs, ValueMeta, Meta},
-    options::CompressionType,
+    config::CompressionType,
  key_registry::{NONCE_SIZE, AesCipher, self, KeyRegistry}, pb::badgerpb4::{Checksum, checksum::Algorithm}, util::{rayon::{spawn_fifo, AsyncRayonHandle}, cache::{IndexCache, BlockCache}}, fb::fb, util::{bloom::Bloom, mmap::MmapFile},
 };
 
