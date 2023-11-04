@@ -1,7 +1,8 @@
 use log::debug;
+use parking_lot::Mutex;
 use parking_lot::RwLock;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs::{metadata, read_dir},
     path::PathBuf,
     sync::{atomic::AtomicUsize, atomic::Ordering, Arc},
@@ -22,6 +23,11 @@ lazy_static! {
     static ref NUM_MEMTABLE_GETS: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_GETS_WITH_RESULTS: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_BYTES_WRITTEN_TO_L0: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_BLOOM_USE: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_BLOOM_NOT_EXIST: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_BLOOM_NOT_EXIST_LEVEL: Mutex<BTreeMap<usize, usize>> =
+        Mutex::new(BTreeMap::new());
+    static ref NUM_LSM_GETS: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
 }
 
 #[inline]
@@ -81,6 +87,37 @@ pub(crate) fn add_num_bytes_written_to_l0(size: usize) {
     NUM_BYTES_WRITTEN_TO_L0.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[inline]
+pub(crate) fn add_num_bloom_use(val: usize) {
+    NUM_BLOOM_USE.fetch_add(val, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn add_num_bloom_not_exist(val: usize) {
+    NUM_BLOOM_NOT_EXIST.fetch_add(val, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn add_num_bloom_not_exist_level(level: usize, val: usize) {
+    let mut level_w = NUM_BLOOM_NOT_EXIST_LEVEL.lock();
+    if let Some(v) = level_w.get_mut(&level) {
+        *v += val;
+    } else {
+        level_w.insert(level, val);
+    }
+    drop(level_w);
+}
+
+#[inline]
+pub(crate) fn add_num_lsm_gets(level: usize, val: usize) {
+    let mut lsm = NUM_LSM_GETS.lock();
+    if let Some(v) = lsm.get_mut(&level) {
+        *v += val;
+    } else {
+        lsm.insert(level, val);
+    }
+    drop(lsm)
+}
 #[inline]
 pub(crate) fn sub_num_compaction_tables(val: usize) {
     NUM_COMPACTION_TABLES.fetch_sub(val, std::sync::atomic::Ordering::SeqCst);

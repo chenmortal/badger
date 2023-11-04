@@ -47,7 +47,7 @@ pub struct DBInner {
     pub(crate) memtable: Option<Arc<RwLock<MemTable>>>,
     pub(crate) immut_memtable: RwLock<VecDeque<Arc<MemTable>>>,
     pub(crate) block_cache: Option<BlockCache>,
-    pub(crate) index_cache: Option<IndexCache>,
+    pub(crate) index_cache: IndexCache,
     pub(crate) level_controller: LevelsController,
     pub(crate) oracle: Arc<Oracle>,
     pub(crate) send_write_req: Sender<WriteReq>,
@@ -68,11 +68,11 @@ impl DBInner {
         let lock_guard = opt.lock_guard.try_build()?;
 
         init_global_rayon_pool()?;
-        let manifest_file = opt.manifest.build()?;
+        let manifest_file = opt.manifest.open()?;
         let block_cache = opt.block_cache.try_build()?;
-        let index_cache = opt.index_cache.try_build()?;
+        let index_cache = opt.index_cache.build()?;
 
-        let key_registry = opt.key_registry.build().await?;
+        let key_registry = opt.key_registry.open().await?;
 
         calculate_size(opt.level_controller.dir(), &opt.vlog.value_dir()).await;
         // let mut update_size_closer = Closer::new();

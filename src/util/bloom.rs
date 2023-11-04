@@ -1,12 +1,43 @@
 use std::ops::Deref;
 
+use bytes::Bytes;
+
 //copy from LevelDB-Go
-pub(crate) struct Bloom(Vec<u8>);
+pub(crate) struct Bloom(Bytes);
 impl Deref for Bloom {
-    type Target=[u8];
+    type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+pub(crate) struct BloomBorrow<'a>(&'a [u8]);
+impl<'a> From<&'a [u8]> for BloomBorrow<'a> {
+    fn from(value: &'a [u8]) -> Self {
+        Self(value)
+    }
+}
+impl<'a> BloomBorrow<'a> {
+    pub(crate) fn may_contain_key(&self, bytes: &[u8]) -> bool {
+        self.may_contain(Bloom::hash(bytes))
+    }
+    #[inline]
+    pub(crate) fn may_contain(&self, mut hash: u32) -> bool {
+        let filter = self.0;
+        if filter.len() < 2 {
+            return false;
+        }
+        let k = filter[filter.len() - 1];
+        let bit_len = (filter.len() - 1) * 8;
+        let delta = hash >> 17 | hash << 15;
+        for _ in 0..k {
+            let bit_pos = hash as usize % bit_len;
+            if filter[bit_pos / 8] & (1 << (bit_pos % 8)) == 0 {
+                return false;
+            }
+            hash = unsafe { hash.unchecked_add(delta) };
+        }
+        return true;
     }
 }
 impl Bloom {
@@ -23,9 +54,7 @@ impl Bloom {
             cap += cap / 4;
         }
         let mut filter = Vec::with_capacity(cap as usize);
-        (0..want).for_each(|_| {
-            filter.push(0u8);
-        });
+        filter.resize_with(want,||0u8);
 
         for hash in key_hashes {
             let mut hash = *hash;
@@ -37,29 +66,16 @@ impl Bloom {
             });
         }
         filter[byte_len] = k as u8;
-        Self(filter)
+        Self(filter.into())
     }
     #[inline]
     pub(crate) fn may_contain_key(&self, bytes: &[u8]) -> bool {
-        self.may_contain(Self::hash(bytes))
+        BloomBorrow(&self).may_contain(Self::hash(bytes))
     }
+
     #[inline]
     pub(crate) fn may_contain(&self, mut hash: u32) -> bool {
-        let filter = &self.0;
-        if filter.len() < 2 {
-            return false;
-        }
-        let k = filter[filter.len() - 1];
-        let bit_len = (filter.len() - 1) * 8;
-        let delta = hash >> 17 | hash << 15;
-        for _ in 0..k {
-            let bit_pos = hash as usize % bit_len;
-            if filter[bit_pos / 8] & (1 << (bit_pos % 8)) == 0 {
-                return false;
-            }
-            hash = unsafe { hash.unchecked_add(delta) };
-        }
-        return true;
+        BloomBorrow(&self).may_contain(hash)
     }
     #[inline]
     pub(crate) fn bits_per_key(false_positive_rate: f64) -> u32 {

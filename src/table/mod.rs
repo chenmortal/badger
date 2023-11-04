@@ -1,11 +1,8 @@
-pub(crate) mod block;
-pub(crate) mod index;
 pub(crate) mod iter;
 pub(crate) mod merge;
 pub(crate) mod read;
 pub(crate) mod write;
 use std::io::{self};
-use std::mem;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::{sync::Arc, time::SystemTime};
@@ -13,19 +10,21 @@ use std::{sync::Arc, time::SystemTime};
 use aes_gcm_siv::Nonce;
 use anyhow::anyhow;
 use anyhow::bail;
-use bytes::{Buf, BufMut};
+use bytes::{Buf, BufMut, Bytes};
 use flatbuffers::InvalidFlatbuffer;
 use prost::Message;
 
-use self::block::{Block, BlockId};
+use self::read::SinkBlockIter;
 use crate::fb::fb::TableIndex;
 use crate::iter::{DoubleEndedSinkIterator, KvSinkIter};
 use crate::key_registry::NONCE_SIZE;
 use crate::key_registry::{AesCipher, KeyRegistry};
-use crate::kv::TxnTs;
+use crate::kv::{KeyTs, TxnTs};
 use crate::pb::badgerpb4::{self, Checksum};
-use crate::table::block::BlockInner;
-use crate::util::cache::{BlockCache, IndexCache};
+use crate::util::bloom::BloomBorrow;
+use crate::util::cache::{BlockCache, BlockCacheKey, IndexCache};
+#[cfg(feature = "metrics")]
+use crate::util::metrics::{add_num_bloom_not_exist, add_num_bloom_use};
 use crate::util::{DBFileId, SSTableId};
 use crate::{config::CompressionType, util::mmap::MmapFile};
 
@@ -130,9 +129,9 @@ impl TableConfig {
 impl TableConfig {
     pub(crate) async fn open(
         self,
-        mut mmap_f: MmapFile,
+        mmap_f: MmapFile,
         key_registry: &KeyRegistry,
-        index_cache: Option<IndexCache>,
+        index_cache: IndexCache,
         block_cache: Option<BlockCache>,
     ) -> anyhow::Result<Table> {
         let cipher = key_registry.latest_cipher().await;
@@ -144,12 +143,11 @@ impl TableConfig {
         let table_size = mmap_f.get_file_size()? as usize;
         let created_at: SystemTime = mmap_f.get_modified_time()?;
 
-        let index_buf = TableIndexBuf::open(&mmap_f, cipher.as_ref())?;
+        let (index_buf, index_start, index_len) = Self::init_index(&mmap_f, cipher.as_ref())?;
         let table_index = index_buf.to_table_index();
 
         let (smallest, biggest) = self.get_smallest_biggest(table_index, &mmap_f, &cipher)?;
 
-        let checksum_mode = self.checksum_verify_mode;
         let inner = TableInner {
             mmap_f,
             table_size,
@@ -158,13 +156,15 @@ impl TableConfig {
             table_id,
             created_at,
             config: self,
-            index_buf,
             block_cache,
             index_cache,
             cipher,
+            index_start,
+            index_len,
+            cheap_index: table_index.into(),
         };
 
-        match checksum_mode {
+        match inner.config.checksum_verify_mode {
             ChecksumVerificationMode::OnTableRead
             | ChecksumVerificationMode::OnTableAndBlockRead => {}
             _ => {
@@ -173,24 +173,14 @@ impl TableConfig {
         }
         Ok(inner.into())
     }
-    fn get_smallest(index_buf: &TableIndexBuf) -> Vec<u8> {
-        let table_index = index_buf.to_table_index();
-        let first_block_offset = table_index.offsets().unwrap().get(0);
-        let first_block_base_key = first_block_offset.key();
 
-        assert!(
-            first_block_base_key.is_some(),
-            "TableIndex first block base key can't be none"
-        );
-
-        first_block_base_key.unwrap().bytes().to_vec()
-    }
     fn get_smallest_biggest(
         &self,
         table_index: TableIndex<'_>,
         mmap_f: &MmapFile,
         cipher: &Option<AesCipher>,
     ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+        //get smallest
         let first_block_offset = table_index.offsets().unwrap().get(0);
         let first_block_base_key = first_block_offset.key().unwrap();
         let smallest = first_block_base_key.bytes().to_vec();
@@ -218,6 +208,47 @@ impl TableConfig {
         let biggest = block_iter.key().unwrap().to_vec();
         Ok((smallest, biggest))
     }
+    fn init_index(
+        mmap_f: &MmapFile,
+        cipher: Option<&AesCipher>,
+    ) -> anyhow::Result<(TableIndexBuf, usize, usize)> {
+        let mut read_pos = mmap_f.get_file_size()? as usize;
+
+        //read checksum len from the last 4 bytes
+        read_pos -= 4;
+        // let mut buf = [0; 4];
+        // mmap_f.read_slice(read_pos, &mut buf[..])?;
+        let mut buf = mmap_f.read_slice_ref(read_pos as usize, 4)?;
+        let checksum_len = buf.get_u32() as usize;
+
+        //read checksum
+        read_pos -= checksum_len as usize;
+        // let mut buf = vec![0; checksum_len];
+        // mmap_f.read_slice_ref(read_pos, &mut buf)?;
+        let buf = mmap_f.read_slice_ref(read_pos, checksum_len as usize)?;
+        let checksum = Checksum::decode(buf)?;
+
+        //read index size from the footer
+        read_pos -= 4;
+        // let mut buf = [0; 4];
+        // mmap_f.read_slice(read_pos, &mut buf);
+        let mut buf = mmap_f.read_slice_ref(read_pos, 4)?;
+        let index_len = buf.get_u32() as usize;
+
+        //read index
+        let index_start = read_pos - index_len;
+        // let mut data = vec![0; index_len];
+        // mmap_f.read_slice(read_pos, &mut data);
+        let data = mmap_f.read_slice_ref(index_start, index_len)?;
+
+        checksum.verify(data)?;
+
+        let index_buf = TableIndexBuf::from_vec(try_decrypt(cipher, data.as_ref())?)?;
+
+        debug_assert!(index_buf.to_table_index().offsets().is_some());
+
+        Ok((index_buf, index_start, index_len))
+    }
 }
 
 #[derive(Debug)]
@@ -227,11 +258,13 @@ pub(crate) struct TableInner {
     table_size: usize,
     smallest: Vec<u8>,
     biggest: Vec<u8>,
-    index_buf: TableIndexBuf,
+    cheap_index: CheapTableIndex,
     block_cache: Option<BlockCache>,
-    index_cache: Option<IndexCache>,
+    index_cache: IndexCache,
     cipher: Option<AesCipher>,
     created_at: SystemTime,
+    index_start: usize,
+    index_len: usize,
     config: TableConfig,
 }
 #[derive(Debug, Clone)]
@@ -260,11 +293,16 @@ impl Drop for TableInner {
 //
 impl TableInner {
     pub(crate) fn block_offsets_len(&self) -> usize {
-        unsafe { self.index_buf.to_table_index().offsets().unwrap_unchecked() }.len()
+        self.cheap_index.offsets_len
     }
 
     pub(crate) fn max_version(&self) -> TxnTs {
-        self.index_buf.to_table_index().max_version().into()
+        self.cheap_index.max_version
+    }
+
+    #[inline]
+    pub(crate) fn stale_data_size(&self) -> u32 {
+        self.cheap_index.stale_data_size
     }
 
     pub(crate) fn created_at(&self) -> SystemTime {
@@ -287,11 +325,7 @@ impl TableInner {
     pub(crate) fn size(&self) -> usize {
         self.table_size
     }
-    #[inline]
-    pub(crate) fn stale_data_size(&self) -> u32 {
-        let table_index = self.index_buf.to_table_index();
-        table_index.stale_data_size()
-    }
+
     // fn read_mmap(offset: u64, len: u32) {}
     async fn verify(&self) -> anyhow::Result<()> {
         for i in 0..self.block_offsets_len() {
@@ -323,14 +357,43 @@ impl TableInner {
         }
         Ok(())
     }
+    pub(crate) async fn may_contain_key(&self, key: &KeyTs) -> anyhow::Result<bool> {
+        if self.cheap_index.bloom_filter == 0 {
+            return Ok(true);
+        }
+        #[cfg(feature = "metrics")]
+        add_num_bloom_use(1);
+        let table_index_buf = self.get_index().await?;
+        let table_index = table_index_buf.to_table_index();
+        let bloom: BloomBorrow = table_index.bloom_filter().unwrap().bytes().into();
+        let may_contain = bloom.may_contain_key(&key.key());
+        if !may_contain {
+            #[cfg(feature = "metrics")]
+            add_num_bloom_not_exist(1);
+        }
+        Ok(may_contain)
+    }
+    async fn get_index(&self) -> anyhow::Result<TableIndexBuf> {
+        if let Some(s) = self.index_cache.get(&self.table_id).await {
+            return Ok(s.value().clone());
+        }
+        let data = self
+            .mmap_f
+            .read_slice_ref(self.index_start, self.index_len)?;
 
-    async fn get_block(&self, block_id: BlockId, use_cache: bool) -> anyhow::Result<Block> {
-        if block_id >= self.block_offsets_len().into() {
+        let index_buf = TableIndexBuf::from_vec(try_decrypt(self.cipher.as_ref(), data.as_ref())?)?;
+        self.index_cache
+            .insert(self.table_id, index_buf.clone())
+            .await;
+        return Ok(index_buf);
+    }
+    async fn get_block(&self, block_index: BlockIndex, use_cache: bool) -> anyhow::Result<Block> {
+        if block_index >= self.block_offsets_len().into() {
             bail!("block out of index");
         }
 
         // let key: Vec<u8> = self.get_block_cache_key(idx);
-        let key = (self.table_id, block_id).into();
+        let key: BlockCacheKey = (self.table_id, block_index).into();
 
         if let Some(block_cache) = &self.block_cache {
             if let Some(blk) = block_cache.get(key).await {
@@ -338,18 +401,21 @@ impl TableInner {
             };
         }
 
-        let table_index = self.index_buf.to_table_index();
-        let blk_offset = table_index.offsets().unwrap().get(block_id.into());
+        let table_index_buf = self.get_index().await?;
+        let table_index = table_index_buf.to_table_index();
+        let block = table_index.offsets().unwrap().get(block_index.into());
+        let block_offset = block.offset() as usize;
+        let block_len = block.len() as usize;
 
         let raw_data_ref = self
             .mmap_f
-            .read_slice_ref(blk_offset.offset() as usize, blk_offset.len() as usize)
+            .read_slice_ref(block_offset, block_len)
             .map_err(|e| {
                 anyhow!(
                     "Failed to read from file: {:?} at offset: {}, len: {} for {}",
                     &self.mmap_f.path(),
-                    blk_offset.offset(),
-                    blk_offset.len(),
+                    block_offset,
+                    block_len,
                     e
                 )
             })?;
@@ -363,13 +429,13 @@ impl TableInner {
                 anyhow!(
                     "Failed to decode compressed data in file: {:?} at offset: {}, len: {} for {}",
                     &self.mmap_f.path(),
-                    blk_offset.offset(),
-                    blk_offset.len(),
+                    block_offset,
+                    block_len,
                     e
                 )
             })?;
 
-        let block = Block::deserialize(self.table_id, block_id, blk_offset.offset(), raw_data)?;
+        let block = Block::deserialize(self.table_id, block_index, block_offset as u32, raw_data)?;
 
         match self.config.checksum_verify_mode {
             ChecksumVerificationMode::OnBlockRead
@@ -381,9 +447,7 @@ impl TableInner {
 
         if use_cache {
             if let Some(block_cache) = &self.block_cache {
-                block_cache
-                    .insert(key, block.clone(), mem::size_of::<Block>() as i64)
-                    .await;
+                block_cache.insert(key, block.clone()).await;
             }
         }
 
@@ -435,58 +499,229 @@ pub(crate) fn bytes_to_vec_u32(src: &[u8]) -> Vec<u32> {
     }
     v
 }
-#[derive(Debug)]
-struct TableIndexBuf(Vec<u8>);
+#[derive(Debug, Clone)]
+pub(crate) struct TableIndexBuf(Bytes);
+impl Deref for TableIndexBuf {
+    type Target = Bytes;
 
-impl TableIndexBuf {
-    fn open(mmap_f: &MmapFile, cipher: Option<&AesCipher>) -> anyhow::Result<TableIndexBuf> {
-        let mut read_pos = mmap_f.get_file_size()? as usize;
-
-        //read checksum len from the last 4 bytes
-        read_pos -= 4;
-        // let mut buf = [0; 4];
-        // mmap_f.read_slice(read_pos, &mut buf[..])?;
-        let mut buf = mmap_f.read_slice_ref(read_pos as usize, 4)?;
-        let checksum_len = buf.get_u32() as usize;
-
-        //read checksum
-        read_pos -= checksum_len as usize;
-        // let mut buf = vec![0; checksum_len];
-        // mmap_f.read_slice_ref(read_pos, &mut buf)?;
-        let buf = mmap_f.read_slice_ref(read_pos, checksum_len as usize)?;
-        let checksum = Checksum::decode(buf)?;
-
-        //read index size from the footer
-        read_pos -= 4;
-        // let mut buf = [0; 4];
-        // mmap_f.read_slice(read_pos, &mut buf);
-        let mut buf = mmap_f.read_slice_ref(read_pos, 4)?;
-        let index_len = buf.get_u32() as usize;
-
-        //read index
-        read_pos -= index_len;
-        // let index_start = read_pos;
-        // let mut data = vec![0; index_len];
-        // mmap_f.read_slice(read_pos, &mut data);
-        let data = mmap_f.read_slice_ref(read_pos, index_len)?;
-
-        checksum.verify(data)?;
-
-        let index_buf = TableIndexBuf::from_vec(try_decrypt(cipher, data.as_ref())?)?;
-
-        debug_assert!(index_buf.to_table_index().offsets().is_some());
-
-        Ok(index_buf)
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
+}
+impl TableIndexBuf {
     #[deny(unused)]
     #[inline]
     pub(crate) fn from_vec(data: Vec<u8>) -> Result<Self, InvalidFlatbuffer> {
         flatbuffers::root::<TableIndex>(&data)?;
-        Ok(Self(data))
+        Ok(Self(data.into()))
     }
 
     #[inline]
     pub(crate) fn to_table_index(&self) -> TableIndex<'_> {
         unsafe { flatbuffers::root_unchecked::<TableIndex>(self.0.as_ref()) }
+    }
+}
+#[derive(Debug)]
+struct CheapTableIndex {
+    max_version: TxnTs,
+    key_count: u32,
+    uncompressed_size: u32,
+    on_disk_size: u32,
+    stale_data_size: u32,
+    offsets_len: usize,
+    bloom_filter: usize,
+}
+impl From<TableIndex<'_>> for CheapTableIndex {
+    fn from(value: TableIndex<'_>) -> Self {
+        Self {
+            max_version: value.max_version().into(),
+            key_count: value.key_count(),
+            uncompressed_size: value.uncompressed_size(),
+            on_disk_size: value.on_disk_size(),
+            stale_data_size: value.stale_data_size(),
+            offsets_len: if let Some(offsets) = value.offsets() {
+                offsets.len()
+            } else {
+                0
+            },
+            bloom_filter: if let Some(bloom) = value.bloom_filter() {
+                bloom.len()
+            } else {
+                0
+            },
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct BlockIndex(u32);
+impl Deref for BlockIndex {
+    type Target = u32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl From<u32> for BlockIndex {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+impl Into<u32> for BlockIndex {
+    fn into(self) -> u32 {
+        self.0
+    }
+}
+impl From<usize> for BlockIndex {
+    fn from(value: usize) -> Self {
+        Self(value as u32)
+    }
+}
+impl Into<usize> for BlockIndex {
+    fn into(self) -> usize {
+        self.0 as usize
+    }
+}
+#[derive(Debug, Clone)]
+pub(crate) struct Block(Arc<BlockInner>);
+impl Deref for Block {
+    type Target = BlockInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+#[derive(Debug)]
+pub(crate) struct BlockInner {
+    table_id: SSTableId,
+    block_index: BlockIndex,
+    block_offset: u32,
+    data: Vec<u8>, //actual data + entry_offsets + num_entries
+    entries_index_start: usize,
+    entry_offsets: Vec<u32>,
+    checksum: Vec<u8>,
+    checksum_len: usize,
+}
+impl Block {
+    #[inline]
+    pub(crate) fn deserialize(
+        table_id: SSTableId,
+        block_id: BlockIndex,
+        block_offset: u32,
+        data: Vec<u8>,
+    ) -> anyhow::Result<Self> {
+        Ok(Self(Arc::new(BlockInner::deserialize(
+            table_id,
+            block_id,
+            block_offset,
+            data,
+        )?)))
+    }
+
+    #[inline]
+    pub(crate) fn get_entry_offsets(&self) -> &Vec<u32> {
+        &self.0.entry_offsets
+    }
+    #[inline]
+    pub(crate) fn get_actual_data(&self) -> &[u8] {
+        &self.0.data[..self.0.entries_index_start]
+    }
+    #[inline]
+    pub(crate) fn get_offset(&self) -> u32 {
+        self.0.block_offset
+    }
+}
+
+impl BlockInner {
+    #[inline(always)]
+    pub(crate) fn deserialize(
+        table_id: SSTableId,
+        block_id: BlockIndex,
+        block_offset: u32,
+        mut data: Vec<u8>,
+    ) -> anyhow::Result<Self> {
+        //read checksum len
+        let mut read_pos = data.len() - 4;
+        let mut checksum_len = &data[read_pos..read_pos + 4];
+        let checksum_len = checksum_len.get_u32() as usize;
+        if checksum_len > data.len() {
+            bail!(
+                "Invalid checksum len. Either the data is corrupt 
+                        or the table Config are incorrectly set"
+            );
+        }
+
+        //read checksum
+        read_pos -= checksum_len;
+        let checksum = (&data[read_pos..read_pos + checksum_len]).to_vec();
+
+        data.truncate(read_pos);
+
+        //read num_entries
+        read_pos -= 4;
+        let mut num_entries = &data[read_pos..read_pos + 4];
+        let num_entries = num_entries.get_u32() as usize;
+
+        //read entries_index_start
+        let entries_index_start = read_pos - (num_entries * 4);
+
+        let entry_offsets = bytes_to_vec_u32(&data[entries_index_start..read_pos]);
+
+        Ok(Self {
+            data,
+            entries_index_start,
+            entry_offsets,
+            checksum,
+            checksum_len,
+            table_id,
+            block_index: block_id,
+            block_offset,
+        })
+    }
+    fn data(&self) -> &[u8] {
+        &self.data[..self.entries_index_start]
+    }
+    pub(super) fn iter(&self) -> SinkBlockIter {
+        self.into()
+    }
+    pub(crate) fn verify(&self) -> anyhow::Result<()> {
+        let checksum = Checksum::decode(self.checksum.as_ref())
+            .map_err(|e| anyhow!("Failed decode pb::checksum for block for {}", e))?;
+        checksum.verify(&self.data)?;
+        Ok(())
+    }
+}
+#[derive(Debug, Default)]
+pub(crate) struct EntryHeader {
+    overlap: u16,
+    diff: u16,
+}
+// Header + base_key (diff bytes)
+pub(crate) const HEADER_SIZE: usize = 4;
+impl EntryHeader {
+    pub(crate) fn new(overlap: u16, diff: u16) -> Self {
+        Self { overlap, diff }
+    }
+    #[inline]
+    pub(crate) fn serialize(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(HEADER_SIZE);
+        v.put_u16(self.overlap);
+        v.put_u16(self.diff);
+        v
+    }
+    #[inline]
+    pub(crate) fn deserialize(mut data: &[u8]) -> Self {
+        debug_assert!(data.len() >= 4);
+        Self {
+            overlap: data.get_u16(),
+            diff: data.get_u16(),
+        }
+    }
+    #[inline]
+    pub(crate) fn get_diff(&self) -> usize {
+        self.diff as usize
+    }
+    #[inline]
+    pub(crate) fn get_overlap(&self) -> usize {
+        self.overlap as usize
     }
 }

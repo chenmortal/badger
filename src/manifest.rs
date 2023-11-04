@@ -71,7 +71,7 @@ impl ManifestConfig {
     pub(crate) fn set_read_only(&mut self, read_only: bool) {
         self.read_only = read_only;
     }
-    pub(crate) fn build(&self) -> anyhow::Result<ManifestFile> {
+    pub(crate) fn open(&self) -> anyhow::Result<ManifestFile> {
         let path = self.dir.join(MANIFEST_FILE_NAME);
         match OpenOptions::new()
             .read(true)

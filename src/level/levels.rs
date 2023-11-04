@@ -139,7 +139,7 @@ impl LevelsControllerConfig {
         manifest: &Arc<parking_lot::Mutex<Manifest>>,
         key_registry: KeyRegistry,
         block_cache: &Option<BlockCache>,
-        index_cache: &Option<IndexCache>,
+        index_cache: &IndexCache,
     ) -> anyhow::Result<LevelsController> {
         assert!(self.num_level_zero_tables_stall > self.num_level_zero_tables);
 
@@ -221,7 +221,7 @@ impl LevelsControllerConfig {
         manifest: &Arc<parking_lot::Mutex<Manifest>>,
         key_registry: KeyRegistry,
         block_cache: &Option<BlockCache>,
-        index_cache: &Option<IndexCache>,
+        index_cache: &IndexCache,
     ) -> anyhow::Result<(u32, Vec<Vec<Table>>)> {
         let manifest_lock = manifest.lock();
         let manifest = &*manifest_lock;

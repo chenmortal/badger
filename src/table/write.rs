@@ -9,48 +9,11 @@ use crate::{
     iter::{KvSinkIter, SinkIterator},
     kv::{ KeyTsBorrow, ValuePointer, TxnTs, ValueMeta, Meta},
     config::CompressionType,
- key_registry::{NONCE_SIZE, AesCipher, self, KeyRegistry}, pb::badgerpb4::{Checksum, checksum::Algorithm}, util::{rayon::{spawn_fifo, AsyncRayonHandle}, cache::{IndexCache, BlockCache}}, fb::fb, util::{bloom::Bloom, mmap::MmapFile},
+ key_registry::{NONCE_SIZE, AesCipher, self, KeyRegistry}, pb::badgerpb4::{Checksum, checksum::Algorithm}, util::{rayon::{spawn_fifo, AsyncRayonHandle}, cache::{IndexCache, BlockCache}}, fb::fb, util::{bloom::Bloom, mmap::MmapFile}, table::EntryHeader,
 };
 
 use super::{TableConfig, vec_u32_to_bytes, try_encrypt, Table};
-#[derive(Debug,Default)]
-pub(crate) struct EntryHeader {
-    overlap: u16,
-    diff: u16,
-}
-// Header + base_key (diff bytes)
-pub(crate) const HEADER_SIZE: usize = 4;
-impl EntryHeader {
-    pub(crate) fn new(overlap:u16,diff:u16)->Self{
-        Self{
-            overlap,
-            diff,
-        }
-    }
-    #[inline]
-    pub(crate) fn serialize(&self) -> Vec<u8> {
-        let mut v = Vec::with_capacity(HEADER_SIZE);
-        v.put_u16(self.overlap);
-        v.put_u16(self.diff);
-        v
-    }
-    #[inline]
-    pub(crate) fn deserialize(mut data: &[u8]) -> Self {
-        debug_assert!(data.len() >=4);
-        Self {
-            overlap: data.get_u16(),
-            diff: data.get_u16(),
-        }
-    }
-    #[inline]
-    pub(crate) fn get_diff(&self) -> usize {
-        self.diff as usize
-    }
-    #[inline]
-    pub(crate) fn get_overlap(&self) -> usize {
-        self.overlap as usize
-    }
-}
+
 #[derive(Debug, Default)]
 pub(super) struct BlockBuilder {
     data: Vec<u8>,
@@ -267,7 +230,7 @@ impl TableBuilder {
         Ok((try_encrypt(self.cipher.as_ref(), builder.finished_data())?,data_size))
     }
 
-    pub(crate) async fn build(&mut self,path:PathBuf,key_registry:&KeyRegistry,index_cache:Option<IndexCache>,block_cache:Option<BlockCache>)->anyhow::Result<Table>{
+    pub(crate) async fn build(&mut self,path:PathBuf,key_registry:&KeyRegistry,index_cache:IndexCache,block_cache:Option<BlockCache>)->anyhow::Result<Table>{
         let  build_data = self.done().await?;
         fn write_data(path:PathBuf,mut build_data: TableBuildData)->anyhow::Result<MmapFile>{
             let mut fp_open_opt = OpenOptions::new();

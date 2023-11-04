@@ -79,7 +79,7 @@ impl Default for KeyRegistryConfig {
     }
 }
 impl KeyRegistryConfig {
-    pub(crate) async fn build(&self) -> anyhow::Result<KeyRegistry> {
+    pub(crate) async fn open(&self) -> anyhow::Result<KeyRegistry> {
         let mut key_registry = KeyRegistryInner::new(
             &self.encrypt_key,
             self.data_key_rotation_duration,

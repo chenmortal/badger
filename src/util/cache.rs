@@ -1,7 +1,9 @@
+use std::mem;
+
 use bytes::{BufMut, Bytes};
 use stretto::AsyncCache;
 
-use crate::table::block::{self, Block, BlockId};
+use crate::table::{TableIndexBuf, BlockIndex, Block};
 
 use super::SSTableId;
 #[derive(Debug, Clone, Copy)]
@@ -11,7 +13,7 @@ pub struct BlockCacheConfig {
 }
 #[derive(Debug, Clone)]
 pub(crate) struct BlockCache {
-    cache: AsyncCache<Vec<u8>, block::Block>,
+    cache: AsyncCache<Vec<u8>, Block>,
 }
 impl Default for BlockCacheConfig {
     fn default() -> Self {
@@ -49,9 +51,9 @@ impl BlockCacheConfig {
     }
 }
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct BlockCacheKey((SSTableId, BlockId));
-impl From<(SSTableId, BlockId)> for BlockCacheKey {
-    fn from(value: (SSTableId, BlockId)) -> Self {
+pub(crate) struct BlockCacheKey((SSTableId, BlockIndex));
+impl From<(SSTableId, BlockIndex)> for BlockCacheKey {
+    fn from(value: (SSTableId, BlockIndex)) -> Self {
         Self(value)
     }
 }
@@ -67,11 +69,13 @@ impl BlockCache {
     pub(crate) async fn get(
         &self,
         key: BlockCacheKey,
-    ) -> Option<stretto::ValueRef<'_, block::Block>> {
+    ) -> Option<stretto::ValueRef<'_, Block>> {
         self.cache.get(&key.serialize()).await
     }
-    pub(crate) async fn insert(&self, key: BlockCacheKey, block: Block, size: i64) -> bool {
-        self.cache.insert(key.serialize(), block, size).await
+    pub(crate) async fn insert(&self, key: BlockCacheKey, block: Block) -> bool {
+        self.cache
+            .insert(key.serialize(), block, mem::size_of::<Block>() as i64)
+            .await
     }
 }
 #[derive(Debug, Clone, Copy)]
@@ -81,13 +85,13 @@ pub struct IndexCacheConfig {
 }
 #[derive(Debug, Clone)]
 pub(crate) struct IndexCache {
-    cache: AsyncCache<u64, Bytes>,
+    cache: AsyncCache<SSTableId, TableIndexBuf>,
 }
 const DEFAULT_INDEX_SIZE: usize = ((64 << 20) as f64 * 0.05) as usize;
 impl Default for IndexCacheConfig {
     fn default() -> Self {
         Self {
-            index_cache_size: 0,
+            index_cache_size: 16 << 20,
             index_size: DEFAULT_INDEX_SIZE,
         }
     }
@@ -107,16 +111,24 @@ impl IndexCacheConfig {
             self.index_size = (memtable_size as f64 * 0.05) as usize;
         }
     }
-    pub(crate) fn try_build(&self) -> anyhow::Result<Option<IndexCache>> {
-        if self.index_cache_size > 0 {
-            let num_in_cache = (self.index_cache_size / self.index_size).max(1);
-            let cache =
-                stretto::AsyncCacheBuilder::new(num_in_cache * 8, self.index_cache_size as i64)
-                    .set_buffer_items(64)
-                    .set_metrics(true)
-                    .finalize(tokio::spawn)?;
-            return Ok(IndexCache { cache }.into());
-        }
-        Ok(None)
+    pub(crate) fn build(&self) -> anyhow::Result<IndexCache> {
+        let num_in_cache = (self.index_cache_size / self.index_size).max(1);
+        let cache = stretto::AsyncCacheBuilder::new(num_in_cache * 8, self.index_cache_size as i64)
+            .set_buffer_items(64)
+            .set_metrics(true)
+            .finalize(tokio::spawn)?;
+        return Ok(IndexCache { cache });
+    }
+}
+impl IndexCache {
+    pub(crate) async fn get(
+        &self,
+        key: &SSTableId,
+    ) -> Option<stretto::ValueRef<'_, TableIndexBuf>> {
+        self.cache.get(key).await
+    }
+    pub(crate) async fn insert(&self, key: SSTableId, val: TableIndexBuf) -> bool {
+        let cost = val.len() as i64;
+        self.cache.insert(key, val, cost).await
     }
 }
