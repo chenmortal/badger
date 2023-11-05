@@ -2,14 +2,14 @@ use std::{
     sync::{atomic::{AtomicU32, Ordering}, Arc}, mem::replace,  ptr, path::PathBuf, fs::OpenOptions,
 };
 
-use bytes::{Buf, BufMut};
+use bytes::{ BufMut};
 use prost::Message;
 
 use crate::{
     iter::{KvSinkIter, SinkIterator},
     kv::{ KeyTsBorrow, ValuePointer, TxnTs, ValueMeta, Meta},
     config::CompressionType,
- key_registry::{NONCE_SIZE, AesCipher, self, KeyRegistry}, pb::badgerpb4::{Checksum, checksum::Algorithm}, util::{rayon::{spawn_fifo, AsyncRayonHandle}, cache::{IndexCache, BlockCache}}, fb::fb, util::{bloom::Bloom, mmap::MmapFile}, table::EntryHeader,
+ key_registry::{NONCE_SIZE, AesCipher,  KeyRegistry}, pb::badgerpb4::{Checksum, checksum::Algorithm}, util::{rayon::{spawn_fifo, AsyncRayonHandle}, cache::{IndexCache, BlockCache}}, fb::fb, util::{bloom::Bloom, mmap::MmapFile}, table::EntryHeader,
 };
 
 use super::{TableConfig, vec_u32_to_bytes, try_encrypt, Table};

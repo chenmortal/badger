@@ -168,7 +168,10 @@ impl TableConfig {
             ChecksumVerificationMode::OnTableRead
             | ChecksumVerificationMode::OnTableAndBlockRead => {}
             _ => {
+                #[cfg(feature = "async_cache")]
                 inner.verify().await?;
+                #[cfg(not(feature = "async_cache"))]
+                inner.verify()?
             }
         }
         Ok(inner.into())
@@ -203,7 +206,9 @@ impl TableConfig {
             uncompress_data,
         )?;
         block.verify()?;
-        let mut block_iter = block.iter();
+        // Block(block);
+        let block:Block=block.into();
+        let mut block_iter:SinkBlockIter = block.iter();
         assert!(block_iter.next_back()?);
         let biggest = block_iter.key().unwrap().to_vec();
         Ok((smallest, biggest))
@@ -327,6 +332,7 @@ impl TableInner {
     }
 
     // fn read_mmap(offset: u64, len: u32) {}
+    #[cfg(feature = "async_cache")]
     async fn verify(&self) -> anyhow::Result<()> {
         for i in 0..self.block_offsets_len() {
             let block = self.get_block(i.into(), true).await.map_err(|e| {
@@ -357,6 +363,38 @@ impl TableInner {
         }
         Ok(())
     }
+    #[cfg(not(feature = "async_cache"))]
+    fn verify(&self) -> anyhow::Result<()> {
+        for i in 0..self.block_offsets_len() {
+            let block = self.get_block(i.into(), true).map_err(|e| {
+                anyhow!(
+                    "checksum validation failed for table:{:?}, block:{} for {}",
+                    self.get_file_path(),
+                    i,
+                    e
+                )
+            })?;
+            // OnBlockRead or OnTableAndBlockRead, we don't need to call verify checksum
+            // on block, verification would be done while reading block itself.
+            match self.config.checksum_verify_mode {
+                ChecksumVerificationMode::OnBlockRead
+                | ChecksumVerificationMode::OnTableAndBlockRead => {}
+                _ => {
+                    block.verify().map_err(|e| {
+                        anyhow!(
+                            "checksum validation failed for table:{:?}, block:{}, offset:{} for {}",
+                            self.get_file_path(),
+                            i,
+                            block.get_offset(),
+                            e
+                        )
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+    #[cfg(feature = "async_cache")]
     pub(crate) async fn may_contain_key(&self, key: &KeyTs) -> anyhow::Result<bool> {
         if self.cheap_index.bloom_filter == 0 {
             return Ok(true);
@@ -373,9 +411,27 @@ impl TableInner {
         }
         Ok(may_contain)
     }
+    #[cfg(not(feature = "async_cache"))]
+    pub(crate) fn may_contain_key(&self, key: &KeyTs) -> anyhow::Result<bool> {
+        if self.cheap_index.bloom_filter == 0 {
+            return Ok(true);
+        }
+        #[cfg(feature = "metrics")]
+        add_num_bloom_use(1);
+        let table_index_buf = self.get_index()?;
+        let table_index = table_index_buf.to_table_index();
+        let bloom: BloomBorrow = table_index.bloom_filter().unwrap().bytes().into();
+        let may_contain = bloom.may_contain_key(&key.key());
+        if !may_contain {
+            #[cfg(feature = "metrics")]
+            add_num_bloom_not_exist(1);
+        }
+        Ok(may_contain)
+    }
+    #[cfg(feature = "async_cache")]
     async fn get_index(&self) -> anyhow::Result<TableIndexBuf> {
         if let Some(s) = self.index_cache.get(&self.table_id).await {
-            return Ok(s.value().clone());
+            return Ok(s);
         }
         let data = self
             .mmap_f
@@ -387,6 +443,20 @@ impl TableInner {
             .await;
         return Ok(index_buf);
     }
+    #[cfg(not(feature = "async_cache"))]
+    fn get_index(&self) -> anyhow::Result<TableIndexBuf> {
+        if let Some(s) = self.index_cache.get(&self.table_id) {
+            return Ok(s);
+        }
+        let data = self
+            .mmap_f
+            .read_slice_ref(self.index_start, self.index_len)?;
+
+        let index_buf = TableIndexBuf::from_vec(try_decrypt(self.cipher.as_ref(), data.as_ref())?)?;
+        self.index_cache.insert(self.table_id, index_buf.clone());
+        return Ok(index_buf);
+    }
+    #[cfg(feature = "async_cache")]
     async fn get_block(&self, block_index: BlockIndex, use_cache: bool) -> anyhow::Result<Block> {
         if block_index >= self.block_offsets_len().into() {
             bail!("block out of index");
@@ -396,8 +466,8 @@ impl TableInner {
         let key: BlockCacheKey = (self.table_id, block_index).into();
 
         if let Some(block_cache) = &self.block_cache {
-            if let Some(blk) = block_cache.get(key).await {
-                return Ok(blk.value().clone());
+            if let Some(blk) = block_cache.get(&key).await {
+                return Ok(blk);
             };
         }
 
@@ -453,7 +523,73 @@ impl TableInner {
 
         Ok(block)
     }
+    #[cfg(not(feature = "async_cache"))]
+    fn get_block(&self, block_index: BlockIndex, use_cache: bool) -> anyhow::Result<Block> {
+        if block_index >= self.block_offsets_len().into() {
+            bail!("block out of index");
+        }
 
+        // let key: Vec<u8> = self.get_block_cache_key(idx);
+        let key: BlockCacheKey = (self.table_id, block_index).into();
+
+        if let Some(block_cache) = &self.block_cache {
+            if let Some(blk) = block_cache.get(&key) {
+                return Ok(blk);
+            };
+        }
+
+        let table_index_buf = self.get_index()?;
+        let table_index = table_index_buf.to_table_index();
+        let block = table_index.offsets().unwrap().get(block_index.into());
+        let block_offset = block.offset() as usize;
+        let block_len = block.len() as usize;
+
+        let raw_data_ref = self
+            .mmap_f
+            .read_slice_ref(block_offset, block_len)
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to read from file: {:?} at offset: {}, len: {} for {}",
+                    &self.mmap_f.path(),
+                    block_offset,
+                    block_len,
+                    e
+                )
+            })?;
+
+        let de_raw_data = try_decrypt(self.cipher.as_ref(), raw_data_ref)?;
+        let raw_data = self
+            .config
+            .compression
+            .decompress(de_raw_data)
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to decode compressed data in file: {:?} at offset: {}, len: {} for {}",
+                    &self.mmap_f.path(),
+                    block_offset,
+                    block_len,
+                    e
+                )
+            })?;
+
+        let block = Block::deserialize(self.table_id, block_index, block_offset as u32, raw_data)?;
+
+        match self.config.checksum_verify_mode {
+            ChecksumVerificationMode::OnBlockRead
+            | ChecksumVerificationMode::OnTableAndBlockRead => {
+                block.verify()?;
+            }
+            _ => {}
+        }
+
+        if use_cache {
+            if let Some(block_cache) = &self.block_cache {
+                block_cache.insert(key, block.clone());
+            }
+        }
+
+        Ok(block)
+    }
     #[inline]
     fn get_file_path(&self) -> &PathBuf {
         &self.mmap_f.path()
@@ -552,7 +688,7 @@ impl From<TableIndex<'_>> for CheapTableIndex {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct BlockIndex(u32);
 impl Deref for BlockIndex {
     type Target = u32;
@@ -588,6 +724,11 @@ impl Deref for Block {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+impl From<BlockInner> for Block {
+    fn from(value: BlockInner) -> Self {
+        Self(value.into())
     }
 }
 #[derive(Debug)]
@@ -628,6 +769,9 @@ impl Block {
     #[inline]
     pub(crate) fn get_offset(&self) -> u32 {
         self.0.block_offset
+    }
+    pub(super) fn iter(&self) -> SinkBlockIter {
+        self.clone().into()
     }
 }
 
@@ -680,9 +824,7 @@ impl BlockInner {
     fn data(&self) -> &[u8] {
         &self.data[..self.entries_index_start]
     }
-    pub(super) fn iter(&self) -> SinkBlockIter {
-        self.into()
-    }
+    
     pub(crate) fn verify(&self) -> anyhow::Result<()> {
         let checksum = Checksum::decode(self.checksum.as_ref())
             .map_err(|e| anyhow!("Failed decode pb::checksum for block for {}", e))?;

@@ -6,12 +6,12 @@ use crate::{
     kv::{KeyTsBorrow, ValueMeta},
 };
 
-use super::{BlockIndex, BlockInner, EntryHeader, TableInner, HEADER_SIZE};
+use super::{Block, BlockIndex, BlockInner, EntryHeader, TableInner, HEADER_SIZE};
 pub(crate) struct SinkTableIter<'a> {
     inner: &'a TableInner,
-    use_cache:bool,
-    block_iter: Option<SinkBlockIter<'a>>,
-    back_block_iter: Option<SinkBlockIter<'a>>,
+    use_cache: bool,
+    block_iter: Option<SinkBlockIter>,
+    back_block_iter: Option<SinkBlockIter>,
 }
 // impl<'a> From<&'a TableInner> for SinkTableIter<'a> {
 //     fn from(value: &'a TableInner) -> Self {
@@ -23,7 +23,7 @@ pub(crate) struct SinkTableIter<'a> {
 //     }
 // }
 impl<'a> SinkIter for SinkTableIter<'a> {
-    type Item = SinkBlockIter<'a>;
+    type Item = SinkBlockIter;
 
     fn item(&self) -> Option<&Self::Item> {
         self.block_iter.as_ref()
@@ -36,30 +36,87 @@ impl<'a> DoubleEndedSinkIter for SinkTableIter<'a> {
 }
 impl<'a> SinkIterator for SinkTableIter<'a> {
     fn next(&mut self) -> Result<bool, anyhow::Error> {
-        match self.block_iter.as_mut() {
+        let new_block_index = match self.block_iter.as_mut() {
             Some(iter) => {
-                let is_next = iter.next()?;
-                if !is_next {
-                    let block_index: usize = iter.inner.block_index.into();
-                    if block_index == self.inner.block_offsets_len() - 1 {
-                        return Ok(false);
-                    }
-                    // self.inner.get_block(block_id, use_cache);
+                if iter.next()? {
+                    return Ok(true);
                 }
+                let block_index: usize = iter.inner.block_index.into();
+                if block_index == self.inner.block_offsets_len() - 1 {
+                    return Ok(false);
+                }
+                (block_index + 1).into()
             }
-            None => {}
-        }
-        Ok(true)
-        // match self.block_index {
-        //     Some(_) => {},
-        //     None => {},
-        // }
-        // todo!()
+            None => {
+                if self.inner.block_offsets_len() == 0 {
+                    return Ok(false);
+                }
+                0u32.into()
+            }
+        };
+        let next_block = self.inner.get_block(new_block_index, self.use_cache)?;
+        self.block_iter = next_block.iter().into();
+        return self.block_iter.as_mut().unwrap().next();
     }
 }
-pub(crate) struct SinkBlockIter<'a> {
-    inner: &'a BlockInner,
-    base_key: &'a [u8],
+impl<'a> DoubleEndedSinkIterator for SinkTableIter<'a> {
+    fn next_back(&mut self) -> Result<bool, anyhow::Error> {
+        let new_block_index = match self.back_block_iter.as_mut() {
+            Some(back_iter) => {
+                if back_iter.next_back()? {
+                    return Ok(true);
+                }
+                let block_index: usize = back_iter.inner.block_index.into();
+                if block_index == 0 {
+                    return Ok(false);
+                }
+                (block_index - 1).into()
+            }
+            None => {
+                if self.inner.block_offsets_len() == 0 {
+                    return Ok(false);
+                }
+                0u32.into()
+            }
+        };
+        let block = self.inner.get_block(new_block_index, self.use_cache)?;
+        self.back_block_iter = block.iter().into();
+        return self.back_block_iter.as_mut().unwrap().next_back();
+    }
+}
+impl<'a> KvSinkIter<ValueMeta> for SinkTableIter<'a> {
+    fn key(&self) -> Option<KeyTsBorrow<'_>> {
+        if let Some(iter) = self.block_iter.as_ref() {
+            return iter.key();
+        }
+        None
+    }
+
+    fn value(&self) -> Option<ValueMeta> {
+        if let Some(iter) = self.block_iter.as_ref() {
+            return iter.value();
+        }
+        None
+    }
+}
+impl<'a> KvDoubleEndedSinkIter<ValueMeta> for SinkTableIter<'a> {
+    fn key_back(&self) -> Option<KeyTsBorrow<'_>> {
+        if let Some(back_iter) = self.back_block_iter.as_ref() {
+            return back_iter.key_back();
+        }
+        None
+    }
+
+    fn value_back(&self) -> Option<ValueMeta> {
+        if let Some(back_iter) = self.back_block_iter.as_ref() {
+            return back_iter.value_back();
+        }
+        None
+    }
+}
+pub(crate) struct SinkBlockIter {
+    inner: Block,
+    base_key: Vec<u8>,
     key: Vec<u8>,
     header: EntryHeader,
     entry_index: Option<usize>,
@@ -68,8 +125,8 @@ pub(crate) struct SinkBlockIter<'a> {
     back_header: EntryHeader,
     back_entry_index: Option<usize>,
 }
-impl<'a> From<&'a BlockInner> for SinkBlockIter<'a> {
-    fn from(value: &'a BlockInner) -> Self {
+impl From<Block> for SinkBlockIter {
+    fn from(value: Block) -> Self {
         Self {
             inner: value,
             base_key: Default::default(),
@@ -83,7 +140,7 @@ impl<'a> From<&'a BlockInner> for SinkBlockIter<'a> {
     }
 }
 
-impl<'a> SinkIter for SinkBlockIter<'a> {
+impl SinkIter for SinkBlockIter {
     type Item = usize;
 
     fn item(&self) -> Option<&Self::Item> {
@@ -91,7 +148,7 @@ impl<'a> SinkIter for SinkBlockIter<'a> {
     }
 }
 
-impl<'a> DoubleEndedSinkIter for SinkBlockIter<'a> {
+impl DoubleEndedSinkIter for SinkBlockIter {
     fn item_back(&self) -> Option<&<Self as SinkIter>::Item> {
         self.back_entry_index.as_ref()
     }
@@ -101,7 +158,7 @@ impl<'a> DoubleEndedSinkIter for SinkBlockIter<'a> {
 //123 121  pre_overlap=6 overlap:4 -> iter.key=123 1;  diffkey=21  -> iter.key=123 121 (just create iter, and may not seek to  start , so also pre_overlap==0)
 //123 122  pre_overlap=4 overlap:5 -> iter.key=123 12; diffkey=2   -> iter.key=123 122
 //123 211  pre_overlap=5 overlap:3 -> iter.key=123  ;  diffkey=211 -> iter.key=123 211
-impl<'a> SinkIterator for SinkBlockIter<'a> {
+impl SinkIterator for SinkBlockIter {
     fn next(&mut self) -> Result<bool, anyhow::Error> {
         match self.entry_index {
             Some(id) => {
@@ -143,7 +200,7 @@ impl<'a> SinkIterator for SinkBlockIter<'a> {
                 if self.base_key.len() == 0 {
                     let data = self.inner.data();
                     let header = EntryHeader::deserialize(&data[..HEADER_SIZE]);
-                    self.base_key = &data[HEADER_SIZE..HEADER_SIZE + header.get_diff()];
+                    self.base_key = data[HEADER_SIZE..HEADER_SIZE + header.get_diff()].to_vec();
                     self.header = header;
                 }
                 self.key = self.base_key.to_vec();
@@ -153,7 +210,7 @@ impl<'a> SinkIterator for SinkBlockIter<'a> {
         }
     }
 }
-impl<'a> DoubleEndedSinkIterator for SinkBlockIter<'a> {
+impl DoubleEndedSinkIterator for SinkBlockIter {
     fn next_back(&mut self) -> Result<bool, anyhow::Error> {
         match self.back_entry_index {
             Some(back_id) => {
@@ -199,7 +256,7 @@ impl<'a> DoubleEndedSinkIterator for SinkBlockIter<'a> {
                 if self.base_key.len() == 0 {
                     let data = self.inner.data();
                     let header = EntryHeader::deserialize(&data[..HEADER_SIZE]);
-                    self.base_key = &data[HEADER_SIZE..HEADER_SIZE + header.get_diff()];
+                    self.base_key = data[HEADER_SIZE..HEADER_SIZE + header.get_diff()].to_vec();
                     self.header = header;
                 }
 
@@ -215,7 +272,7 @@ impl<'a> DoubleEndedSinkIterator for SinkBlockIter<'a> {
     }
 }
 
-impl<'a> KvSinkIter<ValueMeta> for SinkBlockIter<'a> {
+impl KvSinkIter<ValueMeta> for SinkBlockIter {
     fn key(&self) -> Option<KeyTsBorrow<'_>> {
         if self.key.len() == 0 {
             return None;
@@ -239,7 +296,7 @@ impl<'a> KvSinkIter<ValueMeta> for SinkBlockIter<'a> {
         None
     }
 }
-impl<'a> KvDoubleEndedSinkIter<ValueMeta> for SinkBlockIter<'a> {
+impl KvDoubleEndedSinkIter<ValueMeta> for SinkBlockIter {
     fn key_back(&self) -> Option<KeyTsBorrow<'_>> {
         if self.back_key.len() == 0 {
             return None;
@@ -269,12 +326,12 @@ mod test_block_iter {
     use crate::{
         iter::{DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIter, SinkIterator},
         kv::Entry,
-        table::write::BlockBuilder,
+        table::{write::BlockBuilder, Block},
     };
 
     use super::BlockInner;
 
-    fn generate_instance(len: u32) -> anyhow::Result<BlockInner> {
+    fn generate_instance(len: u32) -> anyhow::Result<Block> {
         let mut block_builder = BlockBuilder::new(4096);
         for i in 0..len {
             let entry = Entry::new(i.to_string().into(), i.to_string().into());
@@ -287,7 +344,7 @@ mod test_block_iter {
         let data = block_builder.data().to_vec();
         let block_inner = BlockInner::deserialize(0.into(), (0 as usize).into(), 0, data)?;
         block_inner.verify()?;
-        Ok(block_inner)
+        Ok(block_inner.into())
     }
     #[test]
     fn test_next() {

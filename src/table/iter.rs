@@ -75,7 +75,7 @@ impl TableIter {
             bail!("Block offsets len()==0,so the num of blocks is 0")
         }
         self.block_pos = 0;
-        let block = self.table.get_block(self.block_pos.into(), self.use_cache).await?;
+        let block = self.table.get_block(self.block_pos.into(), self.use_cache)?;
         let mut block_iter = BlockIter::new(self.table.table_id, self.block_pos, block);
         block_iter.seek_to_first()?;
         self.block_iter = block_iter.into();
@@ -88,7 +88,7 @@ impl TableIter {
             bail!("Block offsets len()==0,so the num of blocks is 0")
         }
         self.block_pos = num_blocks - 1;
-        let block = self.table.get_block(self.block_pos.into(), self.use_cache).await?;
+        let block = self.table.get_block(self.block_pos.into(), self.use_cache)?;
         let mut block_iter = BlockIter::new(self.table.table_id, self.block_pos, block);
         block_iter.seek_to_last()?;
 

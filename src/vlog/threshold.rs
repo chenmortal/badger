@@ -1,3 +1,5 @@
+
+#![allow(unused)]
 use std::{
     ops::Deref,
     sync::{atomic::AtomicUsize, Arc},
@@ -5,6 +7,7 @@ use std::{
 
 use anyhow::bail;
 use log::info;
+#[cfg(feature="stretto")]
 use stretto::Histogram;
 use tokio::{
     select,
@@ -22,6 +25,7 @@ pub(crate) struct VlogThresholdInner {
     // percentile: f64,
     config: VlogThresholdConfig,
     value_threshold: AtomicUsize,
+    #[cfg(feature="stretto")]
     vlog_metrics: Histogram,
     closer: Closer,
     sender: Sender<Vec<usize>>,
@@ -108,11 +112,13 @@ impl VlogThresholdInner {
             }
             bounds[i] = bounds[i - 1] + bd_step;
         }
+        #[cfg(feature="stretto")]
         let histogram_data = Histogram::new(bounds);
 
         Self {
             config,
             value_threshold: AtomicUsize::new(config.value_threshold),
+            #[cfg(feature="stretto")]
             vlog_metrics: histogram_data,
             closer,
             sender,
@@ -157,9 +163,11 @@ impl VlogThreshold {
             clear_notify,
         )));
         let vlog_c = vlog_threshold.clone();
+        #[cfg(feature="stretto")]
         tokio::spawn(vlog_c.listen_for_value_threshold_update(receiver, clear_notified));
         vlog_threshold
     }
+    #[cfg(feature="stretto")]
     pub(crate) async fn listen_for_value_threshold_update(
         self,
         mut receiver: Receiver<Vec<usize>>,
