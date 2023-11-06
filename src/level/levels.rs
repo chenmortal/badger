@@ -248,15 +248,14 @@ impl LevelsControllerConfig {
             max_file_id = max_file_id.max((*file_id).into());
 
             let compression = table_manifest.compression;
+            let key_id = table_manifest.keyid;
             let key_registry_clone = key_registry.clone();
             let block_cache_clone = block_cache.clone();
             let index_cache_clone = index_cache.clone();
             let read_only = self.read_only;
             let mut table_config = default_table_config.clone();
             let future = async move {
-                // let mut table_opt =
-                //     TableConfig::new(&key_registry_clone, &block_cache_clone, &index_cache_clone)
-                //         .await;
+                let cipher = key_registry_clone.get_cipher(key_id).await?;
                 table_config.set_compression(compression);
                 let mut fp_open_opt = OpenOptions::new();
                 fp_open_opt.read(true).write(!read_only);
@@ -264,12 +263,7 @@ impl LevelsControllerConfig {
                 let (mmap_f, _is_new) = MmapFile::open(&path, fp_open_opt, 0)?;
 
                 match table_config
-                    .open(
-                        mmap_f,
-                        &key_registry_clone,
-                        index_cache_clone,
-                        block_cache_clone,
-                    )
+                    .open(mmap_f, cipher, index_cache_clone, block_cache_clone)
                     .await
                 {
                     Ok(table) => {

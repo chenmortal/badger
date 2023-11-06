@@ -7,7 +7,6 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::{sync::Arc, time::SystemTime};
 
-use aes_gcm_siv::Nonce;
 use anyhow::anyhow;
 use anyhow::bail;
 use bytes::{Buf, BufMut, Bytes};
@@ -17,8 +16,8 @@ use prost::Message;
 use self::read::SinkBlockIter;
 use crate::fb::fb::TableIndex;
 use crate::iter::{DoubleEndedSinkIterator, KvSinkIter};
+use crate::key_registry::{AesCipher, Nonce};
 use crate::key_registry::NONCE_SIZE;
-use crate::key_registry::{AesCipher, KeyRegistry};
 use crate::kv::{KeyTs, TxnTs};
 use crate::pb::badgerpb4::{self, Checksum};
 use crate::util::bloom::BloomBorrow;
@@ -130,11 +129,12 @@ impl TableConfig {
     pub(crate) async fn open(
         self,
         mmap_f: MmapFile,
-        key_registry: &KeyRegistry,
+        // key_registry: &KeyRegistry,
+        cipher: Option<AesCipher>,
         index_cache: IndexCache,
         block_cache: Option<BlockCache>,
     ) -> anyhow::Result<Table> {
-        let cipher = key_registry.latest_cipher().await;
+        // let cipher = key_registry.latest_cipher().await;
         if self.block_size == 0 && self.compression != CompressionType::None {
             bail!("Block size cannot be zero");
         }
@@ -207,8 +207,8 @@ impl TableConfig {
         )?;
         block.verify()?;
         // Block(block);
-        let block:Block=block.into();
-        let mut block_iter:SinkBlockIter = block.iter();
+        let block: Block = block.into();
+        let mut block_iter: SinkBlockIter = block.iter();
         assert!(block_iter.next_back()?);
         let biggest = block_iter.key().unwrap().to_vec();
         Ok((smallest, biggest))
@@ -824,7 +824,7 @@ impl BlockInner {
     fn data(&self) -> &[u8] {
         &self.data[..self.entries_index_start]
     }
-    
+
     pub(crate) fn verify(&self) -> anyhow::Result<()> {
         let checksum = Checksum::decode(self.checksum.as_ref())
             .map_err(|e| anyhow!("Failed decode pb::checksum for block for {}", e))?;

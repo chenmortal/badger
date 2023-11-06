@@ -98,7 +98,7 @@ impl<F:DBFileId> LogFile<F> {
         let key_id = buf_ref.get_u64();
 
         if let Some(datakey) = log_file.key_registry.get_data_key(key_id).await? {
-            log_file.cipher = log_file.key_registry.get_cipher(&datakey)?.into();
+            log_file.cipher=AesCipher::new(&datakey.data)?.into();
             log_file.datakey = datakey.into();
         };
         let nonce = buf_ref.get(0..12);
@@ -127,7 +127,8 @@ impl<F:DBFileId> LogFile<F> {
     async fn bootstrap(&mut self) -> anyhow::Result<()> {
         self.datakey = self.key_registry.latest_datakey().await?;
         if let Some(dk) = &self.datakey {
-            self.cipher = self.key_registry.get_cipher(dk)?.into();
+            self.cipher=AesCipher::new(&dk.data)?.into();
+            // self.cipher = self.key_registry.get_cipher(dk)?.into();
         }
         self.base_nonce = AesCipher::generate_nonce().to_vec();
 

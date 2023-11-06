@@ -50,7 +50,6 @@ impl DB {
         let table = table_builder
             .build(
                 file_path,
-                &self.key_registry,
                 self.index_cache.clone(),
                 self.block_cache.clone(),
             )

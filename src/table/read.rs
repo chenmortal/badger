@@ -322,6 +322,15 @@ impl KvDoubleEndedSinkIter<ValueMeta> for SinkBlockIter {
     }
 }
 #[cfg(test)]
+mod test_table_iter {
+    use crate::table::{write::TableBuilder, TableConfig};
+
+    fn generate_instance() {
+        let builder = TableBuilder::new(TableConfig::default(), None);
+        
+    }
+}
+#[cfg(test)]
 mod test_block_iter {
     use crate::{
         iter::{DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIter, SinkIterator},

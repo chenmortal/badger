@@ -207,6 +207,7 @@ dependencies = [
 name = "badger"
 version = "0.1.0"
 dependencies = [
+ "aead",
  "aes-gcm",
  "aes-gcm-siv",
  "ahash",

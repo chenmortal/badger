@@ -2,7 +2,7 @@ use std::{
     sync::{atomic::{AtomicU32, Ordering}, Arc}, mem::replace,  ptr, path::PathBuf, fs::OpenOptions,
 };
 
-use bytes::{ BufMut};
+use bytes::BufMut;
 use prost::Message;
 
 use crate::{
@@ -37,7 +37,6 @@ impl BlockBuilder {
 
 #[derive(Debug, Default)]
 pub(crate) struct TableBuilder {
-    // alloc: Vec<u8>,
     cur_block: BlockBuilder,
     compressed_size: Arc<AtomicU32>,
     cipher:Option<AesCipher>,
@@ -230,7 +229,7 @@ impl TableBuilder {
         Ok((try_encrypt(self.cipher.as_ref(), builder.finished_data())?,data_size))
     }
 
-    pub(crate) async fn build(&mut self,path:PathBuf,key_registry:&KeyRegistry,index_cache:IndexCache,block_cache:Option<BlockCache>)->anyhow::Result<Table>{
+    pub(crate) async fn build(&mut self,path:PathBuf,index_cache:IndexCache,block_cache:Option<BlockCache>)->anyhow::Result<Table>{
         let  build_data = self.done().await?;
         fn write_data(path:PathBuf,mut build_data: TableBuildData)->anyhow::Result<MmapFile>{
             let mut fp_open_opt = OpenOptions::new();
@@ -243,7 +242,8 @@ impl TableBuilder {
             Ok(mmap_f)
         }
         let mmap_f = tokio::task::spawn_blocking(move ||{write_data(path, build_data)}).await??;
-        self.config.clone().open(mmap_f, key_registry, index_cache, block_cache).await   
+        
+        self.config.clone().open(mmap_f, self.cipher.clone(), index_cache, block_cache).await   
     }
 
     pub(crate) async fn finish(&mut self)->anyhow::Result<Vec<u8>>{
