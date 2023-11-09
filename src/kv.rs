@@ -413,6 +413,10 @@ impl ValueMeta {
     pub(crate) fn value(&self) -> &Bytes {
         &self.value
     }
+
+    pub(crate) fn set_value(&mut self, value: Bytes) {
+        self.value = value;
+    }
 }
 
 #[derive(Debug, Default)]

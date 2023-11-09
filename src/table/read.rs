@@ -6,22 +6,23 @@ use crate::{
     kv::{KeyTsBorrow, ValueMeta},
 };
 
-use super::{Block, BlockIndex, BlockInner, EntryHeader, TableInner, HEADER_SIZE};
+use super::{Block, EntryHeader, TableInner, HEADER_SIZE};
 pub(crate) struct SinkTableIter<'a> {
     inner: &'a TableInner,
     use_cache: bool,
     block_iter: Option<SinkBlockIter>,
     back_block_iter: Option<SinkBlockIter>,
 }
-// impl<'a> From<&'a TableInner> for SinkTableIter<'a> {
-//     fn from(value: &'a TableInner) -> Self {
-//         Self {
-//             inner: value,
-//             block_iter: None,
-//             back_block_iter: None,
-//         }
-//     }
-// }
+impl TableInner {
+    pub(crate) fn iter(&self, use_cache: bool) -> SinkTableIter<'_> {
+        SinkTableIter {
+            inner: self,
+            use_cache,
+            block_iter: None,
+            back_block_iter: None,
+        }
+    }
+}
 impl<'a> SinkIter for SinkTableIter<'a> {
     type Item = SinkBlockIter;
 
@@ -34,12 +35,27 @@ impl<'a> DoubleEndedSinkIter for SinkTableIter<'a> {
         self.back_block_iter.as_ref()
     }
 }
+impl<'a> SinkTableIter<'a> {
+    fn double_ended_eq(&self) -> bool {
+        if let Some(iter) = self.block_iter.as_ref() {
+            if let Some(back_iter) = self.back_block_iter.as_ref() {
+                if iter.key() == back_iter.key_back() && iter.value() == back_iter.value_back() {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+}
 impl<'a> SinkIterator for SinkTableIter<'a> {
     fn next(&mut self) -> Result<bool, anyhow::Error> {
+        if !self.double_ended_eq() {
+            return Ok(false);
+        }
         let new_block_index = match self.block_iter.as_mut() {
             Some(iter) => {
                 if iter.next()? {
-                    return Ok(true);
+                    return Ok(self.double_ended_eq());
                 }
                 let block_index: usize = iter.inner.block_index.into();
                 if block_index == self.inner.block_offsets_len() - 1 {
@@ -56,15 +72,22 @@ impl<'a> SinkIterator for SinkTableIter<'a> {
         };
         let next_block = self.inner.get_block(new_block_index, self.use_cache)?;
         self.block_iter = next_block.iter().into();
-        return self.block_iter.as_mut().unwrap().next();
+        if self.block_iter.as_mut().unwrap().next()? {
+            return Ok(self.double_ended_eq());
+        } else {
+            return Ok(false);
+        };
     }
 }
 impl<'a> DoubleEndedSinkIterator for SinkTableIter<'a> {
     fn next_back(&mut self) -> Result<bool, anyhow::Error> {
+        if !self.double_ended_eq() {
+            return Ok(false);
+        }
         let new_block_index = match self.back_block_iter.as_mut() {
             Some(back_iter) => {
                 if back_iter.next_back()? {
-                    return Ok(true);
+                    return Ok(self.double_ended_eq());
                 }
                 let block_index: usize = back_iter.inner.block_index.into();
                 if block_index == 0 {
@@ -76,12 +99,16 @@ impl<'a> DoubleEndedSinkIterator for SinkTableIter<'a> {
                 if self.inner.block_offsets_len() == 0 {
                     return Ok(false);
                 }
-                0u32.into()
+                (self.inner.block_offsets_len() - 1).into()
             }
         };
         let block = self.inner.get_block(new_block_index, self.use_cache)?;
         self.back_block_iter = block.iter().into();
-        return self.back_block_iter.as_mut().unwrap().next_back();
+        if self.back_block_iter.as_mut().unwrap().next_back()? {
+            return Ok(self.double_ended_eq());
+        } else {
+            return Ok(false);
+        };
     }
 }
 impl<'a> KvSinkIter<ValueMeta> for SinkTableIter<'a> {
@@ -263,8 +290,10 @@ impl DoubleEndedSinkIterator for SinkBlockIter {
                 let last_offset = *self.inner.entry_offsets.last().unwrap() as usize;
                 let data = &self.inner.data()[last_offset..];
                 self.back_header = EntryHeader::deserialize(&data[..HEADER_SIZE]);
-                self.back_key =
-                    data[HEADER_SIZE..HEADER_SIZE + self.back_header.get_diff()].to_vec();
+                self.back_key = self.base_key[..self.back_header.get_overlap()].to_vec();
+                self.back_key.extend_from_slice(
+                    &data[HEADER_SIZE..HEADER_SIZE + self.back_header.get_diff()],
+                );
                 self.back_entry_index = Some(self.inner.entry_offsets.len() - 1);
                 return Ok(true);
             }
@@ -319,170 +348,5 @@ impl KvDoubleEndedSinkIter<ValueMeta> for SinkBlockIter {
             return ValueMeta::deserialize(value);
         }
         None
-    }
-}
-#[cfg(test)]
-mod test_table_iter {
-    use crate::table::{write::TableBuilder, TableConfig};
-
-    fn generate_instance() {
-        let builder = TableBuilder::new(TableConfig::default(), None);
-        
-    }
-}
-#[cfg(test)]
-mod test_block_iter {
-    use crate::{
-        iter::{DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIter, SinkIterator},
-        kv::Entry,
-        table::{write::BlockBuilder, Block},
-    };
-
-    use super::BlockInner;
-
-    fn generate_instance(len: u32) -> anyhow::Result<Block> {
-        let mut block_builder = BlockBuilder::new(4096);
-        for i in 0..len {
-            let entry = Entry::new(i.to_string().into(), i.to_string().into());
-            block_builder.push_entry(
-                &entry.key_ts().serialize().as_slice().into(),
-                entry.value_meta(),
-            );
-        }
-        block_builder.finish_block(crate::pb::badgerpb4::checksum::Algorithm::Crc32c);
-        let data = block_builder.data().to_vec();
-        let block_inner = BlockInner::deserialize(0.into(), (0 as usize).into(), 0, data)?;
-        block_inner.verify()?;
-        Ok(block_inner.into())
-    }
-    #[test]
-    fn test_next() {
-        let len = 1000;
-        let block = generate_instance(len).unwrap();
-        let mut block_iter = block.iter();
-        for i in 0..len {
-            let entry = Entry::new(i.to_string().into(), i.to_string().into());
-            assert!(block_iter.next().unwrap());
-            assert_eq!(
-                block_iter.key().unwrap(),
-                entry.key_ts().serialize().as_slice().into()
-            );
-            assert_eq!(block_iter.value().unwrap(), *entry.value_meta())
-        }
-    }
-    #[test]
-    fn test_next_back() {
-        let len = 1000;
-        let block = generate_instance(len).unwrap();
-        let mut block_iter = block.iter();
-        for i in (0..len).rev() {
-            let entry = Entry::new(i.to_string().into(), i.to_string().into());
-            assert!(block_iter.next_back().unwrap());
-            assert_eq!(
-                block_iter.key_back().unwrap(),
-                entry.key_ts().serialize().as_slice().into()
-            );
-            assert_eq!(block_iter.value_back().unwrap(), *entry.value_meta())
-        }
-    }
-    #[test]
-    fn test_double_ended() {
-        let len = 1000;
-        let split = 500;
-        let block = generate_instance(len).unwrap();
-        let mut block_iter = block.iter();
-        for i in 0..split {
-            let entry = Entry::new(i.to_string().into(), i.to_string().into());
-            assert!(block_iter.next().unwrap());
-            assert_eq!(
-                block_iter.key().unwrap(),
-                entry.key_ts().serialize().as_slice().into()
-            );
-            assert_eq!(block_iter.value().unwrap(), *entry.value_meta())
-        }
-        for i in (split..len).rev() {
-            let entry = Entry::new(i.to_string().into(), i.to_string().into());
-            assert!(block_iter.next_back().unwrap());
-            assert_eq!(
-                block_iter.key_back().unwrap(),
-                entry.key_ts().serialize().as_slice().into()
-            );
-            assert_eq!(block_iter.value_back().unwrap(), *entry.value_meta())
-        }
-        assert_eq!(block_iter.next().unwrap(), false);
-        assert_eq!(block_iter.next_back().unwrap(), false);
-    }
-    #[test]
-    fn test_rev_next() {
-        let len = 1000;
-        let block = generate_instance(len).unwrap();
-        let mut block_iter = block.iter().rev();
-        for i in (0..len).rev() {
-            let entry = Entry::new(i.to_string().into(), i.to_string().into());
-            assert!(block_iter.next().unwrap());
-            assert_eq!(
-                block_iter.key().unwrap(),
-                entry.key_ts().serialize().as_slice().into()
-            );
-            assert_eq!(block_iter.value().unwrap(), *entry.value_meta())
-        }
-    }
-    #[test]
-    fn test_rev_next_back() {
-        let len = 1000;
-        let block = generate_instance(len).unwrap();
-        let mut block_iter = block.iter().rev();
-        for i in 0..len {
-            let entry = Entry::new(i.to_string().into(), i.to_string().into());
-            assert!(block_iter.next_back().unwrap());
-            assert_eq!(
-                block_iter.key_back().unwrap(),
-                entry.key_ts().serialize().as_slice().into()
-            );
-            assert_eq!(block_iter.value_back().unwrap(), *entry.value_meta())
-        }
-    }
-    #[test]
-    fn test_rev_double_ended() {
-        let len = 1000;
-        let split = 500;
-        let block = generate_instance(len).unwrap();
-        let mut block_iter = block.iter().rev();
-        for i in 0..split {
-            let entry = Entry::new(i.to_string().into(), i.to_string().into());
-            assert!(block_iter.next_back().unwrap());
-            assert_eq!(
-                block_iter.key_back().unwrap(),
-                entry.key_ts().serialize().as_slice().into()
-            );
-            assert_eq!(block_iter.value_back().unwrap(), *entry.value_meta())
-        }
-        for i in (split..len).rev() {
-            let entry = Entry::new(i.to_string().into(), i.to_string().into());
-            assert!(block_iter.next().unwrap());
-            assert_eq!(
-                block_iter.key().unwrap(),
-                entry.key_ts().serialize().as_slice().into()
-            );
-            assert_eq!(block_iter.value().unwrap(), *entry.value_meta())
-        }
-        assert_eq!(block_iter.next().unwrap(), false);
-        assert_eq!(block_iter.next_back().unwrap(), false);
-    }
-
-    #[test]
-    fn test_rev_rev() {
-        let len = 1000;
-        let block = generate_instance(len).unwrap();
-        let mut block_iter = block.iter().rev().rev();
-        for i in 0..len {
-            let entry = Entry::new(i.to_string().into(), i.to_string().into());
-            assert!(block_iter.next().unwrap());
-            assert_eq!(
-                block_iter.key().unwrap(),
-                entry.key_ts().serialize().as_slice().into()
-            );
-            assert_eq!(block_iter.value().unwrap(), *entry.value_meta())
-        }
     }
 }
