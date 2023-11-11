@@ -144,10 +144,9 @@ impl TableConfig {
         let table_size = mmap_f.get_file_size()? as usize;
         let created_at: SystemTime = mmap_f.get_modified_time()?;
 
-        let (index_buf, index_start, index_len) = Self::init_index(&mmap_f, cipher.as_ref())?;
-        let table_index = index_buf.to_table_index();
+        let (table_index, index_start, index_len) = Self::init_index(&mmap_f, cipher.as_ref())?;
 
-        let (smallest, biggest) = self.get_smallest_biggest(table_index, &mmap_f, &cipher)?;
+        let (smallest, biggest) = self.get_smallest_biggest(&table_index, &mmap_f, &cipher)?;
 
         let inner = TableInner {
             mmap_f,
@@ -162,7 +161,7 @@ impl TableConfig {
             cipher,
             index_start,
             index_len,
-            cheap_index: table_index.into(),
+            cheap_index: (&table_index).into(),
         };
 
         match inner.config.checksum_verify_mode {
@@ -180,18 +179,18 @@ impl TableConfig {
 
     fn get_smallest_biggest(
         &self,
-        table_index: TableIndex<'_>,
+        table_index: &TableIndexBuf,
         mmap_f: &MmapFile,
         cipher: &Option<AesCipher>,
-    ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    ) -> anyhow::Result<(Bytes, Bytes)> {
         //get smallest
-        let first_block_offset = table_index.offsets().unwrap().get(0);
-        let first_block_base_key = first_block_offset.key().unwrap();
-        let smallest = first_block_base_key.bytes().to_vec();
+        let first_block_offset = table_index.offsets().get(0).unwrap();
+        let first_block_base_key = first_block_offset.key();
+        let smallest = first_block_base_key.to_owned();
 
         //get biggest
-        let last_block_id = table_index.offsets().unwrap().len() - 1;
-        let last_block_offset = table_index.offsets().unwrap().get(last_block_id);
+        let last_block_id = table_index.offsets().len() - 1;
+        let last_block_offset = table_index.offsets().get(last_block_id).unwrap();
         let raw_data = mmap_f.read_slice_ref(
             last_block_offset.offset() as usize,
             last_block_offset.len() as usize,
@@ -211,7 +210,7 @@ impl TableConfig {
         let block: Block = block.into();
         let mut block_iter: SinkBlockIter = block.iter();
         assert!(block_iter.next_back()?);
-        let biggest = block_iter.key_back().unwrap().to_vec();
+        let biggest = block_iter.key_back().unwrap().to_vec().into();
         Ok((smallest, biggest))
     }
     fn init_index(
@@ -251,7 +250,7 @@ impl TableConfig {
 
         let index_buf = TableIndexBuf::from_vec(try_decrypt(cipher, data.as_ref())?)?;
 
-        debug_assert!(index_buf.to_table_index().offsets().is_some());
+        debug_assert!(index_buf.offsets.len() != 0);
 
         Ok((index_buf, index_start, index_len))
     }
@@ -262,8 +261,8 @@ pub(crate) struct TableInner {
     table_id: SSTableId,
     mmap_f: MmapFile,
     table_size: usize,
-    smallest: Vec<u8>,
-    biggest: Vec<u8>,
+    smallest: Bytes,
+    biggest: Bytes,
     cheap_index: CheapTableIndex,
     block_cache: Option<BlockCache>,
     index_cache: IndexCache,
@@ -420,8 +419,8 @@ impl TableInner {
         #[cfg(feature = "metrics")]
         add_num_bloom_use(1);
         let table_index_buf = self.get_index()?;
-        let table_index = table_index_buf.to_table_index();
-        let bloom: BloomBorrow = table_index.bloom_filter().unwrap().bytes().into();
+        let bloom = table_index_buf.bloom_filter.as_ref().unwrap();
+        let bloom: BloomBorrow = bloom.as_ref().into();
         let may_contain = bloom.may_contain_key(&key.key());
         if !may_contain {
             #[cfg(feature = "metrics")]
@@ -540,8 +539,8 @@ impl TableInner {
         }
 
         let table_index_buf = self.get_index()?;
-        let table_index = table_index_buf.to_table_index();
-        let block = table_index.offsets().unwrap().get(block_index.into());
+        let block_id: usize = block_index.into();
+        let block: &BlockOffsetBuf = &table_index_buf.offsets[block_id];
         let block_offset = block.offset() as usize;
         let block_len = block.len() as usize;
 
@@ -637,27 +636,72 @@ pub(crate) fn bytes_to_vec_u32(src: &[u8]) -> Vec<u32> {
     v
 }
 #[derive(Debug, Clone)]
-pub(crate) struct TableIndexBuf(Bytes);
-impl Deref for TableIndexBuf {
-    type Target = Bytes;
+pub(crate) struct TableIndexBuf {
+    offsets: Vec<BlockOffsetBuf>,
+    bloom_filter: Option<Bytes>,
+    max_version: u64,
+    key_count: u32,
+    uncompressed_size: u32,
+    on_disk_size: u32,
+    stale_data_size: u32,
+}
+#[derive(Debug, Clone)]
+pub(crate) struct BlockOffsetBuf {
+    key: Bytes,
+    offset: u32,
+    len: u32,
+}
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl BlockOffsetBuf {
+    pub(crate) fn key(&self) -> &Bytes {
+        &self.key
+    }
+
+    pub(crate) fn offset(&self) -> u32 {
+        self.offset
+    }
+
+    pub(crate) fn len(&self) -> u32 {
+        self.len
     }
 }
 impl TableIndexBuf {
     #[deny(unused)]
     #[inline]
     pub(crate) fn from_vec(data: Vec<u8>) -> Result<Self, InvalidFlatbuffer> {
-        flatbuffers::root::<TableIndex>(&data)?;
-        Ok(Self(data.into()))
+        let table_index = flatbuffers::root::<TableIndex>(&data)?;
+        assert!(table_index.offsets().is_some());
+        let offsets = table_index.offsets().unwrap();
+        let offsets = offsets
+            .iter()
+            .map(|offset| {
+                assert!(offset.key().is_some());
+                BlockOffsetBuf {
+                    key: offset.key().unwrap().bytes().to_vec().into(),
+                    offset: offset.offset().clone(),
+                    len: offset.len().clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let bloom_filter = table_index
+            .bloom_filter()
+            .and_then(|x| Bytes::from(x.bytes().to_vec()).into());
+        Ok(Self {
+            offsets,
+            bloom_filter,
+            max_version: table_index.max_version(),
+            key_count: table_index.key_count(),
+            uncompressed_size: table_index.uncompressed_size(),
+            on_disk_size: table_index.on_disk_size(),
+            stale_data_size: table_index.stale_data_size(),
+        })
     }
 
-    #[inline]
-    pub(crate) fn to_table_index(&self) -> TableIndex<'_> {
-        unsafe { flatbuffers::root_unchecked::<TableIndex>(self.0.as_ref()) }
+    pub(crate) fn offsets(&self) -> &[BlockOffsetBuf] {
+        self.offsets.as_ref()
     }
 }
+
 #[derive(Debug)]
 struct CheapTableIndex {
     max_version: TxnTs,
@@ -682,6 +726,23 @@ impl From<TableIndex<'_>> for CheapTableIndex {
                 0
             },
             bloom_filter: if let Some(bloom) = value.bloom_filter() {
+                bloom.len()
+            } else {
+                0
+            },
+        }
+    }
+}
+impl From<&TableIndexBuf> for CheapTableIndex {
+    fn from(value: &TableIndexBuf) -> Self {
+        Self {
+            max_version: value.max_version.into(),
+            key_count: value.key_count,
+            uncompressed_size: value.uncompressed_size,
+            on_disk_size: value.on_disk_size,
+            stale_data_size: value.stale_data_size,
+            offsets_len: value.offsets().len(),
+            bloom_filter: if let Some(bloom) = value.bloom_filter.as_ref() {
                 bloom.len()
             } else {
                 0

@@ -2,8 +2,8 @@ use rand::Rng;
 
 use crate::{
     iter::{
-        DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIter, SinkIter,
-        SinkIterator,
+        DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSeekIter,
+        KvSinkIter, SinkIter, SinkIterator,
     },
     kv::{KeyTsBorrow, ValueMeta},
     util::arena::Arena,
@@ -575,22 +575,35 @@ impl<'a> KvDoubleEndedSinkIter<ValueMeta> for SkipListIter<'a> {
         None
     }
 }
-
+impl<'a> KvSeekIter for SkipListIter<'a> {
+    fn seek(&mut self, k: KeyTsBorrow<'_>) -> anyhow::Result<bool> {
+        let node = self.inner.find_or_near(k.as_ref(), true);
+        return Ok(if node.is_some() {
+            self.node = node;
+            true
+        } else {
+            false
+        });
+    }
+}
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, mem::size_of, time::SystemTime};
+    use std::{mem::size_of, time::SystemTime};
 
+    use bytes::Buf;
     use rand::Rng;
 
     use crate::{
         iter::{
-            DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIter,
-            SinkIter, SinkIterator,
+            DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSeekIter, KvSinkIter, SinkIterator,
+            TestIter,
         },
         kv::KeyTsBorrow,
+        test_iter_double_ended, test_iter_next, test_iter_next_back, test_iter_rev_double_ended,
+        test_iter_rev_next, test_iter_rev_next_back, test_iter_rev_rev_next,
     };
 
-    use super::{Node, SkipList, SkipListIter, RANDOM_HEIGHT_DENOMINATOR, RANDOM_HEIGHT_NUMERATOR};
+    use super::{Node, SkipList, RANDOM_HEIGHT_DENOMINATOR, RANDOM_HEIGHT_NUMERATOR};
     #[test]
     fn test_random() {
         let mut rng = rand::thread_rng();
@@ -611,151 +624,100 @@ mod tests {
             two_decimal(RANDOM_HEIGHT_NUMERATOR, RANDOM_HEIGHT_DENOMINATOR)
         )
     }
+    fn generate_instance(len: usize) -> SkipList {
+        let mut iter = TestIter::new(len);
+        //key and value have 8 bytes,but align is 8 bytes,so actually write 8 bytes
+        let arena_size = (size_of::<Node>() + (8 * 2) * 2) * (len + 1);
+        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
+        while iter.next().unwrap() {
+            skip_list.push(
+                iter.key().unwrap().as_ref(),
+                &iter.value().unwrap().serialize(),
+            );
+        }
+        skip_list
+    }
     #[test]
     fn test_iter_next() {
-        let end = 1000;
-        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
-            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
-        }
-        let mut iter = SkipListIter::new(&skip_list);
-        assert!(iter.item().is_none());
-        for i in 0..end {
-            assert!(iter.next().unwrap());
-            assert_eq!(iter.key().unwrap(), i.to_be_bytes().as_ref().into());
-        }
-        assert_eq!(iter.next().unwrap(), false);
+        let len = 1000;
+        let skip_list = generate_instance(len);
+        let mut iter = skip_list.iter();
+        test_iter_next!(iter, len);
     }
 
     #[test]
     fn test_iter_next_back() {
-        let end = 1000;
-        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
-            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
-        }
-        let mut iter = SkipListIter::new(&skip_list);
-        assert!(iter.item_back().is_none());
-        for i in (0..end).rev() {
-            assert!(iter.next_back().unwrap());
-            assert_eq!(iter.key_back().unwrap(), i.to_be_bytes().as_ref().into())
-        }
-        assert_eq!(iter.next_back().unwrap(), false);
+        let len = 1000;
+        let skip_list = generate_instance(len);
+        let mut iter = skip_list.iter();
+        test_iter_next_back!(iter, len);
     }
     #[test]
     fn test_iter_double_ended() {
-        let end = 1000;
+        let len = 1000;
         let split = 500;
-        assert!(split < end);
-        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
-            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
-        }
-        let mut iter = SkipListIter::new(&skip_list);
-        for i in 0..split {
-            assert!(iter.next().unwrap());
-            assert_eq!(iter.key().unwrap(), i.to_be_bytes().as_ref().into());
-        }
-        for i in (split..end).rev() {
-            assert!(iter.next_back().unwrap());
-            assert_eq!(iter.key_back().unwrap(), i.to_be_bytes().as_ref().into());
-        }
-        assert_eq!(iter.next().unwrap(), false);
-        assert_eq!(iter.next_back().unwrap(), false);
+        let skip_list = generate_instance(len);
+        let mut iter = skip_list.iter();
+        test_iter_double_ended!(iter, len, split);
     }
     #[test]
     fn test_iter_rev_next() {
-        let end = 1000;
-
-        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
-            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
-        }
-        let iter = SkipListIter::new(&skip_list);
-        let mut iter_rev = iter.rev();
-
-        assert!(iter_rev.item().is_none());
-        for i in (0..end).rev() {
-            assert!(iter_rev.next().unwrap());
-            assert_eq!(iter_rev.key().unwrap(), i.to_be_bytes().as_ref().into());
-        }
-        assert_eq!(iter_rev.next().unwrap(), false);
+        let len = 1000;
+        let skip_list = generate_instance(len);
+        let iter = skip_list.iter();
+        test_iter_rev_next!(iter, len);
     }
     #[test]
     fn test_iter_rev_next_back() {
-        let end = 1000;
-
-        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
-            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
-        }
-        let iter = SkipListIter::new(&skip_list);
-        let mut iter_rev = iter.rev();
-
-        assert!(iter_rev.item().is_none());
-        for i in 0..end {
-            assert!(iter_rev.next_back().unwrap());
-            assert_eq!(
-                iter_rev.key_back().unwrap(),
-                i.to_be_bytes().as_ref().into()
-            );
-        }
-        assert_eq!(iter_rev.next_back().unwrap(), false);
+        let len = 1000;
+        let skip_list = generate_instance(len);
+        let iter = skip_list.iter();
+        test_iter_rev_next_back!(iter, len);
     }
     #[test]
     fn test_iter_rev_double_ended() {
-        let end = 1000;
+        let len = 1000;
         let split = 500;
-        assert!(split < end);
-        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
-            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
-        }
-        let iter = SkipListIter::new(&skip_list);
-        let mut iter_rev = iter.rev();
-        for i in 0..split {
-            assert!(iter_rev.next_back().unwrap());
-            assert_eq!(
-                iter_rev.key_back().unwrap(),
-                i.to_be_bytes().as_ref().into()
-            );
-        }
-        for i in (split..end).rev() {
-            assert!(iter_rev.next().unwrap());
-            assert_eq!(iter_rev.key().unwrap(), i.to_be_bytes().as_ref().into());
-        }
-        assert_eq!(iter_rev.next().unwrap(), false);
-        assert_eq!(iter_rev.next_back().unwrap(), false);
+        let skip_list = generate_instance(len);
+        let iter = skip_list.iter();
+        test_iter_rev_double_ended!(iter, len, split);
     }
     #[test]
     fn test_iter_rev_rev() {
+        let len = 1000;
+        let skip_list = generate_instance(len);
+        let iter = skip_list.iter();
+        test_iter_rev_rev_next!(iter, len);
+    }
+    #[test]
+    fn test_seek() {
         let end = 1000;
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
+        let arena_size = (size_of::<Node>() + 16 * 2) * (end + 1);
         let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
+        for i in 3..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
-        let iter = SkipListIter::new(&skip_list);
-        let mut iter = iter.rev().rev();
-        assert!(iter.item().is_none());
-        for i in 0..end {
-            assert!(iter.next().unwrap());
-            assert_eq!(iter.key().unwrap(), i.to_be_bytes().as_ref().into());
-        }
-        assert_eq!(iter.next().unwrap(), false);
+        let mut iter = skip_list.iter();
+
+        assert!(iter.seek(0usize.to_be_bytes().as_ref().into()).unwrap());
+        assert_eq!(iter.key().unwrap().as_ref().get_u64(), 3);
+
+        assert!(iter.seek(2usize.to_be_bytes().as_ref().into()).unwrap());
+        assert_eq!(iter.key().unwrap().as_ref().get_u64(), 3);
+
+        assert!(iter.seek(3usize.to_be_bytes().as_ref().into()).unwrap());
+        assert_eq!(iter.key().unwrap().as_ref().get_u64(), 3);
+
+        assert!(iter.seek(4usize.to_be_bytes().as_ref().into()).unwrap());
+        assert_eq!(iter.key().unwrap().as_ref().get_u64(), 4);
+
+        assert!(iter.seek(999usize.to_be_bytes().as_ref().into()).unwrap());
+        assert_eq!(iter.key().unwrap().as_ref().get_u64(), 999);
+
+        assert!(!iter.seek(1000usize.to_be_bytes().as_ref().into()).unwrap());
+
+        assert!(!iter.seek(1001usize.to_be_bytes().as_ref().into()).unwrap());
     }
     struct SkipListLevelIter {
         skip_list: SkipList,

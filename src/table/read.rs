@@ -1,7 +1,7 @@
 use crate::{
     iter::{
-        DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIter, SinkIter,
-        SinkIterator,
+        DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSeekIter,
+        KvSinkIter, SinkIter, SinkIterator,
     },
     kv::{KeyTsBorrow, ValueMeta},
 };
@@ -141,6 +141,33 @@ impl<'a> KvDoubleEndedSinkIter<ValueMeta> for SinkTableIter<'a> {
         None
     }
 }
+impl<'a> KvSeekIter for SinkTableIter<'a> {
+    fn seek(&mut self, k: KeyTsBorrow<'_>) -> anyhow::Result<bool> {
+        let index_buf = self.inner.get_index()?;
+        let search = index_buf
+            .offsets()
+            .binary_search_by(|b| b.key().as_ref().cmp(k.as_ref()));
+        let index = match search {
+            Ok(index) => index,
+            Err(index) => {
+                if index >= index_buf.offsets().len() {
+                    return Ok(false);
+                }
+                index - 1
+            }
+        };
+        let next_block = self.inner.get_block(index.into(), self.use_cache)?;
+        self.block_iter = next_block.iter().into();
+        match self.block_iter.as_mut() {
+            Some(block) => {
+                return block.seek(k);
+            }
+            None => {
+                unreachable!()
+            }
+        }
+    }
+}
 pub(crate) struct SinkBlockIter {
     inner: Block,
     base_key: Vec<u8>,
@@ -180,6 +207,26 @@ impl DoubleEndedSinkIter for SinkBlockIter {
         self.back_entry_index.as_ref()
     }
 }
+impl SinkBlockIter {
+    fn set_entry_index(&mut self, entry_index: usize) {
+        self.entry_index = entry_index.into();
+        let entry_offset = self.inner.entry_offsets[entry_index] as usize;
+        let data = &self.inner.data()[entry_offset..];
+        let next_header = EntryHeader::deserialize(&data[..HEADER_SIZE]);
+        let prev_overlap = self.header.get_overlap();
+        let next_overlap = next_header.get_overlap();
+        if next_overlap > prev_overlap {
+            self.key.truncate(prev_overlap);
+            self.key
+                .extend_from_slice(&self.base_key[prev_overlap..next_overlap]);
+        } else {
+            self.key.truncate(next_overlap);
+        }
+        self.key
+            .extend_from_slice(&data[HEADER_SIZE..HEADER_SIZE + next_header.get_diff()]);
+        self.header = next_header;
+    }
+}
 //base key 123 1  iter.key=null
 //123 100
 //123 121  pre_overlap=6 overlap:4 -> iter.key=123 1;  diffkey=21  -> iter.key=123 121 (just create iter, and may not seek to  start , so also pre_overlap==0)
@@ -201,22 +248,7 @@ impl SinkIterator for SinkBlockIter {
                         }
                     }
                 }
-                self.entry_index = Some(id + 1);
-                let next_entry_offset = self.inner.entry_offsets[id + 1] as usize;
-                let data = &self.inner.data()[next_entry_offset..];
-                let next_header = EntryHeader::deserialize(&data[..HEADER_SIZE]);
-                let prev_overlap = self.header.get_overlap();
-                let next_overlap = next_header.get_overlap();
-                if next_overlap > prev_overlap {
-                    self.key.truncate(prev_overlap);
-                    self.key
-                        .extend_from_slice(&self.base_key[prev_overlap..next_overlap]);
-                } else {
-                    self.key.truncate(next_overlap);
-                }
-                self.key
-                    .extend_from_slice(&data[HEADER_SIZE..HEADER_SIZE + next_header.get_diff()]);
-                self.header = next_header;
+                self.set_entry_index(id + 1);
                 return Ok(true);
             }
             None => {
@@ -348,5 +380,47 @@ impl KvDoubleEndedSinkIter<ValueMeta> for SinkBlockIter {
             return ValueMeta::deserialize(value);
         }
         None
+    }
+}
+impl KvSeekIter for SinkBlockIter {
+    fn seek(&mut self, k: KeyTsBorrow<'_>) -> anyhow::Result<bool> {
+        if self.entry_index.is_none() {
+            if !self.next()? {
+                return Ok(false);
+            };
+        }
+
+        let search = self.inner.entry_offsets.binary_search_by(|offset| {
+            let entry_offset = *offset as usize;
+            let data = &self.inner.data()[entry_offset..];
+            let header = EntryHeader::deserialize(&data[..HEADER_SIZE]);
+            if k.len() >= header.get_overlap() {
+                if header.get_overlap() > 8 {
+                    let split =
+                        (header.get_overlap() + header.get_diff() - 8).min(header.get_overlap());
+                    match self.base_key[..split].cmp(&k[..split]) {
+                        std::cmp::Ordering::Equal => {}
+                        ord => return ord,
+                    }
+                }
+            }
+            let mut key = vec![0u8; header.get_overlap() + header.get_diff()];
+            key[..header.get_overlap()].copy_from_slice(&self.base_key[..header.get_overlap()]);
+            key[header.get_overlap()..header.get_diff()]
+                .copy_from_slice(&data[HEADER_SIZE..HEADER_SIZE + header.get_diff()]);
+            KeyTsBorrow::cmp(&key, &k)
+        });
+
+        let entry_index = match search {
+            Ok(index) => index,
+            Err(index) => {
+                if index >= self.inner.get_entry_offsets().len() {
+                    return Ok(false);
+                }
+                index
+            }
+        };
+        self.set_entry_index(entry_index);
+        return Ok(true);
     }
 }
