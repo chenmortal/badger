@@ -8,9 +8,8 @@ use crate::util::metrics::{add_num_gets, add_num_gets_with_result, add_num_memta
 use crate::{
     db::DB,
     errors::DBError,
-    kv::{KeyTs, Meta, TxnTs, ValueMeta},
+    kv::{KeyTs, TxnTs, ValueMeta},
     memtable::MemTable,
-    txn,
 };
 impl DB {
     pub(crate) async fn get(&self, key_ts: &KeyTs) -> anyhow::Result<Option<(TxnTs, ValueMeta)>> {
@@ -20,6 +19,7 @@ impl DB {
         #[cfg(feature = "metrics")]
         add_num_gets(1);
         let mut max_txn_ts = TxnTs::default();
+        let mut max_value = None;
         let (mut_mem, immut_mem) = self.get_memtable().await;
         if let Some(mem) = mut_mem {
             let mem_r = mem.read().await;
@@ -27,14 +27,17 @@ impl DB {
             drop(mem_r);
             #[cfg(feature = "metrics")]
             add_num_memtable_gets(1);
-            if let Some((txn_ts, value_meta)) = v.as_ref() {
+            if let Some((txn_ts, value_meta)) = v {
                 if !value_meta.meta().is_empty() || !value_meta.value().is_empty() {
-                    if *txn_ts == key_ts.txn_ts() {
+                    if txn_ts == key_ts.txn_ts() {
                         #[cfg(feature = "metrics")]
                         add_num_gets_with_result(1);
-                        return Ok(v);
+                        return Ok(Some((txn_ts, value_meta)));
                     }
-                    max_txn_ts = max_txn_ts.max(*txn_ts);
+                    if txn_ts > max_txn_ts {
+                        max_txn_ts = txn_ts;
+                        max_value = value_meta.into();
+                    }
                 }
             }
         }
@@ -42,22 +45,35 @@ impl DB {
             let v = mem.get(key_ts, true);
             #[cfg(feature = "metrics")]
             add_num_memtable_gets(1);
-            if let Some((txn_ts, value_meta)) = v.as_ref() {
+            if let Some((txn_ts, value_meta)) = v {
                 if value_meta.meta().is_empty() && value_meta.value().is_empty() {
                     continue;
                 }
-                if *txn_ts == key_ts.txn_ts() {
+                if txn_ts == key_ts.txn_ts() {
                     #[cfg(feature = "metrics")]
                     add_num_gets_with_result(1);
-                    return Ok(v);
+                    return Ok(Some((txn_ts, value_meta)));
                 }
-                max_txn_ts = max_txn_ts.max(*txn_ts);
+                if txn_ts > max_txn_ts {
+                    max_txn_ts = txn_ts;
+                    max_value = value_meta.into();
+                }
             }
         }
-        // todo!();
-        // let v = ValueStruct::default();
-        // Ok(v)
-        Ok(None)
+        if let Some((txn_ts, value_meta)) = self.level_controller.get(key_ts, 0).await? {
+            if txn_ts == key_ts.txn_ts() {
+                return Ok(Some((txn_ts, value_meta)));
+            }
+            if txn_ts > max_txn_ts {
+                max_txn_ts = txn_ts;
+                max_value = value_meta.into();
+            }
+        };
+        Ok(if max_txn_ts != TxnTs::default() && max_value.is_some() {
+            Some((max_txn_ts, max_value.unwrap()))
+        } else {
+            None
+        })
     }
     pub(crate) async fn get_memtable(&self) -> (Option<Arc<RwLock<MemTable>>>, Vec<Arc<MemTable>>) {
         let mut_memtable = self.memtable.clone();

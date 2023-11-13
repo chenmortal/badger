@@ -5,13 +5,13 @@ use std::{
 };
 
 use crate::{
+    config::Config,
     default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
     errors::DBError,
     key_registry::KeyRegistry,
-    kv::{KeyTs, ValueStruct},
+    kv::KeyTs,
     level::levels::LevelsController,
     memtable::MemTable,
-    config::Config,
     txn::oracle::Oracle,
     util::closer::Closer,
     util::metrics::calculate_size,
@@ -151,10 +151,5 @@ impl DBInner {
             }
             None => Ok(()),
         }
-    }
-    pub(crate) async fn get_value(&self, key_ts: &KeyTs) -> anyhow::Result<ValueStruct> {
-        // todo!();
-        let v = ValueStruct::default();
-        Ok(v)
     }
 }

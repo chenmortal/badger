@@ -1,11 +1,14 @@
 use std::{
+    cmp::Reverse,
     collections::{BinaryHeap, HashMap},
+    ops::Deref,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
 };
 
+use scopeguard::defer;
 use tokio::{
     select,
     sync::{
@@ -16,21 +19,35 @@ use tokio::{
 
 use crate::{kv::TxnTs, util::closer::Closer};
 
+use super::{oracle::Oracle, Txn};
+
+#[derive(Debug, Clone)]
+pub(crate) struct WaterMark(Arc<WaterMarkInner>);
+
+impl Deref for WaterMark {
+    type Target = WaterMarkInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[derive(Debug)]
-pub(crate) struct WaterMark {
-    done_until: Arc<AtomicU64>,
+pub(crate) struct WaterMarkInner {
+    done_until: AtomicU64,
     last_index: AtomicU64,
-    pub(super) sender: Sender<Mark>,
-    // receiver: Receiver<Mark>,
+    sender: Sender<Mark>,
     name: String,
 }
+
 #[derive(Debug, Default)]
 pub(super) struct Mark {
     txn_ts: TxnTs,
     waiter: Option<Arc<Notify>>,
-    indices: Vec<u64>,
+    indices: Vec<TxnTs>,
     done: bool,
 }
+
 impl Mark {
     pub(super) fn new(txn_ts: TxnTs, done: bool) -> Self {
         Self {
@@ -41,30 +58,144 @@ impl Mark {
         }
     }
 }
-// struct Closer {
-//     waiting: Vec<JoinHandle<()>>,
-// }
+
 impl WaterMark {
-    pub(crate) fn new(name: &str, close: Closer) -> Self {
+    pub(crate) fn new(name: &str, closer: Closer) -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel::<Mark>(100);
-        let done_until = Arc::new(AtomicU64::new(0));
-        tokio::spawn(Self::process(close, receiver, done_until.clone()));
-        WaterMark {
-            done_until,
+        let water_mark = WaterMark(Arc::new(WaterMarkInner {
+            done_until: AtomicU64::new(0),
             last_index: AtomicU64::new(0),
-            name: name.to_string(),
             sender,
-            // receiver,
+            name: name.to_owned(),
+        }));
+        tokio::spawn(water_mark.clone().process(closer, receiver));
+        water_mark
+    }
+
+    async fn process(self, closer: Closer, mut receiver: Receiver<Mark>) {
+        defer!(closer.done());
+
+        let mut waiters = HashMap::<TxnTs, Vec<Arc<Notify>>>::new();
+        let mut min_heap = BinaryHeap::<Reverse<TxnTs>>::new();
+        let mut pending = HashMap::<TxnTs, isize>::new();
+
+        let mut process_one =
+            |txn_ts: TxnTs, done: bool, waiters: &mut HashMap<TxnTs, Vec<Arc<Notify>>>| {
+                match pending.get_mut(&txn_ts) {
+                    Some(prev) => {
+                        *prev += if done { 1 } else { -1 };
+                    }
+                    None => {
+                        min_heap.push(Reverse(txn_ts));
+                        pending.insert(txn_ts, if done { 1 } else { -1 });
+                    }
+                };
+                if done {
+                    return;
+                }
+                let done_until = self.done_until();
+                assert!(
+                    done_until <= txn_ts,
+                    "Name: {} done_util: {done_until}. txn_ts:{txn_ts}",
+                    self.name
+                );
+
+                let mut until = done_until;
+
+                while !min_heap.is_empty() {
+                    let min = min_heap.peek().unwrap().0;
+                    if let Some(done) = pending.get(&min) {
+                        if *done < 0 {
+                            break;
+                        }
+                    }
+                    min_heap.pop();
+                    pending.remove(&min);
+                    until = min;
+                }
+
+                if until != done_until {
+                    // self.done_until cheanged only here and one instance, one process task
+                    // so compare_exchange must be ok
+                    assert!(self
+                        .done_until
+                        .compare_exchange(
+                            done_until.to_u64(),
+                            until.to_u64(),
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_ok());
+                }
+                assert!(done_until <= until);
+                if until.to_u64() - done_until.to_u64() <= waiters.len() as u64 {
+                    for idx in done_until.to_u64()..=until.to_u64() {
+                        let txn: TxnTs = idx.into();
+                        if let Some(to_notifies) = waiters.get(&txn) {
+                            to_notifies.iter().for_each(|x| x.notify_one());
+                        };
+                        waiters.remove(&txn);
+                    }
+                } else {
+                    let mut need_remove = Vec::with_capacity(waiters.len());
+                    for (txn, to_notifies) in waiters.iter() {
+                        if *txn <= until {
+                            to_notifies.iter().for_each(|x| x.notify_one());
+                            need_remove.push(*txn);
+                        }
+                    }
+                    need_remove.iter().for_each(|x| {
+                        waiters.remove(x);
+                    });
+                }
+            };
+
+        loop {
+            select! {
+                _=closer.captured()=>{
+                    return ;
+                }
+                Some(mark)=receiver.recv()=>{
+                    match mark.waiter {
+                        Some(notify) => {
+                            if self.done_until() >= mark.txn_ts {
+                                notify.notify_one();
+                            } else {
+                                match waiters.get_mut(&mark.txn_ts) {
+                                    Some(v) => {
+                                        v.push(notify);
+                                    }
+                                    None => {
+                                        waiters.insert(mark.txn_ts, vec![notify]);
+                                    }
+                                };
+                            };
+                        }
+                        None => {
+                            if mark.txn_ts > TxnTs::default() {
+                                process_one(mark.txn_ts, mark.done, &mut waiters);
+                            }
+                            for indice in mark.indices {
+                                process_one(indice, mark.done, &mut waiters);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
+}
+
+impl WaterMarkInner {
     pub(crate) async fn begin(&self, txn_ts: TxnTs) -> anyhow::Result<()> {
         self.last_index.store(txn_ts.to_u64(), Ordering::SeqCst);
         self.sender.send(Mark::new(txn_ts, false)).await?;
         Ok(())
     }
-    pub(crate) async fn wait_for_mark(&self, txn_ts: TxnTs) -> anyhow::Result<()> {
-        //please refer to draw/wait_for_mark.jpg
-        if self.done_until() >= txn_ts {
+    //only for txn_mark
+    pub(crate) async fn wait_for_mark(&self, read_ts: TxnTs) -> anyhow::Result<()> {
+        //please refer to docs/draw/wait_for_mark.jpg
+        if self.done_until() >= read_ts {
             //need to check conflict
             return Ok(());
         }
@@ -73,7 +204,7 @@ impl WaterMark {
         let wait = Arc::new(Notify::new());
         self.sender
             .send(Mark {
-                txn_ts,
+                txn_ts: read_ts,
                 waiter: wait.clone().into(),
                 indices: Vec::new(),
                 done: false,
@@ -83,141 +214,32 @@ impl WaterMark {
         wait.notified().await;
         Ok(())
     }
-    async fn process(
-        // close_sem: Arc<Semaphore>,
-        closer: Closer,
-        mut receiver: Receiver<Mark>,
-        done_util: Arc<AtomicU64>,
-    ) {
-        #[derive(Debug, PartialEq, Eq)]
-        struct RevTxn(TxnTs);
-        impl PartialOrd for RevTxn {
-            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-                other.0.partial_cmp(&self.0)
-            }
-        }
-        impl Ord for RevTxn {
-            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                other.0.cmp(&self.0)
-            }
-        }
-        impl From<TxnTs> for RevTxn {
-            fn from(value: TxnTs) -> Self {
-                RevTxn(value)
-            }
-        }
-        let min_heap = BinaryHeap::<RevTxn>::new();
-        let mut pending = HashMap::<TxnTs, usize>::new();
-        let mut waiters = HashMap::<TxnTs, Vec<Arc<Notify>>>::new();
-
-        let process_one = |txn_ts: TxnTs, done: bool| {
-            // pending.
-        };
-
-        let mut p = |mark: Mark| match mark.waiter {
-            Some(notify) => {
-                if TxnTs::from(done_util.load(Ordering::SeqCst)) >= mark.txn_ts {
-                    notify.notify_one();
-                } else {
-                    match waiters.get_mut(&mark.txn_ts) {
-                        Some(v) => {
-                            v.push(notify);
-                        }
-                        None => {
-                            waiters.insert(mark.txn_ts, vec![notify]);
-                        }
-                    };
-                };
-            }
-            None => if mark.txn_ts > TxnTs::default() {},
-        };
-
-        loop {
-            select! {
-                _=closer.captured()=>{
-                    return ;
-                }
-                Some(mark)=receiver.recv()=>{
-
-                }
-            }
-        }
-    }
     #[inline]
     pub(crate) fn done_until(&self) -> TxnTs {
         self.done_until.load(Ordering::SeqCst).into()
     }
 }
-
-// #[tokio::test]
-// async fn test_a() {
-//     #[derive(Debug, PartialEq, Eq)]
-//     struct RevTxn(TxnTs);
-//     impl PartialOrd for RevTxn {
-//         fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-//             other.0.partial_cmp(&self.0)
-//         }
-//     }
-//     impl Ord for RevTxn {
-//         fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-//             other.0.cmp(&self.0)
-//         }
-//     }
-//     impl From<TxnTs> for RevTxn {
-//         fn from(value: TxnTs) -> Self {
-//             RevTxn(value)
-//         }
-//     }
-//     // let mut a=HashMap::<TxnTs,Vec<u8>>::new();
-//     let mut p = std::collections::BinaryHeap::<RevTxn>::new();
-//     p.push(2.into<TxnTs>().into());
-//     p.push(1.into().into());
-//     p.push(3.into().into());
-//     dbg!(p.peek());
-//     dbg!(p.pop());
-//     dbg!(p.peek());
-//     // p.peek();
-//     // p.pop()
-//     // let (mut sender, mut receiver) = tokio::sync::mpsc::channel::<Mark>(100);
-//     // let h = tokio::spawn(async move {
-//     //     select! {
-//     //         Some(m)=receiver.recv()=>{
-//     //             dbg!(m);
-//     //         }
-//     //     }
-//     // });
-//     // sender.send(Mark::new(TxnTs::default(), true)).await;
-//     // h.await;
-// }
-
-// #[tokio::test]
-// async fn test_b() {
-//     use std::sync::Arc;
-//     use tokio::sync::Barrier;
-//     // tokio::sync::futures::Notified;
-//     let mut handles = Vec::with_capacity(10);
-//     let barrier = Arc::new(Barrier::new(10));
-//     for _ in 0..10 {
-//         let c = barrier.clone();
-//         // The same messages will be printed together.
-//         // You will NOT see any interleaving.
-//         handles.push(tokio::spawn(async move {
-//             println!("before wait");
-//             let wait_result = c.wait().await;
-//             println!("after wait");
-//             wait_result
-//         }));
-//     }
-
-//     // Will not resolve until all "after wait" messages have been printed
-//     let mut num_leaders = 0;
-//     for handle in handles {
-//         let wait_result = handle.await.unwrap();
-//         if wait_result.is_leader() {
-//             num_leaders += 1;
-//         }
-//     }
-
-//     // Exactly one barrier will resolve as the "leader"
-//     assert_eq!(num_leaders, 1);
-// }
+impl Oracle {
+    #[inline]
+    pub(crate) async fn done_commit(&self, commit_ts: TxnTs) -> anyhow::Result<()> {
+        if !self.config().managed_txns {
+            self.txn_mark()
+                .sender
+                .send(Mark::new(commit_ts, true))
+                .await?;
+        }
+        Ok(())
+    }
+    pub(super) async fn done_read(&self, txn: &Txn) -> anyhow::Result<()> {
+        if !txn
+            .done_read()
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.read_mark()
+                .sender
+                .send(Mark::new(txn.read_ts, true))
+                .await?;
+        };
+        Ok(())
+    }
+}

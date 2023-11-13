@@ -8,7 +8,8 @@ use aes_gcm::{Aes128Gcm, Aes256Gcm};
 use aes_gcm_siv::{Aes128GcmSiv, Aes256GcmSiv, Nonce};
 pub type Nonce = GenericArray<u8, U12>;
 use crate::default::DEFAULT_DIR;
-use crate::util::{now_since_unix, secs_to_systime, sys::sync_dir};
+use crate::kv::PhyTs;
+use crate::util::{secs_to_systime, sys::sync_dir};
 use crate::{errors::DBError, pb::badgerpb4::DataKey};
 
 use anyhow::anyhow;
@@ -285,7 +286,7 @@ impl KeyRegistry {
         }
         None
     }
-    
+
     pub(crate) async fn latest_datakey(&self) -> anyhow::Result<Option<DataKey>> {
         let inner_r = self.read().await;
         if inner_r.cipher.is_none() {
@@ -328,7 +329,7 @@ impl KeyRegistry {
             key_id,
             data: key,
             iv: nonce.to_vec(),
-            created_at: now_since_unix().as_secs(),
+            created_at: PhyTs::now().unwrap().to_u64(),
         };
         let mut buf = Vec::new();
         KeyRegistryInner::store_data_key(&mut buf, &inner_w.cipher, &mut data_key)?;

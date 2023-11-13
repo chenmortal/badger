@@ -214,13 +214,6 @@ impl Throttle {
 }
 
 #[inline(always)]
-pub(crate) fn now_since_unix() -> Duration {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-}
-
-#[inline(always)]
 pub(crate) fn secs_to_systime(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_secs(secs))

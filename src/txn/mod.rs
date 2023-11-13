@@ -7,7 +7,6 @@ use std::pin::Pin;
 use std::sync::atomic::Ordering;
 
 use ahash::RandomState;
-use anyhow::anyhow;
 use anyhow::bail;
 use bytes::Bytes;
 use rand::{thread_rng, Rng};
@@ -16,7 +15,8 @@ use crate::kv::Entry;
 use crate::kv::Meta;
 use crate::{db::DB, errors::DBError, kv::KeyTs};
 
-use self::item::{Item, ItemInner, PRE_FETCH_STATUS};
+use self::item::PrefetchStatus;
+use self::item::{Item, ItemInner};
 use std::{
     collections::{HashMap, HashSet},
     sync::atomic::{AtomicBool, AtomicI32},
@@ -25,11 +25,7 @@ use std::{
 use parking_lot::Mutex;
 use tokio::sync::oneshot::Receiver;
 
-use crate::{
-    kv::TxnTs,
-    // options::Options,
-    util::now_since_unix,
-};
+use crate::kv::TxnTs;
 
 /// Prefix for internal keys used by badger.
 const BADGER_PREFIX: &[u8] = b"!badger!";
@@ -70,6 +66,7 @@ impl DB {
         txn.discard().await?;
         result
     }
+    
     pub async fn get_update_txn(&self) -> anyhow::Result<Txn> {
         if self.is_closed() {
             bail!(DBError::DBClosed);
@@ -90,67 +87,63 @@ impl Txn {
             bail!(DBError::DiscardedTxn);
         }
         self.db().is_banned(&key).await?;
-        let mut item_inner = ItemInner::default();
+        let mut item = ItemInner::default();
         if self.update() {
-            match self.pending_writes().as_ref().unwrap().get(key.as_ref()) {
-                Some(e) => {
-                    if e.key().as_ref() == key {
-                        if e.is_deleted() || e.is_expired() {
+            if let Some(pending_writes) = self.pending_writes() {
+                if let Some(entry) = pending_writes.get(key.as_ref()) {
+                    if entry.key().as_ref() == key {
+                        if entry.value_meta().is_deleted_or_expired() {
                             bail!(DBError::KeyNotFound);
                         }
-                        item_inner.meta = e.meta();
-                        item_inner.val = e.value().to_vec();
-                        item_inner.user_meta = e.user_meta();
-                        item_inner.key = key.to_vec();
-                        item_inner.status = PRE_FETCH_STATUS;
-                        item_inner.version = self.read_ts;
-                        item_inner.expires_at = e.expires_at();
-                        return Ok(item_inner.into());
+                        let mut key_ts = entry.key_ts().clone();
+                        key_ts.set_txn_ts(self.read_ts);
+                        item.set_key_ts(key_ts);
+                        item.set_value_meta(entry.value_meta().clone());
+                        item.set_status(PrefetchStatus::Prefetched);
+                        return Ok(item.into());
                     }
-                }
-                None => {}
-            };
+                };
+            }
             let hash = HASH.hash_one(key.clone());
             let mut reads_m = self.read_key_hash().lock();
             reads_m.push(hash);
             drop(reads_m);
         }
-        let seek = KeyTs::new(key.clone(), self.read_ts);
 
-        let value_struct = self
-            .db()
-            .get_value(&seek)
-            .await
-            .map_err(|e| anyhow!("DB::Get key: {:?} for {}", &key, e))?;
-
-        if value_struct.value().is_empty() && value_struct.meta().bits() == 0 {
-            bail!(DBError::KeyNotFound)
-        }
-        if is_deleted_or_expired(value_struct.meta(), value_struct.expires_at()) {
-            bail!(DBError::KeyNotFound)
-        }
-
-        // item_inner.key = key.to_vec();
-        // item_inner.version = value_struct.version();
-        // item_inner.meta = value_struct.meta();
-        // item_inner.user_meta = value_struct.user_meta();
-        // item_inner.vptr = value_struct.value().clone();
-        // item_inner.expires_at = value_struct.expires_at();
-        // item_inner.db = self.db().clone().into();
-        Ok(item_inner.into())
+        let mut seek = KeyTs::new(key.clone(), self.read_ts);
+        let (txn_ts, value_meta) = match self.db().get(&seek).await? {
+            Some((txn_ts, value_meta)) => {
+                if value_meta.value().is_empty() && value_meta.meta().is_empty() {
+                    bail!(DBError::KeyNotFound)
+                }
+                if value_meta.is_deleted_or_expired() {
+                    bail!(DBError::KeyNotFound)
+                }
+                (txn_ts, value_meta)
+            }
+            None => bail!(DBError::KeyNotFound),
+        };
+        seek.set_txn_ts(txn_ts);
+        item.set_key_ts(seek);
+        item.set_value_meta(value_meta);
+        Ok(item.into())
     }
+
     pub async fn set<B: Into<Bytes>>(&mut self, key: B, value: B) -> anyhow::Result<()> {
         self.set_entry(Entry::new(key.into(), value.into())).await
     }
+
     pub async fn delete<B: Into<Bytes>>(&mut self, key: B) -> anyhow::Result<()> {
         let mut e = Entry::default();
         e.set_key(key);
         e.set_meta(Meta::DELETE);
         self.set_entry(e).await
     }
+
     pub async fn set_entry(&mut self, e: Entry) -> anyhow::Result<()> {
         self.modify(e.into()).await
     }
+
     pub async fn commit(&mut self) -> anyhow::Result<()> {
         match self.pending_writes().as_ref() {
             Some(s) => {
@@ -169,6 +162,7 @@ impl Txn {
         result??;
         Ok(())
     }
+
     pub async fn discard(&mut self) -> anyhow::Result<()> {
         if self.discarded() {
             return Ok(());
@@ -206,15 +200,15 @@ impl Default for TxnConfig {
     }
 }
 pub struct Txn {
-    pub(super) read_ts: TxnTs,
-    pub(super) commit_ts: TxnTs,
+    read_ts: TxnTs,
+    commit_ts: TxnTs,
     size: usize,
     count: usize,
     txn_config: TxnConfig,
     db: DB,
     conflict_keys: Option<HashSet<u64>>,
     read_key_hash: Mutex<Vec<u64>>,
-    pending_writes: Option<HashMap<Vec<u8>, Entry>>, // Vec<u8> -> String
+    pending_writes: Option<HashMap<Bytes, Entry>>, // Vec<u8> -> String
     duplicate_writes: Vec<Entry>,
     num_iters: AtomicI32,
     discarded: bool,
@@ -314,7 +308,7 @@ impl Txn {
 
         if let Some(p) = self.pending_writes.as_mut() {
             let new_version = e.version();
-            if let Some(old) = p.insert(e.key().to_vec(), e) {
+            if let Some(old) = p.insert(e.key().clone(), e) {
                 if old.version() != new_version {
                     self.duplicate_writes.push(old);
                 }
@@ -341,6 +335,7 @@ impl Txn {
         }
         Ok(())
     }
+
     pub(super) async fn commit_and_send(
         &mut self,
     ) -> anyhow::Result<(TxnTs, Receiver<anyhow::Result<()>>)> {
@@ -422,7 +417,7 @@ impl Txn {
         self.update
     }
 
-    pub(super) fn pending_writes(&self) -> Option<&HashMap<Vec<u8>, Entry>> {
+    pub(super) fn pending_writes(&self) -> Option<&HashMap<Bytes, Entry>> {
         self.pending_writes.as_ref()
     }
 
@@ -441,16 +436,4 @@ impl Txn {
     pub(super) fn conflict_keys(&self) -> Option<&HashSet<u64>> {
         self.conflict_keys.as_ref()
     }
-}
-
-#[inline]
-pub(super) fn is_deleted_or_expired(meta: Meta, expires_at: u64) -> bool {
-    if meta.contains(Meta::DELETE) {
-        return true;
-    };
-
-    if expires_at == 0 {
-        return false;
-    }
-    expires_at <= now_since_unix().as_secs()
 }

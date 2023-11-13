@@ -21,6 +21,7 @@ use crate::fb::fb::TableIndex;
 use crate::iter::{DoubleEndedSinkIterator, KvDoubleEndedSinkIter};
 use crate::key_registry::NONCE_SIZE;
 use crate::key_registry::{AesCipher, Nonce};
+use crate::kv::KeyTsBorrow;
 use crate::kv::{KeyTs, TxnTs};
 use crate::pb::badgerpb4::{self, Checksum};
 use crate::util::bloom::BloomBorrow;
@@ -395,7 +396,7 @@ impl TableInner {
         Ok(())
     }
     #[cfg(feature = "async_cache")]
-    pub(crate) async fn may_contain_key(&self, key: &KeyTs) -> anyhow::Result<bool> {
+    pub(crate) async fn may_contain_key(&self, key: KeyTsBorrow) -> anyhow::Result<bool> {
         if self.cheap_index.bloom_filter == 0 {
             return Ok(true);
         }
@@ -412,7 +413,7 @@ impl TableInner {
         Ok(may_contain)
     }
     #[cfg(not(feature = "async_cache"))]
-    pub(crate) fn may_contain_key(&self, key: &KeyTs) -> anyhow::Result<bool> {
+    pub(crate) fn may_contain_key(&self, key: KeyTsBorrow) -> anyhow::Result<bool> {
         if self.cheap_index.bloom_filter == 0 {
             return Ok(true);
         }

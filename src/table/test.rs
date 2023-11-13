@@ -1,10 +1,12 @@
 #[cfg(test)]
 mod test_table_iter {
+    use std::time::SystemTime;
+
     use tempfile::TempDir;
 
     use crate::{
         iter::{
-            DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIter, SinkIterator, TestIter,
+            DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIter, SinkIterator, TestIter, KvSeekIter,
         },
         table::{write::TableBuilder, Table, TableConfig},
         test_iter_double_ended, test_iter_next, test_iter_next_back, test_iter_rev_double_ended,
@@ -89,13 +91,34 @@ mod test_table_iter {
         test_iter_rev_rev_next!(iter, len);
         Ok(())
     }
+    #[tokio::test]
+    async fn test_seek() -> anyhow::Result<()> {
+        let tmp_dir = tempfile::tempdir()?;
+        let len = 1_000_000;
+        let split=15_000;
+        let table = generate_instance(&tmp_dir, len).await?;
+        let mut iter = table.iter(false);
+        let mut test_iter = TestIter::new(len);
+        for _ in 0..split {
+            assert!(test_iter.next().unwrap());
+        }
+        let start = SystemTime::now();
+        assert!(iter.seek(test_iter.key().unwrap()).unwrap());
+        let dura=SystemTime::now().duration_since(start).unwrap();
+        dbg!(dura);
+        assert_eq!(iter.key(), test_iter.key());
+        assert_eq!(iter.value(), test_iter.value());
+        // test_iter_rev_rev_next!(iter, len);
+        Ok(())
+    }
 }
 #[cfg(test)]
 mod test_block_iter {
 
     use crate::{
         iter::{
-            DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIter, SinkIterator, TestIter,
+            DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSeekIter, KvSinkIter, SinkIterator,
+            TestIter,
         },
         table::{write::BlockBuilder, Block, BlockInner},
         test_iter_double_ended, test_iter_next, test_iter_next_back, test_iter_rev_double_ended,
@@ -165,5 +188,19 @@ mod test_block_iter {
         let block = generate_instance(len);
         let iter = block.iter();
         test_iter_rev_rev_next!(iter, len);
+    }
+    #[test]
+    fn test_seek() {
+        let len = 1000;
+        let split = 200;
+        let block = generate_instance(len);
+        let mut iter = block.iter();
+        let mut test_iter = TestIter::new(len);
+        for _ in 0..split {
+            assert!(test_iter.next().unwrap());
+        }
+        assert!(iter.seek(test_iter.key().unwrap()).unwrap());
+        assert_eq!(iter.key(), test_iter.key());
+        assert_eq!(iter.value(), test_iter.value());
     }
 }

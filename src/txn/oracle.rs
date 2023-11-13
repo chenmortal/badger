@@ -65,16 +65,7 @@ impl Oracle {
         }
         return self.read_mark.done_until();
     }
-    #[inline]
-    pub(crate) async fn done_commit(&self, commit_ts: TxnTs) -> anyhow::Result<()> {
-        if !self.config.managed_txns {
-            self.txn_mark
-                .sender
-                .send(Mark::new(commit_ts, true))
-                .await?;
-        }
-        Ok(())
-    }
+
     #[inline]
     pub(crate) async fn get_latest_read_ts(&self) -> anyhow::Result<TxnTs> {
         if self.config.managed_txns {
@@ -132,18 +123,7 @@ impl Oracle {
         drop(inner_lock);
         Ok(commit_ts)
     }
-    pub(super) async fn done_read(&self, txn: &Txn) -> anyhow::Result<()> {
-        if !txn
-            .done_read()
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            self.read_mark
-                .sender
-                .send(Mark::new(txn.read_ts, true))
-                .await?;
-        };
-        Ok(())
-    }
+
     fn cleanup_committed_txns(&self, guard: &mut MutexGuard<OracleInner>) {
         if !self.config.detect_conflicts {
             return;
@@ -169,5 +149,13 @@ impl Oracle {
 
     pub(crate) fn config(&self) -> TxnConfig {
         self.config
+    }
+
+    pub(crate) fn txn_mark(&self) -> &WaterMark {
+        &self.txn_mark
+    }
+
+    pub(crate) fn read_mark(&self) -> &WaterMark {
+        &self.read_mark
     }
 }

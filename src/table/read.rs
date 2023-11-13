@@ -406,7 +406,7 @@ impl KvSeekIter for SinkBlockIter {
             }
             let mut key = vec![0u8; header.get_overlap() + header.get_diff()];
             key[..header.get_overlap()].copy_from_slice(&self.base_key[..header.get_overlap()]);
-            key[header.get_overlap()..header.get_diff()]
+            key[header.get_overlap()..]
                 .copy_from_slice(&data[HEADER_SIZE..HEADER_SIZE + header.get_diff()]);
             KeyTsBorrow::cmp(&key, &k)
         });
