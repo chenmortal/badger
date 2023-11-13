@@ -1,8 +1,16 @@
 use std::{ops::Deref, sync::Arc};
 
-use crate::kv::{Meta, PhyTs, TxnTs};
-
-pub(crate) const PRE_FETCH_STATUS: u8 = 1;
+use crate::kv::{KeyTs, ValueMeta};
+#[derive(Debug)]
+pub(crate) enum PrefetchStatus {
+    Prefetched,
+    NoPrefetched,
+}
+impl Default for PrefetchStatus {
+    fn default() -> Self {
+        Self::NoPrefetched
+    }
+}
 #[derive(Debug)]
 pub struct Item(Arc<ItemInner>);
 impl From<ItemInner> for Item {
@@ -19,24 +27,21 @@ impl Deref for Item {
 }
 #[derive(Debug, Default)]
 pub struct ItemInner {
-    pub(crate) key: Vec<u8>,
-    pub(crate) vptr: Vec<u8>,
-    pub(crate) val: Vec<u8>,
-    pub(crate) version: TxnTs,
-    pub(crate) expires_at: PhyTs,
-    pub(crate) meta: Meta,
-    pub(crate) user_meta: u8,
-    pub(crate) status: u8,
-    // pub(crate) db: Option<DB>,
-    // pub(crate) next: Option<Item>,
+    key_ts: KeyTs,
+    value_meta: ValueMeta,
+    status: PrefetchStatus,
 }
 
 impl ItemInner {
-    pub fn version(&self) -> TxnTs {
-        self.version
+    pub fn set_key_ts(&mut self, key_ts: KeyTs) {
+        self.key_ts = key_ts;
     }
 
-    pub fn meta(&self) -> Meta {
-        self.meta
+    pub fn set_value_meta(&mut self, value_meta: ValueMeta) {
+        self.value_meta = value_meta;
+    }
+
+    pub fn set_status(&mut self, status: PrefetchStatus) {
+        self.status = status;
     }
 }

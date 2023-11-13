@@ -29,17 +29,15 @@ pub(crate) struct MemTable {
     read_only: bool,
 }
 #[derive(Debug, Clone)]
-pub struct MemTableBuilder {
+pub struct MemTableConfig {
     dir: PathBuf,
     read_only: bool,
     memtable_size: usize,
     arena_size: usize,
-    // max_batch_size: usize,
-    // max_batch_count: usize,
     num_memtables: usize,
     next_fid: Arc<AtomicU32>,
 }
-impl Default for MemTableBuilder {
+impl Default for MemTableConfig {
     fn default() -> Self {
         let mem_table_builder = Self {
             dir: PathBuf::from(DEFAULT_DIR),
@@ -53,7 +51,7 @@ impl Default for MemTableBuilder {
     }
 }
 
-impl MemTableBuilder {
+impl MemTableConfig {
     pub(crate) async fn open_many(
         &self,
         key_registry: &KeyRegistry,
@@ -129,9 +127,6 @@ impl MemTableBuilder {
         }
         Ok(memtable)
     }
-    // fn arena_size(&self) -> usize {
-    //     self.memtable_size + self.max_batch_size + self.max_batch_count * SKL_MAX_NODE_SIZE
-    // }
 
     pub fn set_dir(&mut self, dir: PathBuf) {
         self.dir = dir;

@@ -1,12 +1,13 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use integer_encoding::VarInt;
-// use serde::{Deserialize, Serialize};
-use std::{mem, ops::Deref};
-
-use crate::{
-    util::{now_since_unix, DBFileId, VlogId},
-    vlog::header::VlogEntryHeader,
+use std::{
+    fmt::Display,
+    mem,
+    ops::{Deref, Sub},
+    time::{SystemTime, SystemTimeError},
 };
+
+use crate::vlog::header::VlogEntryHeader;
 
 #[derive(Debug, Default, Clone)]
 pub struct Entry {
@@ -145,7 +146,7 @@ impl Entry {
         if self.expires_at() == PhyTs::default() {
             return false;
         }
-        self.expires_at() <= now_since_unix().as_secs().into()
+        self.expires_at() <= PhyTs::now().unwrap()
     }
     pub(crate) fn try_set_value_threshold(&mut self, threshold: usize) {
         if self.value_threshold == 0 {
@@ -174,12 +175,17 @@ impl TxnTs {
         self.0
     }
 }
-
+impl Display for TxnTs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("TxnTs:{}", self.0))
+    }
+}
 impl From<u64> for TxnTs {
     fn from(value: u64) -> Self {
         Self(value)
     }
 }
+
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct PhyTs(u64);
 impl From<u64> for PhyTs {
@@ -187,10 +193,20 @@ impl From<u64> for PhyTs {
         Self(value)
     }
 }
+impl Into<u64> for PhyTs {
+    fn into(self) -> u64 {
+        self.0
+    }
+}
 impl PhyTs {
-    #[inline(always)]
     pub(crate) fn to_u64(&self) -> u64 {
         self.0
+    }
+    pub(crate) fn now() -> Result<Self, SystemTimeError> {
+        Ok(SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_secs()
+            .into())
     }
 }
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
@@ -327,6 +343,15 @@ impl KeyTsBorrow<'_> {
             left.cmp(right)
         }
     }
+    pub(crate) fn equal_key(left: &[u8], right: &[u8]) -> bool {
+        if left.len() > 8 && right.len() > 8 {
+            let left_split = left.len() - 8;
+            let right_split = right.len() - 8;
+            left[..left_split] == right[..right_split]
+        } else {
+            left == right
+        }
+    }
 }
 impl<'a> From<&'a [u8]> for KeyTsBorrow<'a> {
     fn from(value: &'a [u8]) -> Self {
@@ -335,6 +360,11 @@ impl<'a> From<&'a [u8]> for KeyTsBorrow<'a> {
 }
 impl<'a> AsRef<[u8]> for KeyTsBorrow<'a> {
     fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+impl<'a> Into<&'a [u8]> for KeyTsBorrow<'a> {
+    fn into(self) -> &'a [u8] {
         &self.0
     }
 }
@@ -368,11 +398,14 @@ pub(crate) struct ValueMeta {
     user_meta: u8,
     meta: Meta,
 }
-
+lazy_static! {
+    static ref VALUEMETA_MIN_SERIALIZED_SIZE: usize = ValueMeta::default().serialized_size();
+}
 impl ValueMeta {
     pub(crate) fn serialized_size(&self) -> usize {
         2 + self.expires_at.0.required_space() + self.value.len()
     }
+
     pub(crate) fn serialize(&self) -> Vec<u8> {
         let mut v = vec![0u8; self.serialized_size()];
         v[0] = self.user_meta;
@@ -381,14 +414,21 @@ impl ValueMeta {
         v[2 + p..].copy_from_slice(self.value());
         v
     }
-    pub(crate) fn deserialize(data: &[u8]) -> Self {
-        let (expires_at, size) = unsafe { u64::decode_var(&data[2..]).unwrap_unchecked() };
-        Self {
-            value: data[2 + size..].to_vec().into(),
-            expires_at: expires_at.into(),
-            user_meta: data[0],
-            meta: Meta(data[1]),
+
+    pub(crate) fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < VALUEMETA_MIN_SERIALIZED_SIZE.to_owned() {
+            return None;
         }
+        if let Some((expires_at, size)) = u64::decode_var(&data[2..]) {
+            return Self {
+                value: data[2 + size..].to_vec().into(),
+                expires_at: expires_at.into(),
+                user_meta: data[0],
+                meta: Meta(data[1]),
+            }
+            .into();
+        }
+        None
     }
 
     pub(crate) fn meta(&self) -> Meta {
@@ -398,15 +438,21 @@ impl ValueMeta {
     pub(crate) fn value(&self) -> &Bytes {
         &self.value
     }
+
+    pub(crate) fn set_value(&mut self, value: Bytes) {
+        self.value = value;
+    }
+    pub(crate) fn is_deleted_or_expired(&self) -> bool {
+        if self.meta.contains(Meta::DELETE) {
+            return true;
+        };
+        if self.expires_at == PhyTs::default() {
+            return false;
+        }
+        self.expires_at <= PhyTs::now().unwrap()
+    }
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct ValueInner {
-    meta: Meta,
-    user_meta: u8,
-    expires_at: u64,
-    value: Vec<u8>,
-}
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ValuePointer {
     fid: u32,
@@ -449,36 +495,12 @@ impl ValuePointer {
         self.len
     }
 }
-#[derive(Debug, Default)]
-pub(crate) struct ValueStruct {
-    inner: ValueInner,
-    version: TxnTs,
-}
-impl ValueStruct {
-    // fn encode(&self) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
-    //     DefaultOptions::new()
-    //         .with_varint_encoding()
-    //         .serialize(&self.inner)
-    // }
-    pub(crate) fn value(&self) -> &Vec<u8> {
-        &self.inner.value
-    }
-    pub(crate) fn meta(&self) -> Meta {
-        self.inner.meta
-    }
-    pub(crate) fn user_meta(&self) -> u8 {
-        self.inner.user_meta
-    }
-    pub(crate) fn expires_at(&self) -> u64 {
-        self.inner.expires_at
-    }
-    pub(crate) fn version(&self) -> TxnTs {
-        self.version
-    }
-}
+
 #[cfg(test)]
 mod tests {
     use std::cmp::Ordering;
+
+    use bytes::Bytes;
 
     use crate::kv::{KeyTsBorrow, Meta, ValueMeta};
 
@@ -514,11 +536,29 @@ mod tests {
         v.expires_at = 123456789.into();
         v.meta = Meta(1);
         assert_eq!(v.serialized_size(), 9);
-        assert_eq!(v, ValueMeta::deserialize(&v.serialize()));
+        assert_eq!(v, ValueMeta::deserialize(&v.serialize()).unwrap());
+    }
+    #[test]
+    fn test_empty() {
+        let mut v = ValueMeta::default();
+        v.value = Bytes::from("");
+        dbg!(v.serialized_size());
+        // let mut v = ValueMeta::default().serialized_size();
+
+        // dbg!(v);
     }
     #[test]
     fn test_meta() {
         assert!(Meta(0).is_empty());
         assert!(!Meta(1).is_empty())
+    }
+    #[test]
+    fn test_equal_key() {
+        let a = KeyTs::new(b"a".as_ref().into(), 1.into()).serialize();
+        let a_clone = KeyTs::new(b"a".as_ref().into(), 1.into()).serialize();
+        assert!(KeyTsBorrow::equal_key(&a, &a_clone));
+
+        let b = KeyTs::new(b"ab".as_ref().into(), 1.into()).serialize();
+        assert!(!KeyTsBorrow::equal_key(&a, &b));
     }
 }

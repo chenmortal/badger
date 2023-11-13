@@ -4,12 +4,7 @@ use log::error;
 use scopeguard::defer;
 
 use crate::{
-    db::DB,
-    memtable::MemTable,
-    options::Options,
-    table::{opt::TableOption, write::TableBuilder},
-    util::closer::Closer,
-    util::DBFileId,
+    db::DB, memtable::MemTable, table::write::TableBuilder, util::closer::Closer, util::DBFileId,
 };
 
 impl DB {
@@ -41,18 +36,24 @@ impl DB {
         memtable: Arc<MemTable>,
         drop_prefixed: Vec<&[u8]>,
     ) -> anyhow::Result<()> {
-        let table_opt =
-            TableOption::new(&self.key_registry, &self.block_cache, &self.index_cache).await;
+        let cipher = self.key_registry.latest_cipher().await;
+        let table_opt = self.opt.table.clone();
         let skip_list_iter = memtable.skip_list.iter();
         let mut table_builder =
-            TableBuilder::build_l0_table(skip_list_iter, Vec::new(), table_opt)?;
+            TableBuilder::build_l0_table(skip_list_iter, Vec::new(), table_opt, cipher)?;
         if table_builder.is_empty() {
             let _ = table_builder.finish().await;
             return Ok(());
         }
         let file_id = self.level_controller.get_reserve_file_id();
-        let file_path = file_id.join_dir(Options::dir());
-        let table = table_builder.build(file_path).await?;
+        let file_path = file_id.join_dir(self.opt.level_controller.dir());
+        let table = table_builder
+            .build(
+                file_path,
+                self.index_cache.clone(),
+                self.block_cache.clone(),
+            )
+            .await?;
         // todo!();
         Ok(())
     }

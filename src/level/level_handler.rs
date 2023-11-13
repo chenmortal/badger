@@ -9,7 +9,7 @@ use crate::{table::Table, util::compare_key};
 
 use super::compaction::KeyRange;
 #[derive(Debug, Clone)]
-pub(crate) struct LevelHandler(pub(crate) Arc<LevelHandlerInner>);
+pub(crate) struct LevelHandler(Arc<LevelHandlerInner>);
 impl Deref for LevelHandler {
     type Target = Arc<LevelHandlerInner>;
 
@@ -19,8 +19,14 @@ impl Deref for LevelHandler {
 }
 #[derive(Debug)]
 pub(crate) struct LevelHandlerInner {
-    pub(crate) handler_tables: RwLock<LevelHandlerTables>,
+    handler_tables: RwLock<LevelHandlerTables>,
     level: usize,
+}
+
+impl LevelHandlerInner {
+    pub(crate) fn level(&self) -> usize {
+        self.level
+    }
 }
 impl Deref for LevelHandlerInner {
     type Target = RwLock<LevelHandlerTables>;
@@ -74,7 +80,7 @@ impl LevelHandler {
         inner_w.total_stale_size=total_stale_size;
 
         if self.0.level == 0 {
-            inner_w.tables.sort_by(|a, b| a.id().cmp(&b.id()));
+            inner_w.tables.sort_by(|a, b| a.table_id().cmp(&b.table_id()));
         } else {
             inner_w
                 .tables
@@ -91,30 +97,28 @@ impl LevelHandler {
         for j in 1..num_tables {
             let pre = &inner_r.tables[j - 1];
             let now = &inner_r.tables[j];
-            let pre_biggest_r = pre.0.biggest.read().await;
+            let pre_biggest = pre.biggest();
 
-            if compare_key(&pre_biggest_r, now.smallest()).is_ge() {
+            if compare_key(&pre_biggest, now.smallest()).is_ge() {
                 let e = anyhow!(
                     "Inter: Biggest(j-1)[{:?}] 
 {:?}
 vs Smallest(j)[{:?}]: 
 {:?}
 : level={} j={} num_tables={}",
-                    pre.id(),
-                    pre_biggest_r.as_slice(),
-                    now.id(),
+                    pre.table_id(),
+                    pre_biggest,
+                    now.table_id(),
                     now.smallest(),
                     self.0.level,
                     j,
                     num_tables
                 );
-                drop(pre_biggest_r);
                 return Err(e);
             };
-            drop(pre_biggest_r);
 
-            let now_biggest_r = now.0.biggest.read().await;
-            if compare_key(now.smallest(), &now_biggest_r).is_gt() {
+            let now_biggest = now.biggest();
+            if compare_key(now.smallest(), &now_biggest).is_gt() {
                 let e = anyhow!(
                     "Intra:
 {:?}
@@ -122,15 +126,13 @@ vs
 {:?}
 : level={} j={} num_tables={}",
                     now.smallest(),
-                    now_biggest_r.as_slice(),
+                    now_biggest,
                     self.0.level,
                     j,
                     num_tables
                 );
-                drop(now_biggest_r);
                 return Err(e);
             };
-            drop(now_biggest_r);
         }
         Ok(())
     }
@@ -199,10 +201,9 @@ async fn binary_search_biggest(tables: &Vec<Table>, value: &[u8]) -> Result<usiz
         // `size/2 < size`. Thus `left + size/2 < left + size`, which
         // coupled with the `left + size <= self.len()` invariant means
         // we have `left + size/2 < self.len()`, and this is in-bounds.
-        let mid_r = unsafe { tables.get_unchecked(mid) }.0.biggest.read().await;
+        let mid_r = unsafe { tables.get_unchecked(mid) }.biggest();
         let mid_slice: &[u8] = mid_r.as_ref();
         let cmp = compare_key(mid_slice, value);
-        drop(mid_r);
 
         // The reason why we use if/else control flow rather than match
         // is because match reorders comparison operations, which is perf sensitive.

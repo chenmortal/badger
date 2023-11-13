@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use anyhow::bail;
 
-use crate::options::CompressionType;
+use crate::config::CompressionType;
 
 use self::badgerpb4::{manifest_change::Operation, Checksum, EncryptionAlgo, ManifestChange};
 use crate::pb::badgerpb4::checksum::Algorithm;
@@ -24,7 +24,6 @@ impl ManifestChange {
         }
     }
 }
-pub(crate) const ERR_CHECKSUM_MISMATCH: &str = "CHECKSUM_MISMATCH";
 impl Algorithm {
     pub(crate) fn calculate(&self, data: &[u8]) -> u64 {
         match self {

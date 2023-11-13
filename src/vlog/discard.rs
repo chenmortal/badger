@@ -1,8 +1,8 @@
-use crate::{util::mmap::MmapFile, options::Options};
+use crate::util::mmap::MmapFile;
 use bytes::Buf;
 use log::info;
 // use core::slice::SlicePattern;
-use std::{fs::OpenOptions, sync::Arc};
+use std::{fs::OpenOptions, sync::Arc, path::PathBuf};
 use tokio::sync::Mutex;
 const DISCARD_FILE_NAME: &str = "DISCARD";
 const DISCARD_FILE_SIZE: usize = 1 << 20; //1MB
@@ -15,13 +15,13 @@ struct DiscardStatsInner {
     next_empty_slot: usize,
 }
 impl DiscardStats {
-    pub(crate) fn new() -> anyhow::Result<Self> {
-        Ok(Self(Arc::new(Mutex::new(DiscardStatsInner::new()?))))
+    pub(crate) fn new(vlog_dir:&PathBuf) -> anyhow::Result<Self> {
+        Ok(Self(Arc::new(Mutex::new(DiscardStatsInner::new(vlog_dir)?))))
     }
 }
 impl DiscardStatsInner {
-    fn new() -> anyhow::Result<Self> {
-        let file_path = Options::value_dir().join(DISCARD_FILE_NAME);
+    fn new(vlog_dir:&PathBuf) -> anyhow::Result<Self> {
+        let file_path = vlog_dir.join(DISCARD_FILE_NAME);
         let mut fp_open_opt = OpenOptions::new();
         fp_open_opt.read(true).write(true).create(true);
 

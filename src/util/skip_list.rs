@@ -2,10 +2,10 @@ use rand::Rng;
 
 use crate::{
     iter::{
-        DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIterator,
-        SinkIter, SinkIterator,
+        DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSeekIter,
+        KvSinkIter, SinkIter, SinkIterator,
     },
-    kv::ValueMeta,
+    kv::{KeyTsBorrow, ValueMeta},
     util::arena::Arena,
 };
 
@@ -14,7 +14,7 @@ use crate::{
 /// <head> ----------> [2] ------------------------------------[7] ----------> [9] ---------->
 /// <head> ----------> [2] --------------------------------------------------> [9] ---------->
 use std::{
-    mem::{replace, size_of},
+    mem::size_of,
     ops::{Deref, DerefMut},
     ptr::Unique,
     sync::{
@@ -470,9 +470,7 @@ impl SkipList {
 pub(crate) struct SkipListIter<'a> {
     inner: &'a SkipListInner,
     node: Option<&'a Node>,
-    value: Option<ValueMeta>,
     node_back: Option<&'a Node>,
-    value_back: Option<ValueMeta>,
 }
 impl<'a> SkipListIter<'a> {
     fn new(inner: &'a SkipListInner) -> Self {
@@ -482,8 +480,6 @@ impl<'a> SkipListIter<'a> {
             inner,
             node,
             node_back,
-            value: None,
-            value_back: None,
         }
     }
 }
@@ -543,88 +539,71 @@ impl<'a> DoubleEndedSinkIterator for SkipListIter<'a> {
         Ok(false)
     }
 }
-impl<'a> KvSinkIterator<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
-    fn key(&self) -> Option<&'a [u8]> {
+impl<'a> KvSinkIter<ValueMeta> for SkipListIter<'a> {
+    fn key(&self) -> Option<KeyTsBorrow<'_>> {
         if let Some(item) = self.item() {
-            item.get_key(&self.inner.arena)
+            item.get_key(&self.inner.arena).and_then(|x| Some(x.into()))
         } else {
             None
         }
     }
 
-    fn value_ref(&mut self) -> Option<&ValueMeta> {
-        if let None = self.value {
-            if let Some(item) = self.item() {
-                if let Some(data) = item.get_value(&self.inner.arena) {
-                    self.value = ValueMeta::deserialize(data).into();
-                }
+    fn value(&self) -> Option<ValueMeta> {
+        if let Some(item) = self.item() {
+            if let Some(data) = item.get_value(&self.inner.arena) {
+                return ValueMeta::deserialize(data).into();
             }
-        }
-        self.value.as_ref()
-    }
-
-    fn take_value(&mut self) -> Option<ValueMeta> {
-        if let None = self.value {
-            if let Some(item) = self.item() {
-                if let Some(data) = item.get_value(&self.inner.arena) {
-                    return ValueMeta::deserialize(data).into();
-                }
-            }
-        } else {
-            return replace(&mut self.value, None);
         }
         None
     }
 }
-impl<'a> KvDoubleEndedSinkIter<'a, &'a [u8], ValueMeta> for SkipListIter<'a> {
-    fn key_back(&self) -> Option<&'a [u8]> {
+impl<'a> KvDoubleEndedSinkIter<ValueMeta> for SkipListIter<'a> {
+    fn key_back(&self) -> Option<KeyTsBorrow<'_>> {
         if let Some(item) = self.item_back() {
-            item.get_key(&self.inner.arena)
+            item.get_key(&self.inner.arena).and_then(|x| Some(x.into()))
         } else {
             None
         }
     }
 
-    fn value_back_ref(&mut self) -> Option<&ValueMeta> {
-        if let None = self.value {
-            if let Some(item) = self.item_back() {
-                if let Some(data) = item.get_value(&self.inner.arena) {
-                    self.value = ValueMeta::deserialize(data).into();
-                }
+    fn value_back(&self) -> Option<ValueMeta> {
+        if let Some(item) = self.item_back() {
+            if let Some(data) = item.get_value(&self.inner.arena) {
+                return ValueMeta::deserialize(data).into();
             }
-        }
-        self.value.as_ref()
-    }
-
-    fn take_value_back(&mut self) -> Option<ValueMeta> {
-        if let None = self.value {
-            if let Some(item) = self.item_back() {
-                if let Some(data) = item.get_value(&self.inner.arena) {
-                    return ValueMeta::deserialize(data).into();
-                }
-            }
-        } else {
-            return replace(&mut self.value, None);
         }
         None
     }
 }
-
+impl<'a> KvSeekIter for SkipListIter<'a> {
+    fn seek(&mut self, k: KeyTsBorrow<'_>) -> anyhow::Result<bool> {
+        let node = self.inner.find_or_near(k.as_ref(), true);
+        return Ok(if node.is_some() {
+            self.node = node;
+            true
+        } else {
+            false
+        });
+    }
+}
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, mem::size_of, time::SystemTime};
+    use std::{mem::size_of, time::SystemTime};
 
+    use bytes::Buf;
     use rand::Rng;
 
     use crate::{
         iter::{
-            DoubleEndedSinkIter, DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSinkIterator,
-            SinkIter, SinkIterator,
+            DoubleEndedSinkIterator, KvDoubleEndedSinkIter, KvSeekIter, KvSinkIter, SinkIterator,
+            TestIter,
         },
         kv::KeyTsBorrow,
+        test_iter_double_ended, test_iter_next, test_iter_next_back, test_iter_rev_double_ended,
+        test_iter_rev_next, test_iter_rev_next_back, test_iter_rev_rev_next,
     };
 
-    use super::{Node, SkipList, SkipListIter, RANDOM_HEIGHT_DENOMINATOR, RANDOM_HEIGHT_NUMERATOR};
+    use super::{Node, SkipList, RANDOM_HEIGHT_DENOMINATOR, RANDOM_HEIGHT_NUMERATOR};
     #[test]
     fn test_random() {
         let mut rng = rand::thread_rng();
@@ -645,145 +624,100 @@ mod tests {
             two_decimal(RANDOM_HEIGHT_NUMERATOR, RANDOM_HEIGHT_DENOMINATOR)
         )
     }
+    fn generate_instance(len: usize) -> SkipList {
+        let mut iter = TestIter::new(len);
+        //key and value have 8 bytes,but align is 8 bytes,so actually write 8 bytes
+        let arena_size = (size_of::<Node>() + (8 * 2) * 2) * (len + 1);
+        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
+        while iter.next().unwrap() {
+            skip_list.push(
+                iter.key().unwrap().as_ref(),
+                &iter.value().unwrap().serialize(),
+            );
+        }
+        skip_list
+    }
     #[test]
     fn test_iter_next() {
-        let end = 1000;
-        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
-            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
-        }
-        let mut iter = SkipListIter::new(&skip_list);
-        assert!(iter.item().is_none());
-        for i in 0..end {
-            assert!(iter.next().unwrap());
-            assert_eq!(iter.key().unwrap(), i.to_be_bytes());
-        }
-        assert_eq!(iter.next().unwrap(), false);
+        let len = 1000;
+        let skip_list = generate_instance(len);
+        let mut iter = skip_list.iter();
+        test_iter_next!(iter, len);
     }
 
     #[test]
     fn test_iter_next_back() {
-        let end = 1000;
-        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
-            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
-        }
-        let mut iter = SkipListIter::new(&skip_list);
-        assert!(iter.item_back().is_none());
-        for i in (0..end).rev() {
-            assert!(iter.next_back().unwrap());
-            assert_eq!(iter.key_back().unwrap(), i.to_be_bytes())
-        }
-        assert_eq!(iter.next_back().unwrap(), false);
+        let len = 1000;
+        let skip_list = generate_instance(len);
+        let mut iter = skip_list.iter();
+        test_iter_next_back!(iter, len);
     }
     #[test]
     fn test_iter_double_ended() {
-        let end = 1000;
+        let len = 1000;
         let split = 500;
-        assert!(split < end);
-        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
-            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
-        }
-        let mut iter = SkipListIter::new(&skip_list);
-        for i in 0..split {
-            assert!(iter.next().unwrap());
-            assert_eq!(iter.key().unwrap(), i.to_be_bytes());
-        }
-        for i in (split..end).rev() {
-            assert!(iter.next_back().unwrap());
-            assert_eq!(iter.key_back().unwrap(), i.to_be_bytes());
-        }
-        assert_eq!(iter.next().unwrap(), false);
-        assert_eq!(iter.next_back().unwrap(), false);
+        let skip_list = generate_instance(len);
+        let mut iter = skip_list.iter();
+        test_iter_double_ended!(iter, len, split);
     }
     #[test]
     fn test_iter_rev_next() {
-        let end = 1000;
-
-        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
-            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
-        }
-        let iter = SkipListIter::new(&skip_list);
-        let mut iter_rev = iter.rev();
-
-        assert!(iter_rev.item().is_none());
-        for i in (0..end).rev() {
-            assert!(iter_rev.next().unwrap());
-            assert_eq!(iter_rev.key().unwrap(), i.to_be_bytes());
-        }
-        assert_eq!(iter_rev.next().unwrap(), false);
+        let len = 1000;
+        let skip_list = generate_instance(len);
+        let iter = skip_list.iter();
+        test_iter_rev_next!(iter, len);
     }
     #[test]
     fn test_iter_rev_next_back() {
-        let end = 1000;
-
-        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
-            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
-        }
-        let iter = SkipListIter::new(&skip_list);
-        let mut iter_rev = iter.rev();
-
-        assert!(iter_rev.item().is_none());
-        for i in 0..end {
-            assert!(iter_rev.next_back().unwrap());
-            assert_eq!(iter_rev.key_back().unwrap(), i.to_be_bytes());
-        }
-        assert_eq!(iter_rev.next_back().unwrap(), false);
+        let len = 1000;
+        let skip_list = generate_instance(len);
+        let iter = skip_list.iter();
+        test_iter_rev_next_back!(iter, len);
     }
     #[test]
     fn test_iter_rev_double_ended() {
-        let end = 1000;
+        let len = 1000;
         let split = 500;
-        assert!(split < end);
-        //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
-        let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
-            skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
-        }
-        let iter = SkipListIter::new(&skip_list);
-        let mut iter_rev = iter.rev();
-        for i in 0..split {
-            assert!(iter_rev.next_back().unwrap());
-            assert_eq!(iter_rev.key_back().unwrap(), i.to_be_bytes());
-        }
-        for i in (split..end).rev() {
-            assert!(iter_rev.next().unwrap());
-            assert_eq!(iter_rev.key().unwrap(), i.to_be_bytes());
-        }
-        assert_eq!(iter_rev.next().unwrap(), false);
-        assert_eq!(iter_rev.next_back().unwrap(), false);
+        let skip_list = generate_instance(len);
+        let iter = skip_list.iter();
+        test_iter_rev_double_ended!(iter, len, split);
     }
     #[test]
     fn test_iter_rev_rev() {
+        let len = 1000;
+        let skip_list = generate_instance(len);
+        let iter = skip_list.iter();
+        test_iter_rev_rev_next!(iter, len);
+    }
+    #[test]
+    fn test_seek() {
         let end = 1000;
         //key and value only have 4 bytes,but align is 8 bytes,so actually write 8 bytes
-        let arena_size = (size_of::<Node>() + 8 * 2) * (end + 1);
+        let arena_size = (size_of::<Node>() + 16 * 2) * (end + 1);
         let skip_list = SkipList::new(arena_size, KeyTsBorrow::cmp);
-        for i in 0..end {
+        for i in 3..end {
             skip_list.push(i.to_be_bytes().as_ref(), i.to_be_bytes().as_ref());
         }
-        let iter = SkipListIter::new(&skip_list);
-        let mut iter = iter.rev().rev();
-        assert!(iter.item().is_none());
-        for i in 0..end {
-            assert!(iter.next().unwrap());
-            assert_eq!(iter.key().unwrap(), i.to_be_bytes());
-        }
-        assert_eq!(iter.next().unwrap(), false);
+        let mut iter = skip_list.iter();
+
+        assert!(iter.seek(0usize.to_be_bytes().as_ref().into()).unwrap());
+        assert_eq!(iter.key().unwrap().as_ref().get_u64(), 3);
+
+        assert!(iter.seek(2usize.to_be_bytes().as_ref().into()).unwrap());
+        assert_eq!(iter.key().unwrap().as_ref().get_u64(), 3);
+
+        assert!(iter.seek(3usize.to_be_bytes().as_ref().into()).unwrap());
+        assert_eq!(iter.key().unwrap().as_ref().get_u64(), 3);
+
+        assert!(iter.seek(4usize.to_be_bytes().as_ref().into()).unwrap());
+        assert_eq!(iter.key().unwrap().as_ref().get_u64(), 4);
+
+        assert!(iter.seek(999usize.to_be_bytes().as_ref().into()).unwrap());
+        assert_eq!(iter.key().unwrap().as_ref().get_u64(), 999);
+
+        assert!(!iter.seek(1000usize.to_be_bytes().as_ref().into()).unwrap());
+
+        assert!(!iter.seek(1001usize.to_be_bytes().as_ref().into()).unwrap());
     }
     struct SkipListLevelIter {
         skip_list: SkipList,

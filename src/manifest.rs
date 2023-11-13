@@ -14,7 +14,7 @@ use prost::Message;
 use crate::{
     default::{DEFAULT_DIR, MANIFEST_FILE_NAME, MANIFEST_REWRITE_FILE_NAME},
     errors::err_file,
-    options::CompressionType,
+    config::CompressionType,
     pb::badgerpb4::{manifest_change, ManifestChange, ManifestChangeSet},
     util::{sys::sync_dir, SSTableId},
 };
@@ -41,14 +41,14 @@ pub(crate) struct ManifestFile {
     pub(crate) manifest: Arc<Mutex<Manifest>>,
 }
 #[derive(Debug, Clone)]
-pub struct ManifestBuilder {
+pub struct ManifestConfig {
     dir: PathBuf,
     read_only: bool,
     // Magic version used by the application using badger to ensure that it doesn't open the DB
     // with incompatible data format.
     external_magic_version: u16,
 }
-impl Default for ManifestBuilder {
+impl Default for ManifestConfig {
     fn default() -> Self {
         Self {
             dir: PathBuf::from(DEFAULT_DIR),
@@ -57,7 +57,7 @@ impl Default for ManifestBuilder {
         }
     }
 }
-impl ManifestBuilder {
+impl ManifestConfig {
     pub fn set_dir(&mut self, dir: PathBuf) {
         self.dir = dir;
     }
@@ -71,7 +71,7 @@ impl ManifestBuilder {
     pub(crate) fn set_read_only(&mut self, read_only: bool) {
         self.read_only = read_only;
     }
-    pub(crate) fn build(&self) -> anyhow::Result<ManifestFile> {
+    pub(crate) fn open(&self) -> anyhow::Result<ManifestFile> {
         let path = self.dir.join(MANIFEST_FILE_NAME);
         match OpenOptions::new()
             .read(true)

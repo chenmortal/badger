@@ -10,10 +10,11 @@ impl MemTable {
             .and_then(|(k, v)| {
                 let key: KeyTsBorrow = k.into();
                 if key.key() == key_ts.key() {
-                    Some((key.txn_ts(), ValueMeta::deserialize(v)))
-                } else {
-                    None
+                    if let Some(value_meta) = ValueMeta::deserialize(v) {
+                        return Some((key.txn_ts(), value_meta));
+                    }
                 }
+                None
             })
     }
 }

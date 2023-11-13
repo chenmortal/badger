@@ -17,7 +17,7 @@ pub(crate) struct DBLockGuard {
     lock_guards: Vec<DirLockGuard>,
 }
 #[derive(Debug, Clone)]
-pub struct DBLockGuardBuilder {
+pub struct DBLockGuardConfig {
     dirs: HashSet<PathBuf>,
     // BypassLockGuard will bypass the lock guard on badger. Bypassing lock
     // guard can cause data corruption if multiple badger instances are using
@@ -25,7 +25,7 @@ pub struct DBLockGuardBuilder {
     bypass_lock_guard: bool,
     read_only: bool,
 }
-impl Default for DBLockGuardBuilder {
+impl Default for DBLockGuardConfig {
     fn default() -> Self {
         Self {
             dirs: Default::default(),
@@ -34,7 +34,7 @@ impl Default for DBLockGuardBuilder {
         }
     }
 }
-impl DBLockGuardBuilder {
+impl DBLockGuardConfig {
     pub(crate) fn try_build(&self) -> anyhow::Result<Option<DBLockGuard>> {
         if !self.bypass_lock_guard {
             let mut lock_guards = Vec::with_capacity(self.dirs.len());

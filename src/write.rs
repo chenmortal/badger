@@ -14,7 +14,6 @@ use crate::{
     default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
     errors::DBError,
     kv::{Entry, Meta, ValuePointer},
-    options::Options,
     util::closer::Closer,
 };
 use anyhow::anyhow;
@@ -108,7 +107,7 @@ impl DB {
         }
         let req_len = Arc::new(AtomicUsize::new(0));
         #[cfg(feature = "metrics")]
-        set_pending_writes(Options::dir().clone(), req_len.clone()).await;
+        set_pending_writes(self.opt.memtable.dir().clone(), req_len.clone()).await;
         loop {
             select! {
                 Some(write_req)=recv_write_req.recv()=>{
@@ -205,17 +204,17 @@ impl DB {
     async fn write_to_memtable(&self, req: &mut WriteReq) -> anyhow::Result<()> {
         let memtable = unsafe { self.memtable.as_ref().unwrap_unchecked() };
         let mut memtable_w = memtable.write().await;
-        for (dec_entry, vptr) in req.entries_vptrs_mut() {
+        for (entry, vptr) in req.entries_vptrs_mut() {
             if vptr.is_empty() {
-                dec_entry.meta_mut().remove(Meta::VALUE_POINTER);
+                entry.meta_mut().remove(Meta::VALUE_POINTER);
             } else {
-                dec_entry.meta_mut().insert(Meta::VALUE_POINTER);
-                dec_entry.set_value(vptr.serialize());
+                entry.meta_mut().insert(Meta::VALUE_POINTER);
+                entry.set_value(vptr.serialize());
             }
-            memtable_w.push(&dec_entry)?;
+            memtable_w.push(&entry)?;
         }
 
-        if Options::sync_writes() {
+        if self.opt.sync_writes() {
             memtable_w.wal_mut().flush()?;
         }
         drop(memtable_w);

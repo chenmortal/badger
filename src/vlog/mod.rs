@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs::{read_dir, OpenOptions},
+    path::PathBuf,
     sync::{
         atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering},
         Arc,
@@ -14,9 +15,9 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 
 use crate::{
-    errors::err_file,
+    default::DEFAULT_VALUE_DIR,
+    errors::{err_file, DBError},
     key_registry::KeyRegistry,
-    options::Options,
     util::{log_file::LogFile, DBFileId, VlogId},
     vlog::read::LogFileIter,
 };
@@ -49,6 +50,53 @@ pub enum VlogError {
     #[error("Stop iteration")]
     Stop,
 }
+#[derive(Debug, Clone)]
+pub struct ValueLogConfig {
+    read_only: bool,
+    value_dir: PathBuf,
+    vlog_file_size: usize,
+    vlog_max_entries: usize,
+    sync_writes: bool,
+}
+impl Default for ValueLogConfig {
+    fn default() -> Self {
+        Self {
+            read_only: false,
+            value_dir: PathBuf::from(DEFAULT_VALUE_DIR),
+            vlog_file_size: 1 << 30 - 1,
+            sync_writes: false,
+            vlog_max_entries: 1_000_000,
+        }
+    }
+}
+impl ValueLogConfig {
+    pub(crate) fn check_vlog_config(&self) -> Result<(), DBError> {
+        if !(self.vlog_file_size >= 1 << 20 && self.vlog_file_size < 2 << 30) {
+            return Err(DBError::ValuelogSize);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    pub fn set_value_dir(&mut self, value_dir: PathBuf) {
+        self.value_dir = value_dir;
+    }
+
+    pub fn set_vlog_file_size(&mut self, vlog_file_size: usize) {
+        self.vlog_file_size = vlog_file_size;
+    }
+
+    pub fn vlog_file_size(&self) -> usize {
+        self.vlog_file_size
+    }
+
+    pub fn value_dir(&self) -> &PathBuf {
+        &self.value_dir
+    }
+}
 #[derive(Debug)]
 pub(crate) struct ValueLog {
     fid_logfile: RwLock<BTreeMap<VlogId, Arc<RwLock<LogFile<VlogId>>>>>,
@@ -60,9 +108,15 @@ pub(crate) struct ValueLog {
     discard_stats: DiscardStats,
     threshold: VlogThreshold,
     key_registry: KeyRegistry,
+    config: ValueLogConfig,
 }
+
 impl ValueLog {
-    pub(crate) fn new(threshold: VlogThreshold, key_registry: KeyRegistry) -> anyhow::Result<Self> {
+    pub(crate) fn new(
+        threshold: VlogThreshold,
+        key_registry: KeyRegistry,
+        config: ValueLogConfig,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             fid_logfile: Default::default(),
             max_fid: Default::default(),
@@ -70,9 +124,10 @@ impl ValueLog {
             num_active_iter: Default::default(),
             writable_log_offset: Default::default(),
             num_entries_written: Default::default(),
-            discard_stats: discard::DiscardStats::new()?,
+            discard_stats: discard::DiscardStats::new(&config.value_dir)?,
             threshold,
             key_registry,
+            config,
         })
     }
     pub(crate) async fn open(&mut self) -> anyhow::Result<()> {
@@ -82,7 +137,7 @@ impl ValueLog {
         let fid_logfile_len = fid_logfile_r.len();
         drop(fid_logfile_r);
 
-        if Options::read_only() {
+        if self.config.read_only {
             return Ok(());
         }
         if fid_logfile_len == 0 {
@@ -111,8 +166,8 @@ impl ValueLog {
     }
 
     async fn populate_files_map(&mut self, key_registry: KeyRegistry) -> anyhow::Result<()> {
-        let dir = Options::value_dir();
-        let read_only = Options::read_only();
+        let dir = &self.config.value_dir;
+        let read_only = self.config.read_only;
         let mut fp_open_opt = OpenOptions::new();
         fp_open_opt.read(true).write(!read_only);
         let mut found = HashSet::new();
@@ -128,7 +183,7 @@ impl ValueLog {
                     fid,
                     &path,
                     fp_open_opt.clone(),
-                    2 * Options::vlog_file_size(),
+                    2 * self.config.vlog_file_size,
                     key_registry.clone(),
                 )
                 .await
@@ -150,14 +205,14 @@ impl ValueLog {
     }
     async fn create_vlog_file(&self) -> anyhow::Result<Arc<RwLock<LogFile<VlogId>>>> {
         let fid: VlogId = (self.max_fid.fetch_add(1, Ordering::SeqCst) + 1).into();
-        let file_path = fid.join_dir(Options::value_dir());
+        let file_path = fid.join_dir(&self.config.value_dir);
         let mut fp_open_opt = OpenOptions::new();
         fp_open_opt.read(true).write(true).create_new(true);
         let (log_file, _) = LogFile::open(
             fid,
             &file_path,
             fp_open_opt,
-            2 * Options::vlog_file_size(),
+            2 * self.config.vlog_file_size,
             self.key_registry.clone(),
         )
         .await?;

@@ -3,11 +3,11 @@ use std::{collections::HashSet, ops::Deref};
 use anyhow::{bail, Ok};
 use parking_lot::{Mutex, MutexGuard};
 
-use crate::{errors::DBError, options::Options, util::closer::Closer, kv::TxnTs};
+use crate::{errors::DBError, kv::TxnTs, util::closer::Closer};
 
 use super::{
-    txn::Txn,
     water_mark::{Mark, WaterMark},
+    Txn, TxnConfig,
 };
 #[derive(Debug)]
 pub(crate) struct Oracle {
@@ -15,6 +15,7 @@ pub(crate) struct Oracle {
     closer: Closer,
     read_mark: WaterMark,
     txn_mark: WaterMark,
+    config: TxnConfig,
     pub(super) send_write_req: Mutex<()>,
 }
 impl Deref for Oracle {
@@ -26,7 +27,7 @@ impl Deref for Oracle {
 }
 impl Default for Oracle {
     fn default() -> Self {
-        Oracle::new()
+        Oracle::new(TxnConfig::default())
     }
 }
 #[derive(Debug, Default)]
@@ -42,7 +43,7 @@ struct CommittedTxn {
     conflict_keys: HashSet<u64>,
 }
 impl Oracle {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(config: TxnConfig) -> Self {
         let closer = Closer::new(2);
         Self {
             inner: Mutex::new(OracleInner::default()),
@@ -50,12 +51,13 @@ impl Oracle {
             txn_mark: WaterMark::new("badger.TxnTimestamp", closer.clone()),
             send_write_req: Mutex::new(()),
             closer,
+            config,
         }
     }
 
     #[inline]
     pub(crate) async fn discard_at_or_below(&self) -> TxnTs {
-        if Options::managed_txns() {
+        if self.config.managed_txns {
             let lock = self.inner.lock();
             let ts = lock.discard_ts;
             drop(lock);
@@ -63,19 +65,10 @@ impl Oracle {
         }
         return self.read_mark.done_until();
     }
-    #[inline]
-    pub(crate) async fn done_commit(&self, commit_ts: TxnTs) -> anyhow::Result<()> {
-        if !Options::managed_txns() {
-            self.txn_mark
-                .sender
-                .send(Mark::new(commit_ts, true))
-                .await?;
-        }
-        Ok(())
-    }
+
     #[inline]
     pub(crate) async fn get_latest_read_ts(&self) -> anyhow::Result<TxnTs> {
-        if Options::managed_txns() {
+        if self.config.managed_txns {
             panic!("ReadTimestamp should not be retrieved for managed DB");
         }
         let inner_lock = self.inner.lock();
@@ -107,7 +100,7 @@ impl Oracle {
         }
         drop(read_key_hash_r);
 
-        let commit_ts = if !Options::managed_txns() {
+        let commit_ts = if !self.config.managed_txns {
             self.done_read(txn).await?;
             self.cleanup_committed_txns(&mut inner_lock);
 
@@ -121,7 +114,7 @@ impl Oracle {
 
         debug_assert!(commit_ts >= inner_lock.last_cleanup_ts);
 
-        if Options::detect_conflicts() {
+        if self.config.managed_txns {
             inner_lock.committed_txns.push(CommittedTxn {
                 ts: commit_ts,
                 conflict_keys: txn.conflict_keys().unwrap().clone(),
@@ -130,23 +123,12 @@ impl Oracle {
         drop(inner_lock);
         Ok(commit_ts)
     }
-    pub(super) async fn done_read(&self, txn: &Txn) -> anyhow::Result<()> {
-        if !txn
-            .done_read()
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            self.read_mark
-                .sender
-                .send(Mark::new(txn.read_ts, true))
-                .await?;
-        };
-        Ok(())
-    }
+
     fn cleanup_committed_txns(&self, guard: &mut MutexGuard<OracleInner>) {
-        if !Options::detect_conflicts() {
+        if !self.config.detect_conflicts {
             return;
         }
-        let max_read_tx = if Options::managed_txns() {
+        let max_read_tx = if self.config.managed_txns {
             guard.discard_ts
         } else {
             self.read_mark.done_until()
@@ -163,5 +145,17 @@ impl Oracle {
             .filter(|txn| txn.ts > max_read_tx)
             .cloned()
             .collect();
+    }
+
+    pub(crate) fn config(&self) -> TxnConfig {
+        self.config
+    }
+
+    pub(crate) fn txn_mark(&self) -> &WaterMark {
+        &self.txn_mark
+    }
+
+    pub(crate) fn read_mark(&self) -> &WaterMark {
+        &self.read_mark
     }
 }

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     fs::{remove_file, OpenOptions},
     path::PathBuf,
     sync::{
@@ -13,11 +13,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use log::{debug, error, info};
 use rand::Rng;
-use tokio::{
-    select,
-    sync::{Mutex, Notify, Semaphore},
-    task::JoinHandle,
-};
+use tokio::{select, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -27,16 +23,15 @@ use super::{
 #[cfg(feature = "metrics")]
 use crate::util::metrics::{add_num_compaction_tables, sub_num_compaction_tables};
 use crate::{
+    default::DEFAULT_DIR,
     key_registry::KeyRegistry,
     level::compaction::LevelCompactStatus,
     manifest::Manifest,
-    options::Options,
-    pb::{ChecksumError, ERR_CHECKSUM_MISMATCH},
+    pb::ChecksumError,
     table::{
         iter::{ConcatIter, TableIter},
         merge::MergeIter,
-        opt::TableOption,
-        Table,
+        Table, TableConfig,
     },
     txn::oracle::Oracle,
     util::closer::Closer,
@@ -51,10 +46,13 @@ use crate::{
 #[derive(Debug)]
 pub(crate) struct LevelsController {
     next_file_id: AtomicU32,
-    l0_stalls_ms: AtomicI64,
+    level_0_stalls_ms: AtomicI64,
     levels: Vec<LevelHandler>,
     compact_status: CompactStatus,
     memtable_size: usize,
+    max_levels: usize,
+    level_config: LevelsControllerConfig,
+    table_config: TableConfig,
 }
 struct Targets {
     base_level: usize,
@@ -83,33 +81,65 @@ pub(super) struct CompactDef {
     // drop_prefixes: Vec<Vec<u8>>,
 }
 #[derive(Debug, Clone)]
-pub struct LevelsControllerBuilder {
+pub struct LevelsControllerConfig {
     dir: PathBuf,
     read_only: bool,
     memtable_size: usize,
     num_level_zero_tables_stall: usize,
     num_level_zero_tables: usize,
     max_levels: usize,
+    base_level_size: usize,
+    level_size_multiplier: usize,
+    table_size_multiplier: usize,
+    num_compactors: usize,
+    compactl0_on_close: bool,
+    lmax_compaction: bool,
 }
-impl Default for LevelsControllerBuilder {
+impl Default for LevelsControllerConfig {
     fn default() -> Self {
         Self {
-            dir: Default::default(),
-            read_only: Default::default(),
-            memtable_size: Default::default(),
-            num_level_zero_tables_stall: Default::default(),
-            num_level_zero_tables: Default::default(),
-            max_levels: Default::default(),
+            dir: PathBuf::from(DEFAULT_DIR),
+            read_only: false,
+            memtable_size: 64 << 20,
+            num_level_zero_tables_stall: 15,
+            num_level_zero_tables: 5,
+            max_levels: 7,
+            base_level_size: 10 << 20,
+            level_size_multiplier: 10,
+            table_size_multiplier: 2,
+            num_compactors: 4,
+            compactl0_on_close: false,
+            lmax_compaction: false,
         }
     }
 }
-impl LevelsControllerBuilder {
+impl LevelsControllerConfig {
+    #[deny(unused)]
+    pub(crate) fn check_levels_controller_config(&mut self) -> anyhow::Result<()> {
+        if self.num_compactors == 1 {
+            bail!("Cannot have 1 compactor. Need at least 2");
+        }
+        if self.read_only {
+            self.compactl0_on_close = false;
+        }
+        Ok(())
+    }
+    pub fn dir(&self) -> &PathBuf {
+        &self.dir
+    }
+
+    pub fn set_dir(&mut self, dir: PathBuf) {
+        self.dir = dir;
+    }
+}
+impl LevelsControllerConfig {
     pub(crate) async fn build(
         &self,
+        table_config: TableConfig,
         manifest: &Arc<parking_lot::Mutex<Manifest>>,
         key_registry: KeyRegistry,
         block_cache: &Option<BlockCache>,
-        index_cache: &Option<IndexCache>,
+        index_cache: &IndexCache,
     ) -> anyhow::Result<LevelsController> {
         assert!(self.num_level_zero_tables_stall > self.num_level_zero_tables);
 
@@ -120,18 +150,14 @@ impl LevelsControllerBuilder {
             .resize_with(self.max_levels, LevelCompactStatus::default);
         drop(compact_status_w);
 
-        let levels_control = LevelsController {
-            next_file_id: Default::default(),
-            l0_stalls_ms: Default::default(),
-            levels: (0..self.max_levels)
-                .map(|x| LevelHandler::new(x))
-                .collect::<Vec<_>>(),
-            compact_status,
-            memtable_size: self.memtable_size,
-        };
-
-        let (max_file_id, mut level_tables) = self
-            .open_tables_by_manifest(manifest, key_registry, block_cache, index_cache)
+        let (max_file_id, level_tables) = self
+            .open_tables_by_manifest(
+                table_config.clone(),
+                manifest,
+                key_registry,
+                block_cache,
+                index_cache,
+            )
             .await?;
         let next_file_id = AtomicU32::new(max_file_id + 1);
 
@@ -143,124 +169,21 @@ impl LevelsControllerBuilder {
             handler.init_tables(tables).await;
             levels.push(handler);
         }
-        // for level in 0..level_tables.len() {
-        //     let handler = LevelHandler::new(level);
-        //     level_tables.drain(0..);
-        //     handler.init_tables(level_tables[level]).await;
-        //     levels.push(handler);
-        // }
 
-        // let manifest_lock = manifest.lock();
-        // let manifest = &*manifest_lock;
-
-        // revert_to_manifest(
-        //     &self.dir,
-        //     manifest,
-        //     SSTableId::parse_set_from_dir(&self.dir),
-        // )?;
-
-        // let num_opened = Arc::new(AtomicUsize::new(0));
-        // let mut throttle = Throttle::new(3);
-        // let tables_len = manifest.tables.len();
-        // let watch_cancel_token = Self::watch_num_opened(num_opened.clone(), tables_len);
-
-        // let mut max_file_id: u32 = 0;
-        // let mut open_table_tasks = BTreeMap::<u8, Vec<JoinHandle<Option<Table>>>>::new();
-        // for (file_id, table_manifest) in manifest.tables.iter() {
-        //     let num_opened_clone = num_opened.clone();
-        //     let path = file_id.join_dir(&self.dir);
-        //     let permit = throttle.acquire().await?;
-
-        //     max_file_id = max_file_id.max((*file_id).into());
-
-        //     let compression = table_manifest.compression;
-        //     let key_registry_clone = key_registry.clone();
-        //     let block_cache_clone = block_cache.clone();
-        //     let index_cache_clone = index_cache.clone();
-        //     let read_only = self.read_only;
-        //     let future = async move {
-        //         let mut table_opt =
-        //             TableOption::new(&key_registry_clone, &block_cache_clone, &index_cache_clone)
-        //                 .await;
-        //         table_opt.set_compression(compression);
-        //         let mut fp_open_opt = OpenOptions::new();
-        //         fp_open_opt.read(true).write(!read_only);
-
-        //         let (mmap_f, _is_new) = MmapFile::open(&path, fp_open_opt, 0)?;
-
-        //         match Table::open(mmap_f, table_opt).await {
-        //             Ok(table) => {
-        //                 return Ok(table.into());
-        //             }
-        //             Err(e) => {
-        //                 if e.downcast_ref::<ChecksumError>().is_some() {
-        //                     error!("{}", e);
-        //                     error!("Ignoring table {:?}", path);
-        //                 } else {
-        //                     bail!("Opening table:{:?} for {}", path, e)
-        //                 };
-        //             }
-        //         };
-        //         Ok(None)
-        //     };
-        //     debug_assert!((table_manifest.level as usize) < self.max_levels);
-        //     let task = tokio::spawn(async move {
-        //         let table = permit.done_with_future(future).await;
-        //         num_opened_clone.fetch_add(1, Ordering::Relaxed);
-        //         table.and_then(|x| x)
-        //     });
-        //     match open_table_tasks.get_mut(&table_manifest.level) {
-        //         Some(tasks) => {
-        //             tasks.push(task);
-        //         }
-        //         None => {
-        //             open_table_tasks.insert(table_manifest.level, vec![task]);
-        //         }
-        //     }
-        // }
-        // drop(manifest_lock);
-        // throttle.finish().await?;
-        // watch_cancel_token.cancel();
-
-        // levels_control
-        //     .next_file_id
-        //     .store(max_file_id + 1, Ordering::SeqCst);
-
-        // // let tables_m = tables.lock().await;
-        // for (level, tasks) in open_table_tasks {
-        //     let mut tables = Vec::with_capacity(tasks.len());
-        //     for handle in tasks {
-        //         if let Some(t) = handle.await? {
-        //             tables.push(t);
-        //         };
-        //     }
-        //     levels_control.levels[level as usize]
-        //         .init_tables(&tables)
-        //         .await;
-        // }
-        // for
-        // for ele in open_table_tasks. {
-
-        // }
-        // for (i, tables) in tables_m.iter() {
-        //     levels_control.levels[*i as usize].init_tables(tables).await;
-        // }
-        // drop(tables_m);
-        match levels_control.validate().await {
-            Ok(_) => {}
-            Err(e) => {
-                let _ = levels_control.cleanup_levels().await;
-                bail!("Level validation for {}", e);
-            }
-        }
-
-        match sync_dir(Options::dir()) {
-            Ok(_) => {}
-            Err(e) => {
-                let _ = levels_control.cleanup_levels().await;
-                bail!(e);
-            }
+        let levels_control = LevelsController {
+            next_file_id,
+            level_0_stalls_ms: Default::default(),
+            levels,
+            compact_status,
+            memtable_size: self.memtable_size,
+            max_levels: self.max_levels,
+            level_config: self.clone(),
+            table_config,
         };
+
+        levels_control.validate().await?;
+        sync_dir(&self.dir)?;
+
         Ok(levels_control)
     }
     fn watch_num_opened(num_opened: Arc<AtomicUsize>, tables_len: usize) -> CancellationToken {
@@ -294,13 +217,11 @@ impl LevelsControllerBuilder {
     }
     async fn open_tables_by_manifest(
         &self,
-        // max_level:usize,
-        // manifest: &Manifest,
+        default_table_config: TableConfig,
         manifest: &Arc<parking_lot::Mutex<Manifest>>,
-        // num_opened: Arc<AtomicUsize>,
         key_registry: KeyRegistry,
         block_cache: &Option<BlockCache>,
-        index_cache: &Option<IndexCache>,
+        index_cache: &IndexCache,
     ) -> anyhow::Result<(u32, Vec<Vec<Table>>)> {
         let manifest_lock = manifest.lock();
         let manifest = &*manifest_lock;
@@ -310,15 +231,15 @@ impl LevelsControllerBuilder {
             manifest,
             SSTableId::parse_set_from_dir(&self.dir),
         )?;
+
         let num_opened = Arc::new(AtomicUsize::new(0));
-        // let mut throttle = Throttle::new(3);
         let tables_len = manifest.tables.len();
         let watch_cancel_token = Self::watch_num_opened(num_opened.clone(), tables_len);
+
         let mut max_file_id: u32 = 0;
         let mut throttle = Throttle::new(3);
         let mut open_table_tasks = Vec::new();
         open_table_tasks.resize_with(self.max_levels, Vec::new);
-        // let mut open_table_tasks = BTreeMap::<u8, Vec<JoinHandle<Option<Table>>>>::new();
         for (file_id, table_manifest) in manifest.tables.iter() {
             let num_opened_clone = num_opened.clone();
             let path = file_id.join_dir(&self.dir);
@@ -327,21 +248,24 @@ impl LevelsControllerBuilder {
             max_file_id = max_file_id.max((*file_id).into());
 
             let compression = table_manifest.compression;
+            let key_id = table_manifest.keyid;
             let key_registry_clone = key_registry.clone();
             let block_cache_clone = block_cache.clone();
             let index_cache_clone = index_cache.clone();
             let read_only = self.read_only;
+            let mut table_config = default_table_config.clone();
             let future = async move {
-                let mut table_opt =
-                    TableOption::new(&key_registry_clone, &block_cache_clone, &index_cache_clone)
-                        .await;
-                table_opt.set_compression(compression);
+                let cipher = key_registry_clone.get_cipher(key_id).await?;
+                table_config.set_compression(compression);
                 let mut fp_open_opt = OpenOptions::new();
                 fp_open_opt.read(true).write(!read_only);
 
                 let (mmap_f, _is_new) = MmapFile::open(&path, fp_open_opt, 0)?;
 
-                match Table::open(mmap_f, table_opt).await {
+                match table_config
+                    .open(mmap_f, cipher, index_cache_clone, block_cache_clone)
+                    .await
+                {
                     Ok(table) => {
                         return Ok(table.into());
                     }
@@ -356,7 +280,6 @@ impl LevelsControllerBuilder {
                 };
                 Ok(None)
             };
-            // debug_assert!((table_manifest.level as usize) < self.max_levels);
             let task = tokio::spawn(async move {
                 let table = permit.done_with_future(future).await;
                 num_opened_clone.fetch_add(1, Ordering::Relaxed);
@@ -368,18 +291,13 @@ impl LevelsControllerBuilder {
             } else {
                 open_table_tasks.last_mut().unwrap().push(task);
             }
-            // match open_table_tasks.get_mut(&table_manifest.level) {
-            //     Some(tasks) => {
-            //         tasks.push(task);
-            //     }
-            //     None => {
-            //         open_table_tasks.insert(table_manifest.level, vec![task]);
-            //     }
-            // }
         }
+
         drop(manifest_lock);
+
         throttle.finish().await?;
         watch_cancel_token.cancel();
+
         let mut level_tables = Vec::new();
         for tasks in open_table_tasks {
             let mut tables = Vec::with_capacity(tasks.len());
@@ -391,33 +309,6 @@ impl LevelsControllerBuilder {
             level_tables.push(tables);
         }
         Ok((max_file_id, level_tables))
-        // open_table_tasks.drain(..).map(|x|for ele in x {
-
-        // });
-        // for ele in open_table_tasks {
-
-        // }
-        // levels_control
-        //     .next_file_id
-        //     .store(max_file_id + 1, Ordering::SeqCst);
-
-        // for ele in open_table_tasks.iter_mut() {
-
-        // }
-
-        // let tables_m = tables.lock().await;
-        // for (level, tasks) in open_table_tasks {
-        //     let mut tables = Vec::with_capacity(tasks.len());
-        //     for handle in tasks {
-        //         if let Some(t) = handle.await? {
-        //             tables.push(t);
-        //         };
-        //     }
-        //     levels_control.levels[level as usize]
-        //         .init_tables(&tables)
-        //         .await;
-        // }
-        // Ok(())
     }
 }
 impl LevelsController {
@@ -430,25 +321,7 @@ impl LevelsController {
         }
         Ok(())
     }
-    async fn cleanup_levels(&self) -> anyhow::Result<()> {
-        let mut first_err = None;
-        for level_handler in self.levels.iter() {
-            match level_handler.sync_mmap().await {
-                Ok(_) => {}
-                Err(e) => {
-                    if first_err.is_none() {
-                        first_err = e.into();
-                    }
-                }
-            }
-        }
-        match first_err {
-            Some(e) => {
-                bail!(e)
-            }
-            None => Ok(()),
-        }
-    }
+
     #[inline]
     fn last_level(&self) -> &LevelHandler {
         debug_assert!(self.levels.len() > 0);
@@ -456,20 +329,18 @@ impl LevelsController {
     }
     pub(crate) async fn start_compact(
         level_controller: Arc<Self>,
-        opt: &Arc<Options>,
         closer: &mut Closer,
         sem: Arc<Semaphore>,
         oracle: &Arc<Oracle>,
     ) {
-        let num = Options::num_compactors();
+        let num = level_controller.level_config.num_compactors;
         for task_id in 0..num {
             let closer_c = closer.clone();
-            let opt_clone = opt.clone();
             let oracle_clone = oracle.clone();
             let level_controller_clone = level_controller.clone();
             tokio::spawn(async move {
                 level_controller_clone
-                    .run_compact(task_id, closer_c, opt_clone, &oracle_clone)
+                    .run_compact(task_id, closer_c, &oracle_clone)
                     .await;
             });
         }
@@ -480,7 +351,7 @@ impl LevelsController {
         task_id: usize,
         closer: Closer,
         // sem: Arc<Semaphore>,
-        opt: Arc<Options>,
+        // opt: Arc<Options>,
         oracle: &Arc<Oracle>,
     ) {
         let sleep =
@@ -508,7 +379,7 @@ impl LevelsController {
             drop_prefixes: Vec::new(),
             targets: self.level_targets().await,
         };
-        self.do_compact(task_id, priority, &opt, oracle).await;
+        self.do_compact(task_id, priority, oracle).await;
         loop {
             select! {
                 _=ticker.tick()=>{
@@ -560,11 +431,10 @@ impl LevelsController {
         &self,
         task_id: usize,
         mut priority: CompactionPriority,
-        opt: &Arc<Options>,
         oracle: &Arc<Oracle>,
     ) -> anyhow::Result<()> {
         let priority_level = priority.level;
-        debug_assert!(priority_level < Options::max_levels());
+        debug_assert!(priority_level < self.max_levels);
         if priority.targets.base_level == 0 {
             priority.targets = self.level_targets().await;
         }
@@ -592,7 +462,7 @@ impl LevelsController {
                 bail!("Unable to fill tables")
             };
         } else {
-            if priority_level != Options::max_levels() - 1 {
+            if priority_level != self.max_levels - 1 {
                 compact_def.next_level = self.levels[priority_level + 1].clone();
             }
             if !self.fill_tables(&mut compact_def, oracle).await {
@@ -609,22 +479,24 @@ impl LevelsController {
             file_size: vec![0; levels_len],
         };
         let mut level_size = self.last_level().get_total_size().await;
+        let base_level_size = self.level_config.base_level_size;
         for i in (1..levels_len).rev() {
-            targets.target_size[i] = level_size.max(Options::base_level_size());
-            if targets.base_level == 0 && level_size <= Options::base_level_size() {
+            targets.target_size[i] = level_size.max(base_level_size);
+            if targets.base_level == 0 && level_size <= base_level_size {
                 targets.base_level = i;
             }
-            level_size /= Options::level_size_multiplier();
+            level_size /= self.level_config.level_size_multiplier;
         }
 
-        let mut table_size = Options::base_table_size();
+        // let mut table_size = Options::base_table_size();
+        let mut table_size = self.table_config.table_size();
         for i in 0..levels_len {
             targets.file_size[i] = if i == 0 {
                 self.memtable_size
             } else if i <= targets.base_level {
                 table_size
             } else {
-                table_size *= Options::table_size_multiplier();
+                table_size *= self.level_config.table_size_multiplier;
                 table_size
             }
         }
@@ -652,13 +524,13 @@ impl LevelsController {
         compact_def: &mut CompactDef,
         oracle: &Arc<Oracle>,
     ) -> Option<bool> {
-        let this_r = compact_def.this_level.handler_tables.read().await;
-        let next_r = compact_def.next_level.handler_tables.read().await;
+        let this_r = compact_def.this_level.read().await;
+        let next_r = compact_def.next_level.read().await;
         let tables = this_r.tables.clone();
         if tables.len() == 0 {
             return false.into();
         }
-        if compact_def.this_level.get_level() != Options::max_levels() - 1 {
+        if compact_def.this_level.get_level() != self.max_levels - 1 {
             return None;
         }
         let mut sorted_tables = tables.clone();
@@ -687,7 +559,7 @@ impl LevelsController {
             }
 
             compact_def.this_size = table.size();
-            compact_def.this_range = KeyRange::from_table(&table).await;
+            compact_def.this_range = KeyRange::from_table(&table);
             compact_def.next_range = compact_def.this_range.clone();
             let this_level = compact_def.this_level.get_level();
             if self
@@ -710,7 +582,7 @@ impl LevelsController {
                     Ok(s) => s,
                     Err(s) => s,
                 };
-            debug_assert!(tables[j].id() == table.id());
+            debug_assert!(tables[j].table_id() == table.table_id());
             j += 1;
             while j < tables.len() {
                 let new_t = &tables[j];
@@ -719,9 +591,7 @@ impl LevelsController {
                     break;
                 }
                 compact_def.bottom.push(new_t.clone());
-                compact_def
-                    .next_range
-                    .extend(KeyRange::from_table(new_t).await);
+                compact_def.next_range.extend(KeyRange::from_table(new_t));
                 j += 1;
             }
             //
@@ -748,14 +618,14 @@ impl LevelsController {
             return s;
         }
 
-        let this_level_r = compact_def.this_level.handler_tables.read().await;
-        let next_level_r = compact_def.next_level.handler_tables.read().await;
+        let this_level_r = compact_def.this_level.read().await;
+        let next_level_r = compact_def.next_level.read().await;
         let mut tables = this_level_r.tables.clone();
         tables.sort_unstable_by(|a, b| a.max_version().cmp(&b.max_version()));
 
         for table in tables {
             compact_def.this_size = table.size();
-            compact_def.this_range = KeyRange::from_table(&table).await;
+            compact_def.this_range = KeyRange::from_table(&table);
 
             if self
                 .compact_status
@@ -779,7 +649,7 @@ impl LevelsController {
                 return true;
             }
 
-            compact_def.next_range = KeyRange::from_tables(&compact_def.bottom).await.unwrap(); //bottom.len !=0 so can unwrap()
+            compact_def.next_range = KeyRange::from_tables(&compact_def.bottom).unwrap(); //bottom.len !=0 so can unwrap()
 
             if self
                 .compact_status
@@ -811,8 +681,8 @@ impl LevelsController {
             return false;
         }
 
-        let this_level_r = compact_def.this_level.handler_tables.read().await;
-        let next_level_r = compact_def.next_level.handler_tables.read().await;
+        let this_level_r = compact_def.this_level.read().await;
+        let next_level_r = compact_def.next_level.read().await;
 
         if this_level_r.tables.len() == 0 {
             return false;
@@ -821,7 +691,7 @@ impl LevelsController {
         if compact_def.priority.drop_prefixes.len() == 0 {
             let mut key_range = KeyRange::default();
             for table in this_level_r.tables.iter() {
-                let k = KeyRange::from_table(table).await;
+                let k = KeyRange::from_table(table);
                 if key_range.is_overlaps_with(&k) {
                     top.push(table.clone());
                     key_range.extend(k);
@@ -833,7 +703,7 @@ impl LevelsController {
             top = this_level_r.tables.clone();
         }
 
-        compact_def.this_range = KeyRange::from_tables(&top).await.unwrap();
+        compact_def.this_range = KeyRange::from_tables(&top).unwrap();
         compact_def.top = top;
 
         let (left_index, right_index) = compact_def
@@ -846,7 +716,7 @@ impl LevelsController {
         compact_def.next_range = if compact_def.bottom.len() == 0 {
             compact_def.this_range.clone()
         } else {
-            KeyRange::from_tables(&compact_def.bottom).await.unwrap() //len!=0 so can unwrap()
+            KeyRange::from_tables(&compact_def.bottom).unwrap() //len!=0 so can unwrap()
         };
 
         let r = self.compact_status.compare_and_add(compact_def);
@@ -869,7 +739,7 @@ impl LevelsController {
 
         let targets = &mut compact_def.priority.targets;
 
-        let this_level_handler_r = compact_def.this_level.handler_tables.read().await;
+        let this_level_handler_r = compact_def.this_level.read().await;
         let mut compact_status_w = self.compact_status.write();
         let mut out = Vec::new();
         let now = SystemTime::now();
@@ -883,7 +753,7 @@ impl LevelsController {
                 continue;
             };
 
-            if compact_status_w.tables().contains(&table.id()) {
+            if compact_status_w.tables().contains(&table.table_id()) {
                 continue;
             }
             out.push(table.clone());
@@ -904,7 +774,7 @@ impl LevelsController {
             .push(KeyRange::default_with_inf());
 
         for table in compact_def.top.iter() {
-            compact_status_w.tables_mut().insert(table.id());
+            compact_status_w.tables_mut().insert(table.table_id());
         }
         targets.file_size[0] = u32::MAX as usize;
         drop(compact_status_w);
@@ -924,7 +794,7 @@ impl LevelsController {
                 return;
             }
             if i % width == width - 1 {
-                let biggest = compact_def.bottom[i].0.biggest.read().await;
+                let biggest = compact_def.bottom[i].biggest();
                 skr.right = key_with_ts(parse_key(&biggest), 0);
                 compact_def.splits.push(skr.clone());
                 skr.left = skr.right.clone();
@@ -940,7 +810,7 @@ impl LevelsController {
         't: for table in compact_def.bottom.iter() {
             for prefix in compact_def.priority.drop_prefixes.iter() {
                 if table.smallest().starts_with(&prefix) {
-                    let biggest = table.0.biggest.read().await;
+                    let biggest = table.biggest();
                     if biggest.starts_with(&prefix) {
                         continue 't;
                     }
@@ -997,7 +867,7 @@ impl LevelsController {
         let discard_ts = oracle.discard_at_or_below().await;
     }
     async fn check_overlap(&self, tables: &Vec<Table>, level: usize) -> bool {
-        let key_range = KeyRange::from_tables(&tables).await.unwrap();
+        let key_range = KeyRange::from_tables(&tables).unwrap();
         for i in level..self.levels.len() {
             let (left, right) = self.levels[i].overlapping_tables(&key_range).await;
             if right - left > 0 {
@@ -1008,6 +878,10 @@ impl LevelsController {
     }
     pub(crate) fn get_reserve_file_id(&self) -> SSTableId {
         self.next_file_id.fetch_add(1, Ordering::AcqRel).into()
+    }
+
+    pub(crate) fn levels(&self) -> &Vec<LevelHandler> {
+        &self.levels
     }
 }
 
@@ -1045,54 +919,4 @@ pub(crate) fn revert_to_manifest(
         }
     }
     Ok(())
-}
-#[test]
-fn test_a() {
-    't: for i in 0..4 {
-        for j in 0..3 {
-            if j == 2 {
-                continue 't;
-            }
-            println!("{}-{}", i, j);
-        }
-    }
-
-    // let mut v = Vec::with_capacity(2);;
-    // v.insert(1, 1);
-    // v[1]=1;
-    // dbg!(v);
-}
-#[test]
-fn test_b() {
-    let mut map = BTreeMap::<u8, Vec<String>>::new();
-    for i in 0..20 {
-        map.insert(i, vec![i.to_string()]);
-    }
-    for k in 0..1000_000 {
-        for i in 0..20 {
-            if let Some(s) = map.get(&i) {
-                let mut count = 0;
-                for ele in s {
-                    count += 1;
-                }
-            };
-        }
-    }
-}
-#[test]
-fn test_c() {
-    let mut map = Vec::with_capacity(20);
-    for i in 0..20 {
-        map.insert(i, vec![i.to_string()]);
-    }
-    for k in 0..1000_000 {
-        for i in 0..20 {
-            if let Some(s) = map.get(i as usize) {
-                let mut count = 0;
-                for ele in s {
-                    count += 1;
-                }
-            };
-        }
-    }
 }

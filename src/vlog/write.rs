@@ -7,7 +7,6 @@ use crate::util::metrics::{add_num_bytes_vlog_written, add_num_writes_vlog};
 use crate::{
     default::DEFAULT_PAGE_SIZE,
     kv::{Entry, Meta, TxnTs, ValuePointer},
-    options::Options,
     util::{log_file::LogFile, DBFileId},
     write::WriteReq,
 };
@@ -88,10 +87,10 @@ impl ValueLog {
                 .fetch_add(written, Ordering::SeqCst);
             sender.send(value_sizes).await?;
             let w_offset = self.writable_log_offset();
-            if w_offset > Options::vlog_file_size()
-                || self.num_entries_written.load(Ordering::SeqCst) > Options::vlog_max_entries()
+            if w_offset > self.config.vlog_file_size
+                || self.num_entries_written.load(Ordering::SeqCst) > self.config.vlog_max_entries
             {
-                if Options::sync_writes() {
+                if self.config.sync_writes {
                     cur_logfile_w.raw_sync()?;
                 }
                 cur_logfile_w.truncate(w_offset)?;
@@ -103,10 +102,10 @@ impl ValueLog {
         //wait for async closure trait
         let mut cur_logfile_w = cur_logfile.write().await;
         let w_offset = self.writable_log_offset();
-        if w_offset > Options::vlog_file_size()
-            || self.num_entries_written.load(Ordering::SeqCst) > Options::vlog_max_entries()
+        if w_offset > self.config.vlog_file_size
+            || self.num_entries_written.load(Ordering::SeqCst) > self.config.vlog_max_entries
         {
-            if Options::sync_writes() {
+            if self.config.sync_writes {
                 cur_logfile_w.raw_sync()?;
             }
             cur_logfile_w.truncate(w_offset)?;
@@ -134,7 +133,7 @@ impl ValueLog {
                 )
             }
 
-            if estimate >= Options::vlog_file_size() {
+            if estimate >= self.config.vlog_file_size {
                 vlog_offset = 0;
                 continue;
             }
@@ -151,7 +150,7 @@ impl ValueLog {
         self.writable_log_offset.fetch_add(size, Ordering::SeqCst)
     }
 }
-impl<F:DBFileId> LogFile<F> {
+impl<F: DBFileId> LogFile<F> {
     pub(crate) fn encode_entry(&self, buf: &mut Vec<u8>, entry: &Entry, offset: usize) -> usize {
         let header = VlogEntryHeader::new(&entry);
         let mut hash_writer = HashWriter {

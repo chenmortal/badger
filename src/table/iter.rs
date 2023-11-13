@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use crate::{iter::Iter, util::SSTableId};
 
 use super::{
-    block::Block,
-    write::{EntryHeader, HEADER_SIZE},
-    Table,
+    // block::Block,
+    // write::{EntryHeader, HEADER_SIZE},
+    Table, Block, EntryHeader, HEADER_SIZE,
 };
 use anyhow::bail;
 
@@ -70,26 +70,26 @@ impl TableIter {
     }
 
     async fn seek_to_first(&mut self) -> anyhow::Result<()> {
-        let num_blocks = self.table.0.get_offsets_len();
+        let num_blocks = self.table.block_offsets_len();
         if num_blocks == 0 {
             bail!("Block offsets len()==0,so the num of blocks is 0")
         }
         self.block_pos = 0;
-        let block = self.table.get_block(self.block_pos, self.use_cache).await?;
-        let mut block_iter = BlockIter::new(self.table.id(), self.block_pos, block);
+        let block = self.table.get_block(self.block_pos.into(), self.use_cache)?;
+        let mut block_iter = BlockIter::new(self.table.table_id, self.block_pos, block);
         block_iter.seek_to_first()?;
         self.block_iter = block_iter.into();
 
         Ok(())
     }
     async fn seek_to_last(&mut self) -> anyhow::Result<()> {
-        let num_blocks = self.table.0.get_offsets_len();
+        let num_blocks = self.table.0.block_offsets_len() as u32;
         if num_blocks == 0 {
             bail!("Block offsets len()==0,so the num of blocks is 0")
         }
         self.block_pos = num_blocks - 1;
-        let block = self.table.get_block(self.block_pos, self.use_cache).await?;
-        let mut block_iter = BlockIter::new(self.table.id(), self.block_pos, block);
+        let block = self.table.get_block(self.block_pos.into(), self.use_cache)?;
+        let mut block_iter = BlockIter::new(self.table.table_id, self.block_pos, block);
         block_iter.seek_to_last()?;
 
         self.block_iter = block_iter.into();

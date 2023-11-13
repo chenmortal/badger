@@ -1,14 +1,14 @@
 use log::debug;
+use parking_lot::Mutex;
 use parking_lot::RwLock;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs::{metadata, read_dir},
     path::PathBuf,
     sync::{atomic::AtomicUsize, atomic::Ordering, Arc},
 };
 use tokio::{select, sync::Semaphore};
 
-use crate::options::Options;
 lazy_static! {
     static ref LSM_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
     static ref VLOG_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
@@ -23,6 +23,11 @@ lazy_static! {
     static ref NUM_MEMTABLE_GETS: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_GETS_WITH_RESULTS: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_BYTES_WRITTEN_TO_L0: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_BLOOM_USE: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_BLOOM_NOT_EXIST: AtomicUsize = AtomicUsize::new(0);
+    static ref NUM_BLOOM_NOT_EXIST_LEVEL: Mutex<BTreeMap<usize, usize>> =
+        Mutex::new(BTreeMap::new());
+    static ref NUM_LSM_GETS: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
 }
 
 #[inline]
@@ -83,44 +88,73 @@ pub(crate) fn add_num_bytes_written_to_l0(size: usize) {
 }
 
 #[inline]
+pub(crate) fn add_num_bloom_use(val: usize) {
+    NUM_BLOOM_USE.fetch_add(val, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn add_num_bloom_not_exist(val: usize) {
+    NUM_BLOOM_NOT_EXIST.fetch_add(val, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn add_num_bloom_not_exist_level(level: usize, val: usize) {
+    let mut level_w = NUM_BLOOM_NOT_EXIST_LEVEL.lock();
+    if let Some(v) = level_w.get_mut(&level) {
+        *v += val;
+    } else {
+        level_w.insert(level, val);
+    }
+    drop(level_w);
+}
+
+#[inline]
+pub(crate) fn add_num_lsm_gets(level: usize, val: usize) {
+    let mut lsm = NUM_LSM_GETS.lock();
+    if let Some(v) = lsm.get_mut(&level) {
+        *v += val;
+    } else {
+        lsm.insert(level, val);
+    }
+    drop(lsm)
+}
+#[inline]
 pub(crate) fn sub_num_compaction_tables(val: usize) {
     NUM_COMPACTION_TABLES.fetch_sub(val, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[inline]
-pub(crate) async fn calculate_size() {
-    let dir = Options::dir();
-    let value_dir = Options::value_dir();
-    let (lsm_size, mut vlog_size) = match total_size(dir) {
+pub(crate) async fn calculate_size(level_dir: &PathBuf, vlog_dir: &PathBuf) {
+    let (lsm_size, mut vlog_size) = match total_size(&level_dir) {
         Ok(r) => r,
         Err(e) => {
-            debug!("Cannot calculate_size {:?} for {}", dir, e);
+            debug!("Cannot calculate_size {:?} for {}", level_dir, e);
             (0, 0)
         }
     };
     #[cfg(feature = "metrics")]
-    set_lsm_size(dir, lsm_size).await;
-    if value_dir != dir {
-        match total_size(value_dir) {
+    set_lsm_size(&level_dir, lsm_size).await;
+    if vlog_dir != level_dir {
+        match total_size(vlog_dir) {
             Ok((_, v)) => {
                 vlog_size = v;
             }
             Err(e) => {
-                debug!("Cannot calculate_size {:?} for {}", value_dir, e);
+                debug!("Cannot calculate_size {:?} for {}", vlog_dir, e);
                 vlog_size = 0;
             }
         };
     }
     #[cfg(feature = "metrics")]
-    set_vlog_size(value_dir, vlog_size).await;
+    set_vlog_size(vlog_dir, vlog_size).await;
 }
 
-pub(crate) async fn update_size(sem: Arc<Semaphore>) {
+pub(crate) async fn update_size(sem: Arc<Semaphore>, level_dir: PathBuf, vlog_dir: PathBuf) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
     loop {
         select! {
             _instant=interval.tick() =>{
-                calculate_size().await;
+                calculate_size(&level_dir,&vlog_dir).await;
             },
             _=sem.acquire()=>{
                 break;
