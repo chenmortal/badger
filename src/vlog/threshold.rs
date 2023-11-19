@@ -1,4 +1,3 @@
-
 #![allow(unused)]
 use std::{
     ops::Deref,
@@ -7,8 +6,6 @@ use std::{
 
 use anyhow::bail;
 use log::info;
-#[cfg(feature="stretto")]
-use stretto::Histogram;
 use tokio::{
     select,
     sync::{
@@ -18,15 +15,15 @@ use tokio::{
 };
 
 use crate::{default::MAX_VALUE_THRESHOLD, util::closer::Closer};
+
+use super::histogram::Histogram;
 #[derive(Debug, Clone)]
 pub(crate) struct VlogThreshold(Arc<VlogThresholdInner>);
 #[derive(Debug)]
 pub(crate) struct VlogThresholdInner {
-    // percentile: f64,
     config: VlogThresholdConfig,
     value_threshold: AtomicUsize,
-    #[cfg(feature="stretto")]
-    vlog_metrics: Histogram,
+    histogram: Histogram,
     closer: Closer,
     sender: Sender<Vec<usize>>,
     clear_notify: Arc<Notify>,
@@ -39,10 +36,6 @@ pub struct VlogThresholdConfig {
 }
 
 impl VlogThresholdConfig {
-    // pub fn set_max_value_threshold(&mut self, max_value_threshold: usize) {
-    //     self.max_value_threshold = max_value_threshold;
-    // }
-
     pub fn set_vlog_percentile(&mut self, vlog_percentile: f64) {
         self.vlog_percentile = vlog_percentile;
     }
@@ -51,10 +44,7 @@ impl VlogThresholdConfig {
         self.value_threshold = value_threshold;
     }
     #[deny(unused)]
-    pub(crate) fn check_threshold_config(
-        &mut self,
-        max_batch_size: usize,
-    ) -> anyhow::Result<()> {
+    pub(crate) fn check_threshold_config(&mut self, max_batch_size: usize) -> anyhow::Result<()> {
         // self.max_value_threshold = MAX_VALUE_THRESHOLD.min(max_batch_size);
         // assert!(self.max_value_threshold >= self.value_threshold)
 
@@ -95,37 +85,20 @@ impl VlogThresholdInner {
         sender: Sender<Vec<usize>>,
         clear_notify: Arc<Notify>,
     ) -> Self {
-        let max_bd = config.max_value_threshold as f64;
-        let min_bd = config.value_threshold as f64;
-        assert!(max_bd >= min_bd);
-        let size = (max_bd - min_bd + 1 as f64).min(1024.0);
-        let bd_step = (max_bd - min_bd) / size;
-        let mut bounds = Vec::<f64>::with_capacity(size as usize);
-        for i in 0..bounds.len() {
-            if i == 0 {
-                bounds[0] = min_bd;
-                continue;
-            }
-            if i == size as usize - 1 {
-                bounds[i] = max_bd;
-                continue;
-            }
-            bounds[i] = bounds[i - 1] + bd_step;
-        }
-        #[cfg(feature="stretto")]
-        let histogram_data = Histogram::new(bounds);
+        let mut histogram = Histogram::default();
+        histogram.measure(config.value_threshold);
+        histogram.measure(config.max_value_threshold);
 
         Self {
             config,
             value_threshold: AtomicUsize::new(config.value_threshold),
-            #[cfg(feature="stretto")]
-            vlog_metrics: histogram_data,
             closer,
             sender,
             clear_notify,
+            histogram,
         }
     }
-
+    #[cfg(feature = "metrics")]
     pub(crate) fn sender(&self) -> Sender<Vec<usize>> {
         self.sender.clone()
     }
@@ -163,11 +136,12 @@ impl VlogThreshold {
             clear_notify,
         )));
         let vlog_c = vlog_threshold.clone();
-        #[cfg(feature="stretto")]
+        #[cfg(feature = "metrics")]
         tokio::spawn(vlog_c.listen_for_value_threshold_update(receiver, clear_notified));
         vlog_threshold
     }
-    #[cfg(feature="stretto")]
+
+    #[cfg(feature = "metrics")]
     pub(crate) async fn listen_for_value_threshold_update(
         self,
         mut receiver: Receiver<Vec<usize>>,
@@ -180,16 +154,18 @@ impl VlogThreshold {
                 }
                 Some(v)=receiver.recv()=>{
                     for ele in v {
-                        self.vlog_metrics.update(ele as i64);
+                        self.histogram.measure(ele);
                     }
-                    let p = self.vlog_metrics.percentile(self.config.vlog_percentile) as usize;
+                    let p=self.histogram.percentile(self.config.vlog_percentile) as usize;
                     if self.value_threshold() != p{
                         info!("updating value of threshold to: {}",p);
                         self.set_value_threshold(p);
                     }
                 }
                 _=clear_notified.notified()=>{
-                    self.vlog_metrics.clear()
+                    self.histogram.clear();
+                    self.histogram.measure(self.config.value_threshold );
+                    self.histogram.measure(self.config.max_value_threshold );
                 }
             }
         }

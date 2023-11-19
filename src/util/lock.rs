@@ -4,6 +4,7 @@ use std::{
     collections::HashSet,
     fs::{File, OpenOptions, Permissions},
     io::Write,
+    ops::{Deref, DerefMut},
     os::unix::prelude::PermissionsExt,
     path::PathBuf,
 };
@@ -34,6 +35,18 @@ impl Default for DBLockGuardConfig {
         }
     }
 }
+impl Deref for DBLockGuardConfig {
+    type Target = HashSet<PathBuf>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.dirs
+    }
+}
+impl DerefMut for DBLockGuardConfig {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.dirs
+    }
+}
 impl DBLockGuardConfig {
     pub(crate) fn try_build(&self) -> anyhow::Result<Option<DBLockGuard>> {
         if !self.bypass_lock_guard {
@@ -53,9 +66,6 @@ impl DBLockGuardConfig {
 
     pub(crate) fn set_read_only(&mut self, read_only: bool) {
         self.read_only = read_only;
-    }
-    pub(crate) fn insert(&mut self, p: PathBuf) {
-        self.dirs.insert(p);
     }
 }
 #[derive(Debug)]

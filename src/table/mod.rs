@@ -311,18 +311,61 @@ impl TableInner {
         self.cheap_index.stale_data_size
     }
 
+    pub(crate) fn key_count(&self) -> u32 {
+        self.cheap_index.key_count
+    }
+
+    pub(crate) fn on_disk_size(&self) -> u32 {
+        self.cheap_index.on_disk_size
+    }
+
+    pub(crate) fn bloom_filter_len(&self) -> usize {
+        self.cheap_index.bloom_filter_len
+    }
+
+    pub(crate) fn uncompressed_size(&self) -> u32 {
+        self.cheap_index.uncompressed_size
+    }
+
+    #[cfg(not(feature = "async_cache"))]
+    pub(crate) fn get_stale_data_size(&self) -> anyhow::Result<u32> {
+        Ok(self.get_index()?.stale_data_size)
+    }
+
+    #[cfg(feature = "async_cache")]
+    pub(crate) async fn get_stale_data_size(&self) -> anyhow::Result<u32> {
+        Ok(self.get_index().await?.stale_data_size)
+    }
+
     pub(crate) fn created_at(&self) -> SystemTime {
         self.created_at
     }
-    pub(crate) fn smallest(&self) -> &[u8] {
+
+    pub(crate) fn smallest(&self) -> &Bytes {
         &self.smallest
     }
+
     pub(crate) fn table_id(&self) -> SSTableId {
         self.table_id
     }
-    pub(crate) fn biggest(&self) -> &[u8] {
+
+    pub(crate) fn cipher(&self) -> Option<&AesCipher> {
+        self.cipher.as_ref()
+    }
+
+    pub(crate) fn config(&self) -> &TableConfig {
+        &self.config
+    }
+
+    pub(crate) fn biggest(&self) -> &Bytes {
         &self.biggest
     }
+
+    #[inline]
+    fn get_file_path(&self) -> &PathBuf {
+        &self.mmap_f.path()
+    }
+
     pub(crate) fn sync_mmap(&self) -> io::Result<()> {
         self.mmap_f.raw_sync()
     }
@@ -332,6 +375,9 @@ impl TableInner {
         self.table_size
     }
 
+    pub(crate) fn index_len(&self) -> usize {
+        self.index_len
+    }
     // fn read_mmap(offset: u64, len: u32) {}
     #[cfg(feature = "async_cache")]
     async fn verify(&self) -> anyhow::Result<()> {
@@ -414,7 +460,7 @@ impl TableInner {
     }
     #[cfg(not(feature = "async_cache"))]
     pub(crate) fn may_contain_key(&self, key: KeyTsBorrow) -> anyhow::Result<bool> {
-        if self.cheap_index.bloom_filter == 0 {
+        if self.cheap_index.bloom_filter_len == 0 {
             return Ok(true);
         }
         #[cfg(feature = "metrics")]
@@ -591,10 +637,6 @@ impl TableInner {
 
         Ok(block)
     }
-    #[inline]
-    fn get_file_path(&self) -> &PathBuf {
-        &self.mmap_f.path()
-    }
 }
 fn try_decrypt(cipher: Option<&AesCipher>, data: &[u8]) -> anyhow::Result<Vec<u8>> {
     let data = match cipher {
@@ -711,7 +753,7 @@ struct CheapTableIndex {
     on_disk_size: u32,
     stale_data_size: u32,
     offsets_len: usize,
-    bloom_filter: usize,
+    bloom_filter_len: usize,
 }
 impl From<TableIndex<'_>> for CheapTableIndex {
     fn from(value: TableIndex<'_>) -> Self {
@@ -726,7 +768,7 @@ impl From<TableIndex<'_>> for CheapTableIndex {
             } else {
                 0
             },
-            bloom_filter: if let Some(bloom) = value.bloom_filter() {
+            bloom_filter_len: if let Some(bloom) = value.bloom_filter() {
                 bloom.len()
             } else {
                 0
@@ -743,7 +785,7 @@ impl From<&TableIndexBuf> for CheapTableIndex {
             on_disk_size: value.on_disk_size,
             stale_data_size: value.stale_data_size,
             offsets_len: value.offsets().len(),
-            bloom_filter: if let Some(bloom) = value.bloom_filter.as_ref() {
+            bloom_filter_len: if let Some(bloom) = value.bloom_filter.as_ref() {
                 bloom.len()
             } else {
                 0

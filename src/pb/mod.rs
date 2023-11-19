@@ -1,27 +1,28 @@
 use std::fmt::Display;
 
-use anyhow::bail;
-
-use crate::config::CompressionType;
+use crate::{config::CompressionType, key_registry::CipherKeyId, util::SSTableId};
 
 use self::badgerpb4::{manifest_change::Operation, Checksum, EncryptionAlgo, ManifestChange};
 use crate::pb::badgerpb4::checksum::Algorithm;
 pub mod badgerpb4;
 impl ManifestChange {
-    pub fn new_create_change(
-        id: u32,
+    pub fn new(
+        table_id: SSTableId,
         level: u32,
-        key_id: u64,
+        cipher_key_id: CipherKeyId,
         compression: CompressionType,
     ) -> Self {
         Self {
-            id,
+            id: table_id.into(),
             op: Operation::Create as i32,
             level,
-            key_id,
+            key_id: cipher_key_id.into(),
             encryption_algo: EncryptionAlgo::Aes as i32,
             compression: compression.into(),
         }
+    }
+    pub(crate) fn table_id(&self) -> SSTableId {
+        self.id.into()
     }
 }
 impl Algorithm {

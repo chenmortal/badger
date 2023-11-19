@@ -65,8 +65,14 @@ impl CompressionType {
         }
     }
 }
-// static OPT:Config=configdefault();
-// const MAX_VALUE_THRESHOLD: i64 = 1 << 20;
+impl CompressionType {
+    pub(crate) fn is_none(&self) -> bool {
+        match self {
+            CompressionType::None => true,
+            _ => false,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -131,9 +137,17 @@ impl Default for Config {
 impl Config {
     #[deny(unused)]
     pub(crate) fn init_lock_guard(&mut self) {
-        self.lock_guard.insert(self.manifest.dir().clone());
-        self.lock_guard.insert(self.key_registry.dir().clone());
-        self.lock_guard.insert(self.memtable.dir().clone());
+        for path in [
+            self.manifest.dir(),
+            self.key_registry.dir(),
+            self.memtable.dir(),
+            self.level_controller.dir(),
+            self.vlog.value_dir(),
+        ] {
+            if !self.lock_guard.contains(path) {
+                self.lock_guard.insert(path.clone());
+            };
+        }
     }
 
     pub(crate) fn max_batch_count(&self) -> usize {
@@ -228,10 +242,9 @@ impl Config {
 
         self.vlog.check_vlog_config()?;
 
-        let need_cache = match self.table.compression() {
-            CompressionType::None => true,
-            _ => false,
-        };
+        let need_cache =
+            !self.table.compression().is_none() || self.key_registry.encrypt_key().len() > 0;
+
         if need_cache && self.block_cache.block_cache_size() == 0 {
             panic!("Block_Cache_Size should be set since compression are enabled")
         }
@@ -262,7 +275,7 @@ impl Config {
         Ok(())
     }
     #[deny(unused)]
-    pub(super) fn init(mut self) -> anyhow::Result<()> {
+    pub(super) fn init(&mut self) -> anyhow::Result<()> {
         self.check_set_config()?;
         self.create_dirs()?;
         self.init_lock_guard();

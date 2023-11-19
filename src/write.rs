@@ -92,12 +92,13 @@ impl DB {
         Ok(receiver)
     }
     #[inline]
-    pub(crate) async fn do_writes(&self, mut recv_write_req: Receiver<WriteReq>, closer: Closer) {
+    pub(crate) async fn do_writes(self, mut recv_write_req: Receiver<WriteReq>, closer: Closer) {
         defer!(
           closer.done();
         );
         let notify_send = Arc::new(Notify::new());
         let notify_recv = notify_send.clone();
+        notify_send.notify_one();
         let mut write_reqs = Vec::with_capacity(10);
         async fn write_requests(db: DB, write_reqs: Vec<WriteReq>, notify_send: Arc<Notify>) {
             if let Err(e) = db.write_requests(write_reqs).await {
@@ -113,18 +114,7 @@ impl DB {
                 Some(write_req)=recv_write_req.recv()=>{
                     write_reqs.push(write_req);
                     req_len.store(write_reqs.len(), Ordering::Relaxed);
-                    if write_reqs.len() >= 3*KV_WRITES_ENTRIES_CHANNEL_CAPACITY{
-                        notify_recv.notified().await;
-                        tokio::spawn(write_requests(self.clone(), write_reqs, notify_send.clone()));
-                        write_reqs=Vec::with_capacity(10);
-                        req_len.store(write_reqs.len(), Ordering::Relaxed);
-                    }
                 },
-                _=notify_recv.notified()=>{
-                    tokio::spawn(write_requests(self.clone(), write_reqs, notify_send.clone()));
-                    write_reqs=Vec::with_capacity(10);
-                    req_len.store(write_reqs.len(), Ordering::Relaxed);
-                }
                 _= closer.captured()=>{
                     while let Some(w) = recv_write_req.recv().await {
                         write_reqs.push(w);
@@ -132,6 +122,39 @@ impl DB {
                     notify_recv.notified().await;
                     write_requests(self.clone(), write_reqs, notify_send.clone()).await;
                     return ;
+                }
+            }
+            'a: loop {
+                if write_reqs.len() >= 3 * KV_WRITES_ENTRIES_CHANNEL_CAPACITY {
+                    notify_recv.notified().await;
+                    tokio::spawn(write_requests(
+                        self.clone(),
+                        write_reqs,
+                        notify_send.clone(),
+                    ));
+                    write_reqs = Vec::with_capacity(10);
+                    req_len.store(0, Ordering::Relaxed);
+                    break 'a;
+                }
+                select! {
+                    Some(write_req)=recv_write_req.recv()=>{
+                        write_reqs.push(write_req);
+                        req_len.store(write_reqs.len(), Ordering::Relaxed);
+                    },
+                    _=notify_recv.notified()=>{
+                        tokio::spawn(write_requests(self.clone(), write_reqs, notify_send.clone()));
+                        write_reqs=Vec::with_capacity(10);
+                        req_len.store(0, Ordering::Relaxed);
+                        break 'a;
+                    }
+                    _= closer.captured()=>{
+                        while let Some(w) = recv_write_req.recv().await {
+                            write_reqs.push(w);
+                        }
+                        notify_recv.notified().await;
+                        write_requests(self.clone(), write_reqs, notify_send.clone()).await;
+                        return ;
+                    }
                 }
             }
         }

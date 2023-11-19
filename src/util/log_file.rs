@@ -1,14 +1,13 @@
 use std::{
     fs::{remove_file, OpenOptions},
-    io::{self},
+    io::{self, Write},
     ops::{Deref, DerefMut},
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
 use crate::{
-    key_registry::{AesCipher, KeyRegistry},
-    pb::badgerpb4::DataKey,
+    key_registry::{AesCipher, CipherKeyId, KeyRegistry},
     util::mmap::MmapFile,
     vlog::VLOG_HEADER_SIZE,
 };
@@ -21,27 +20,25 @@ use super::DBFileId;
 pub(crate) struct LogFile<F: DBFileId> {
     fid: F,
     key_registry: KeyRegistry,
-    datakey: Option<DataKey>,
     cipher: Option<AesCipher>,
     mmap: MmapFile,
     size: AtomicUsize,
     base_nonce: Vec<u8>,
-    // write_at: usize,
 }
 
-impl<F:DBFileId> Deref for LogFile<F> {
+impl<F: DBFileId> Deref for LogFile<F> {
     type Target = MmapFile;
 
     fn deref(&self) -> &Self::Target {
         &self.mmap
     }
 }
-impl<F:DBFileId> DerefMut for LogFile<F> {
+impl<F: DBFileId> DerefMut for LogFile<F> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.mmap
     }
 }
-impl<F:DBFileId> LogFile<F> {
+impl<F: DBFileId> LogFile<F> {
     pub(crate) async fn open(
         fid: F,
         file_path: &PathBuf,
@@ -54,11 +51,9 @@ impl<F:DBFileId> LogFile<F> {
         let mut log_file = Self {
             fid,
             key_registry,
-            datakey: None,
             mmap,
             size: AtomicUsize::new(0),
             base_nonce: Vec::new(),
-            // write_at: VLOG_HEADER_SIZE,
             cipher: None,
         };
 
@@ -95,12 +90,9 @@ impl<F:DBFileId> LogFile<F> {
         debug_assert_eq!(buf.len(), VLOG_HEADER_SIZE);
 
         let mut buf_ref: &[u8] = buf.as_ref();
-        let key_id = buf_ref.get_u64();
+        let cipher_key_id: CipherKeyId = buf_ref.get_u64().into();
 
-        if let Some(datakey) = log_file.key_registry.get_data_key(key_id).await? {
-            log_file.cipher=AesCipher::new(&datakey.data)?.into();
-            log_file.datakey = datakey.into();
-        };
+        log_file.cipher = log_file.key_registry.get_cipher(cipher_key_id).await?;
         let nonce = buf_ref.get(0..12);
         log_file.base_nonce = nonce.unwrap().to_vec();
 
@@ -125,29 +117,24 @@ impl<F:DBFileId> LogFile<F> {
     // +----------------+------------------+------------------+
     #[tracing::instrument]
     async fn bootstrap(&mut self) -> anyhow::Result<()> {
-        self.datakey = self.key_registry.latest_datakey().await?;
-        if let Some(dk) = &self.datakey {
-            self.cipher=AesCipher::new(&dk.data)?.into();
-            // self.cipher = self.key_registry.get_cipher(dk)?.into();
-        }
+        self.cipher = self.key_registry.latest_cipher().await?;
         self.base_nonce = AesCipher::generate_nonce().to_vec();
 
         let mut buf = Vec::with_capacity(VLOG_HEADER_SIZE);
-        buf.put_u64(self.get_key_id());
+        buf.put_u64(self.cipher_key_id().into());
         buf.put(self.base_nonce.as_ref());
 
         debug_assert_eq!(buf.len(), VLOG_HEADER_SIZE);
-        self.mmap.write_slice(0, &buf);
-        // self.mmap[0..buf.len()].copy_from_slice(&buf);
-        // self.zero_next_entry();
+        self.mmap.write_slice(0, &buf)?;
+        self.mmap.flush()?;
         Ok(())
     }
     #[inline]
-    fn get_key_id(&self) -> u64 {
-        match self.datakey {
-            Some(ref k) => k.key_id,
-            None => 0,
-        }
+    fn cipher_key_id(&self) -> CipherKeyId {
+        self.cipher
+            .as_ref()
+            .and_then(|x| x.cipher_key_id().into())
+            .unwrap_or_default()
     }
     #[inline]
     fn generate_nonce(&self, offset: usize) -> Vec<u8> {

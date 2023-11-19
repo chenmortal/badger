@@ -70,13 +70,12 @@ impl<'a, F: DBFileId> LogFileIter<'a, F> {
             self.record_offset,
             header_len,
         );
-
+        let hash = hash_reader.hasher.finalize();
         let mut crc_buf = (0 as u32).to_be_bytes();
-
-        hash_reader.read_exact(&mut crc_buf)?;
+        hash_reader.reader.read_exact(&mut crc_buf)?;
 
         let crc = crc_buf.as_slice().get_u32();
-        if hash_reader.hasher.finalize() != crc {
+        if hash != crc {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "failed to checksum crc32",
@@ -84,7 +83,7 @@ impl<'a, F: DBFileId> LogFileIter<'a, F> {
         };
 
         let size = header_len + key_len + value_len + crc_buf.len();
-        debug_assert!(size == hash_reader.len);
+        debug_assert!(size == hash_reader.len + 4);
 
         let v_ptr = ValuePointer::new(self.log_file.fid().into(), size, self.record_offset);
         self.record_offset += size;

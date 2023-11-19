@@ -33,15 +33,15 @@ pub struct ItemInner {
 }
 
 impl ItemInner {
-    pub fn set_key_ts(&mut self, key_ts: KeyTs) {
+    pub(crate) fn set_key_ts(&mut self, key_ts: KeyTs) {
         self.key_ts = key_ts;
     }
 
-    pub fn set_value_meta(&mut self, value_meta: ValueMeta) {
+    pub(crate) fn set_value_meta(&mut self, value_meta: ValueMeta) {
         self.value_meta = value_meta;
     }
 
-    pub fn set_status(&mut self, status: PrefetchStatus) {
+    pub(crate) fn set_status(&mut self, status: PrefetchStatus) {
         self.status = status;
     }
 }
