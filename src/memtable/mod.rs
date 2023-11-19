@@ -77,9 +77,8 @@ impl MemTableConfig {
         if fids.len() != 0 {
             self.next_fid
                 .store((*fids.last().unwrap()).into(), Ordering::SeqCst)
-        } else {
-            self.next_fid.fetch_add(1, Ordering::SeqCst);
         }
+        self.next_fid.fetch_add(1, Ordering::SeqCst);
 
         Ok(immut_memtable)
     }

@@ -39,18 +39,14 @@ lazy_static! {
 }
 
 //Transaction
-type TxnFuture = Pin<Box<dyn Future<Output = anyhow::Result<()>>>>;
+pub trait TxnUpdate {
+    async fn update(self, txn: &mut Txn) -> anyhow::Result<()>;
+}
 impl DB {
-    pub async fn update<F>(&self, f: F) -> anyhow::Result<()>
-    where
-        F: Fn(&mut Txn) -> TxnFuture,
-    {
+    pub async fn update<F: TxnUpdate>(&self, f: F) -> anyhow::Result<()> {
         #[inline]
-        async fn run<F>(txn: &mut Txn, f: F) -> anyhow::Result<()>
-        where
-            F: Fn(&mut Txn) -> TxnFuture,
-        {
-            f(txn).await?;
+        async fn run<F: TxnUpdate>(txn: &mut Txn, f: F) -> anyhow::Result<()> {
+            f.update(txn).await?;
             txn.commit().await
         }
 
@@ -66,7 +62,7 @@ impl DB {
         txn.discard().await?;
         result
     }
-    
+
     pub async fn get_update_txn(&self) -> anyhow::Result<Txn> {
         if self.is_closed() {
             bail!(DBError::DBClosed);
@@ -163,7 +159,7 @@ impl Txn {
         Ok(())
     }
 
-    pub async fn discard(&mut self) -> anyhow::Result<()> {
+    pub async fn discard(mut self) -> anyhow::Result<()> {
         if self.discarded() {
             return Ok(());
         }
@@ -435,5 +431,47 @@ impl Txn {
 
     pub(super) fn conflict_keys(&self) -> Option<&HashSet<u64>> {
         self.conflict_keys.as_ref()
+    }
+}
+#[cfg(test)]
+mod tests {
+    use std::{future::Future, pin::Pin};
+    trait Update {
+        async fn update(self, txn: &mut Txn) -> anyhow::Result<()>;
+    }
+    struct TxnManager;
+    #[derive(Debug)]
+    struct Txn;
+    struct UpdateK;
+    impl Update for UpdateK {
+        async fn update(self, txn: &mut Txn) -> anyhow::Result<()> {
+            println!("abc");
+            Ok(())
+        }
+    }
+    async fn update_data(txn: &mut Txn) -> anyhow::Result<()> {
+        println!("abc");
+        Ok(())
+    }
+    impl TxnManager {
+        fn update_async<F: Update>(&self, f: F) -> anyhow::Result<()>
+// where F:Update
+        // where
+        //     F: FnMut(&mut Txn) -> Pin<Box<dyn Future<Output = anyhow::Result<()>>>>,
+        {
+            let mut t = Txn;
+            let _ = f.update(&mut t);
+            Ok(())
+        }
+    }
+    // fn ab<F>(f: Pin<Box<fn(&mut Txn) -> impl Future<Output = anyhow::Result<()>>>>) {}
+    #[tokio::test]
+    async fn test_txn() {
+        let t = TxnManager;
+        let k = Box::pin(update_data);
+        // ab(k);
+        // t.update_async(|txn| async {
+
+        // });
     }
 }

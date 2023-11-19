@@ -9,10 +9,9 @@ use crate::{
     default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
     errors::DBError,
     key_registry::KeyRegistry,
-    kv::KeyTs,
     level::levels::LevelsController,
     memtable::MemTable,
-    txn::oracle::Oracle,
+    txn::oracle::{max_txn_ts, Oracle},
     util::closer::Closer,
     util::metrics::calculate_size,
     util::{
@@ -42,7 +41,6 @@ impl Deref for DB {
 }
 #[derive(Debug)]
 pub struct DBInner {
-    // pub(crate) next_mem_fid: NextId,
     pub(crate) key_registry: KeyRegistry,
     pub(crate) memtable: Option<Arc<RwLock<MemTable>>>,
     pub(crate) immut_memtable: RwLock<VecDeque<Arc<MemTable>>>,
@@ -61,14 +59,14 @@ pub struct DBInner {
     pub(crate) opt: Config,
     pub(crate) lock_guard: Option<DBLockGuard>,
 }
-impl DBInner {
+impl DB {
     pub async fn open(mut opt: Config) -> anyhow::Result<DB> {
-        Config::init(opt.clone())?;
+        opt.init()?;
 
         let lock_guard = opt.lock_guard.try_build()?;
 
         init_global_rayon_pool()?;
-        let manifest_file = opt.manifest.open()?;
+        let manifest = opt.manifest.open()?;
         let block_cache = opt.block_cache.try_build()?;
         let index_cache = opt.index_cache.build()?;
 
@@ -88,27 +86,32 @@ impl DBInner {
             .level_controller
             .build(
                 opt.table.clone(),
-                &manifest_file.manifest,
+                manifest.clone(),
                 key_registry.clone(),
                 &block_cache,
                 &index_cache,
             )
             .await?;
+
+        let max_version = max_txn_ts(&immut_memtable, &level_controller).await?;
+        let oracle = Oracle::new(opt.txn, max_version);
+
         let threshold = VlogThreshold::new(opt.vlog_threshold);
 
-        let vlog = ValueLog::new(threshold, key_registry.clone(), opt.vlog.clone())?;
+        let mut vlog = ValueLog::new(threshold, key_registry.clone(), opt.vlog.clone())?;
+        vlog.open().await?;
         let closer = Closer::new(1);
         let publisher = Publisher::new(closer.clone());
-        let (send_write_req, receiver) = mpsc::channel(KV_WRITES_ENTRIES_CHANNEL_CAPACITY);
+        let (send_write_req, recv_write_req) = mpsc::channel(KV_WRITES_ENTRIES_CHANNEL_CAPACITY);
         let (flush_memtable, recv_memtable) = mpsc::channel(opt.num_memtables());
-        let db: DB = DB(Arc::new(Self {
+        let db: DB = DB(Arc::new(DBInner {
             key_registry,
             memtable,
             immut_memtable,
             block_cache,
             index_cache,
             level_controller,
-            oracle: Default::default(),
+            oracle: oracle.into(),
             send_write_req,
             flush_memtable,
             vlog,
@@ -120,14 +123,18 @@ impl DBInner {
             opt,
             lock_guard,
         }));
+        let closer = Closer::new(1);
+        tokio::spawn(db.clone().do_writes(recv_write_req, closer));
         let flush_memtable = Closer::new(1);
         let _p = tokio::spawn(db.clone().flush_memtable(flush_memtable.clone()));
+
         // drop(value_dir_lock_guard);
         // drop(dir_lock_guard);
 
         Ok(db)
     }
-
+}
+impl DBInner {
     pub(crate) fn update_size() {}
     pub(crate) fn is_closed(&self) -> bool {
         self.is_closed.load(std::sync::atomic::Ordering::SeqCst)
@@ -151,5 +158,29 @@ impl DBInner {
             }
             None => Ok(()),
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use crate::{
+        config::Config,
+        db::DB,
+        txn::{Txn, TxnUpdate},
+    };
+
+    struct TxnTestUp;
+    impl TxnUpdate for TxnTestUp {
+        async fn update(self, txn: &mut Txn) -> anyhow::Result<()> {
+            txn.set("a", "1").await?;
+            println!("a");
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn test_write() -> anyhow::Result<()> {
+        let config = Config::default();
+        let db = DB::open(config).await?;
+        db.update(TxnTestUp).await?;
+        Ok(())
     }
 }

@@ -1,6 +1,6 @@
-use std::{cmp::Ordering, io};
 use std::ops::Deref;
 use std::sync::Arc;
+use std::{cmp::Ordering, io};
 
 use anyhow::anyhow;
 use tokio::sync::RwLock;
@@ -38,8 +38,8 @@ impl Deref for LevelHandlerInner {
 #[derive(Debug, Default)]
 pub(crate) struct LevelHandlerTables {
     pub(crate) tables: Vec<Table>,
-    total_size: usize,
-    total_stale_size: u32,
+    pub(crate) total_size: usize,
+    pub(crate) total_stale_size: u32,
 }
 impl LevelHandler {
     pub(crate) fn new(level: usize) -> Self {
@@ -52,6 +52,13 @@ impl LevelHandler {
     #[inline]
     pub(crate) fn get_level(&self) -> usize {
         self.0.level
+    }
+    #[inline]
+    pub(crate) async fn get_tables_len(&self) -> usize {
+        let tables_r = self.read().await;
+        let len = tables_r.tables.len();
+        drop(tables_r);
+        len
     }
     #[inline]
     pub(crate) fn get_str_level(&self) -> String {
@@ -68,19 +75,21 @@ impl LevelHandler {
         let mut inner_w = self.0.handler_tables.write().await;
 
         inner_w.tables = tables;
-        let mut total_size=0;
-        let mut total_stale_size=0;
+        let mut total_size = 0;
+        let mut total_stale_size = 0;
 
         inner_w.tables.iter().for_each(|t| {
             total_size += t.size();
             total_stale_size = t.stale_data_size();
         });
 
-        inner_w.total_size=total_size;
-        inner_w.total_stale_size=total_stale_size;
+        inner_w.total_size = total_size;
+        inner_w.total_stale_size = total_stale_size;
 
         if self.0.level == 0 {
-            inner_w.tables.sort_by(|a, b| a.table_id().cmp(&b.table_id()));
+            inner_w
+                .tables
+                .sort_by(|a, b| a.table_id().cmp(&b.table_id()));
         } else {
             inner_w
                 .tables

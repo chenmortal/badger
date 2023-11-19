@@ -214,13 +214,6 @@ impl Throttle {
 }
 
 #[inline(always)]
-pub(crate) fn secs_to_systime(secs: u64) -> SystemTime {
-    SystemTime::UNIX_EPOCH
-        .checked_add(Duration::from_secs(secs))
-        .unwrap()
-}
-
-#[inline(always)]
 pub(crate) fn compare_key(a: &[u8], b: &[u8]) -> Ordering {
     match a[..a.len() - 8].cmp(&b[..b.len() - 8]) {
         Ordering::Less => return Ordering::Less,

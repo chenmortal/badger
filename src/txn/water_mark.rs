@@ -60,10 +60,10 @@ impl Mark {
 }
 
 impl WaterMark {
-    pub(crate) fn new(name: &str, closer: Closer) -> Self {
+    pub(crate) fn new(name: &str, closer: Closer,done_until:TxnTs) -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel::<Mark>(100);
         let water_mark = WaterMark(Arc::new(WaterMarkInner {
-            done_until: AtomicU64::new(0),
+            done_until: AtomicU64::new(done_until.to_u64()),
             last_index: AtomicU64::new(0),
             sender,
             name: name.to_owned(),
@@ -90,9 +90,7 @@ impl WaterMark {
                         pending.insert(txn_ts, if done { 1 } else { -1 });
                     }
                 };
-                if done {
-                    return;
-                }
+
                 let done_until = self.done_until();
                 assert!(
                     done_until <= txn_ts,
@@ -129,7 +127,7 @@ impl WaterMark {
                 }
                 assert!(done_until <= until);
                 if until.to_u64() - done_until.to_u64() <= waiters.len() as u64 {
-                    for idx in done_until.to_u64()..=until.to_u64() {
+                    for idx in (done_until.to_u64() + 1)..=until.to_u64() {
                         let txn: TxnTs = idx.into();
                         if let Some(to_notifies) = waiters.get(&txn) {
                             to_notifies.iter().for_each(|x| x.notify_one());

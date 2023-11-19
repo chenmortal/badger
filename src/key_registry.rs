@@ -3,13 +3,14 @@ use aead::generic_array::GenericArray;
 use aead::{Aead, AeadCore, KeyInit, OsRng};
 #[cfg(feature = "aes-gcm")]
 use aes_gcm::{Aes128Gcm, Aes256Gcm};
-
 #[cfg(feature = "aes-gcm-siv")]
-use aes_gcm_siv::{Aes128GcmSiv, Aes256GcmSiv, Nonce};
+use aes_gcm_siv::Aes128GcmSiv as Aes128Gcm;
+#[cfg(feature = "aes-gcm-siv")]
+use aes_gcm_siv::Aes256GcmSiv as Aes256Gcm;
 pub type Nonce = GenericArray<u8, U12>;
 use crate::default::DEFAULT_DIR;
 use crate::kv::PhyTs;
-use crate::util::{secs_to_systime, sys::sync_dir};
+use crate::util::sys::sync_dir;
 use crate::{errors::DBError, pb::badgerpb4::DataKey};
 
 use anyhow::anyhow;
@@ -17,7 +18,7 @@ use anyhow::bail;
 use bytes::{Buf, BufMut};
 use log::error;
 use prost::Message;
-use std::ops::Deref;
+use std::ops::{Add, AddAssign, Deref};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -34,42 +35,53 @@ const KEY_REGISTRY_REWRITE_FILE_NAME: &str = "REWRITE-KEYREGISTRY";
 const SANITYTEXT: &[u8] = b"Hello Badger";
 pub const NONCE_SIZE: usize = 12;
 #[derive(Debug, Default, Clone)]
-pub(crate) struct KeyRegistry {
-    inner: Arc<RwLock<KeyRegistryInner>>,
-    is_siv: bool,
-}
+pub(crate) struct KeyRegistry(Arc<RwLock<KeyRegistryInner>>);
 impl Deref for KeyRegistry {
     type Target = Arc<RwLock<KeyRegistryInner>>;
 
     fn deref(&self) -> &Self::Target {
-        &self.inner
+        &self.0
+    }
+}
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct CipherKeyId(u64);
+impl From<u64> for CipherKeyId {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+impl Into<u64> for CipherKeyId {
+    fn into(self) -> u64 {
+        self.0
     }
 }
 
-// impl KeyRegistry {
-//     pub(crate) async fn open() -> anyhow::Result<Self> {
-//         Ok(Self(Arc::new(RwLock::new(KeyRegistryInner::open().await?))))
-//     }
-// }
+impl Add<u64> for CipherKeyId {
+    type Output = Self;
+
+    fn add(self, rhs: u64) -> Self::Output {
+        (self.0 + rhs).into()
+    }
+}
+impl AddAssign<u64> for CipherKeyId {
+    fn add_assign(&mut self, rhs: u64) {
+        self.0 += rhs
+    }
+}
 #[derive(Debug, Default)]
 pub(crate) struct KeyRegistryInner {
-    data_keys: HashMap<u64, DataKey>,
-    last_created: u64, //last_created is the timestamp(seconds) of the last data key,
-    next_key_id: u64,
+    data_keys: HashMap<CipherKeyId, DataKey>,
+    last_created: PhyTs, //last_created is the timestamp(seconds) of the last data key,
+    next_key_id: CipherKeyId,
     fp: Option<File>,
     cipher: Option<AesCipher>,
     data_key_rotation_duration: Duration,
-    is_siv: bool,
-    // dir: PathBuf,
-    // read_only: bool,
-    // cipher_rotation_duration: Duration,
 }
 #[derive(Debug, Clone)]
 pub struct KeyRegistryConfig {
     // Encryption related options.
     encrypt_key: Vec<u8>,                 // encryption key
     data_key_rotation_duration: Duration, // key rotation duration
-    is_siv: bool,                         //use aes_gcm or aes_gcm_siv
     read_only: bool,
     dir: PathBuf,
 }
@@ -78,7 +90,6 @@ impl Default for KeyRegistryConfig {
         Self {
             encrypt_key: Default::default(),
             data_key_rotation_duration: Duration::from_secs(10 * 24 * 60 * 60),
-            is_siv: true,
             read_only: false,
             dir: PathBuf::from(DEFAULT_DIR),
         }
@@ -86,20 +97,15 @@ impl Default for KeyRegistryConfig {
 }
 impl KeyRegistryConfig {
     pub(crate) async fn open(&self) -> anyhow::Result<KeyRegistry> {
-        let mut key_registry = KeyRegistryInner::new(
-            &self.encrypt_key,
-            self.data_key_rotation_duration,
-            self.is_siv,
-        )?;
+        let mut key_registry =
+            KeyRegistryInner::new(&self.encrypt_key, self.data_key_rotation_duration)?;
 
-        // let read_only = Options::read_only();
         let key_registry_path = self.dir.join(KEY_REGISTRY_FILE_NAME);
         if !key_registry_path.exists() {
             if self.read_only {
-                return Ok(KeyRegistry {
-                    inner: Arc::new(RwLock::new(key_registry)),
-                    is_siv: self.is_siv,
-                });
+                return Ok(KeyRegistry(
+                    Arc::new(RwLock::new(key_registry)), // is_siv: self.is_siv,
+                ));
             }
             key_registry
                 .write_to_file(&self.dir)
@@ -117,13 +123,9 @@ impl KeyRegistryConfig {
         key_registry.read(&key_registry_fp).await?;
         if !self.read_only {
             key_registry.fp = Some(key_registry_fp);
-            // return Ok(key_registry.into());
         }
 
-        return Ok(KeyRegistry {
-            inner: Arc::new(RwLock::new(key_registry)),
-            is_siv: self.is_siv,
-        });
+        return Ok(KeyRegistry(Arc::new(RwLock::new(key_registry))));
     }
 
     pub fn set_dir(&mut self, dir: PathBuf) {
@@ -136,10 +138,6 @@ impl KeyRegistryConfig {
         self.read_only = read_only;
     }
 
-    pub fn set_is_siv(&mut self, is_siv: bool) {
-        self.is_siv = is_siv;
-    }
-
     pub fn set_data_key_rotation_duration(&mut self, data_key_rotation_duration: Duration) {
         self.data_key_rotation_duration = data_key_rotation_duration;
     }
@@ -147,34 +145,29 @@ impl KeyRegistryConfig {
     pub fn set_encrypt_key(&mut self, encrypt_key: Vec<u8>) {
         self.encrypt_key = encrypt_key;
     }
+
+    pub fn encrypt_key(&self) -> &[u8] {
+        self.encrypt_key.as_ref()
+    }
 }
 impl KeyRegistryInner {
-    fn new(
-        encrypt_key: &[u8],
-        data_key_rotation_duration: Duration,
-        is_siv: bool,
-    ) -> anyhow::Result<Self> {
+    fn new(encrypt_key: &[u8], data_key_rotation_duration: Duration) -> anyhow::Result<Self> {
         let keys_len = encrypt_key.len();
         if keys_len > 0 && !vec![16, 32].contains(&keys_len) {
             bail!("{:?} During OpenKeyRegistry", DBError::InvalidEncryptionKey);
         }
         let cipher: Option<AesCipher> = if keys_len > 0 {
-            AesCipher::new(encrypt_key).ok()
+            AesCipher::new(encrypt_key, 0.into()).ok()
         } else {
             None
         };
         Ok(Self {
-            // rw: Default::default(),
             data_keys: Default::default(),
-            last_created: 0,
-            next_key_id: 0,
+            last_created: 0.into(),
+            next_key_id: 0.into(),
             fp: None,
             cipher,
             data_key_rotation_duration,
-            is_siv,
-            // dir: opt.dir.clone(),
-            // read_only: opt.read_only,
-            // cipher_rotation_duration: opt.encryption_key_rotation_duration,
         })
     }
     //     Structure of Key Registry.
@@ -190,14 +183,12 @@ impl KeyRegistryInner {
                 e_sanity = e;
             };
         }
-        // let mut buf = bytes::BytesMut::new();
         let mut buf = Vec::with_capacity(12 + 4 + 12 + 16);
         buf.put_slice(nonce.as_slice());
         buf.put_u32(e_sanity.len() as u32);
         buf.put_slice(&e_sanity);
 
         for (_, data_key) in self.data_keys.iter_mut() {
-            // let d:DataKey = data_key.;
             Self::store_data_key(&mut buf, &self.cipher, data_key)
                 .map_err(|e| anyhow!("Error while storing datakey in WriteKeyRegistry {}", e))?;
         }
@@ -263,38 +254,29 @@ impl KeyRegistryInner {
     async fn read(&mut self, fp: &File) -> anyhow::Result<()> {
         let key_iter = KeyRegistryIter::new(fp, &self.cipher)?;
         for data_key in key_iter {
-            if data_key.key_id > self.next_key_id {
-                self.next_key_id = data_key.key_id;
-            }
-            if data_key.created_at > self.last_created {
-                self.last_created = data_key.created_at;
-            }
-            self.data_keys
-                // .write()
-                // .await
-                .insert(data_key.key_id, data_key);
+            self.next_key_id = self.next_key_id.max(data_key.key_id.into());
+            self.last_created = self.last_created.max(data_key.created_at.into());
+            self.data_keys.insert(data_key.key_id.into(), data_key);
         }
         Ok(())
     }
 }
 impl KeyRegistry {
-    pub(crate) async fn latest_cipher(&self) -> Option<AesCipher> {
-        if let Ok(d) = self.latest_datakey().await {
-            if let Some(data_key) = d {
-                return AesCipher::new(&data_key.data).ok();
-            }
-        }
-        None
+    pub(crate) async fn latest_cipher(&self) -> anyhow::Result<Option<AesCipher>> {
+        if let Some(data_key) = self.latest_datakey().await? {
+            return Ok(AesCipher::new(&data_key.data, data_key.key_id.into())?.into());
+        };
+        Ok(None)
     }
 
-    pub(crate) async fn latest_datakey(&self) -> anyhow::Result<Option<DataKey>> {
+    async fn latest_datakey(&self) -> anyhow::Result<Option<DataKey>> {
         let inner_r = self.read().await;
         if inner_r.cipher.is_none() {
             return Ok(None);
         }
 
         let valid_key = |inner: &KeyRegistryInner| {
-            let last = secs_to_systime(inner.last_created);
+            let last = inner.last_created.into();
             if let Ok(diff) = SystemTime::now().duration_since(last) {
                 if diff < inner.data_key_rotation_duration {
                     return (
@@ -325,11 +307,12 @@ impl KeyRegistry {
         let nonce: Nonce = AesCipher::generate_nonce();
         inner_w.next_key_id += 1;
         let key_id = inner_w.next_key_id;
+        let created_at = PhyTs::now()?;
         let mut data_key = DataKey {
-            key_id,
+            key_id: key_id.into(),
             data: key,
             iv: nonce.to_vec(),
-            created_at: PhyTs::now().unwrap().to_u64(),
+            created_at: created_at.to_u64(),
         };
         let mut buf = Vec::new();
         KeyRegistryInner::store_data_key(&mut buf, &inner_w.cipher, &mut data_key)?;
@@ -337,25 +320,32 @@ impl KeyRegistry {
             f.write_all(&buf)?;
         }
 
-        inner_w.last_created = data_key.created_at;
+        inner_w.last_created = created_at;
         inner_w.data_keys.insert(key_id, data_key.clone());
         Ok(Some(data_key))
     }
-    pub(crate) async fn get_data_key(&self, id: u64) -> anyhow::Result<Option<DataKey>> {
+    async fn get_data_key(&self, cipher_key_id: CipherKeyId) -> anyhow::Result<Option<DataKey>> {
         let inner_r = self.read().await;
-        if id == 0 {
+        if cipher_key_id == CipherKeyId::default() {
             return Ok(None);
         }
-        match inner_r.data_keys.get(&id) {
+        match inner_r.data_keys.get(&cipher_key_id) {
             Some(s) => Ok(Some(s.clone())),
             None => {
-                bail!("{} Error for the KEY ID {}", DBError::InvalidDataKeyID, id)
+                bail!(
+                    "{} Error for the KEY ID {:?}",
+                    DBError::InvalidDataKeyID,
+                    cipher_key_id
+                )
             }
         }
     }
-    pub(crate) async fn get_cipher(&self, id: u64) -> anyhow::Result<Option<AesCipher>> {
-        if let Some(dk) = self.get_data_key(id).await? {
-            let cipher = AesCipher::new(&dk.data)?;
+    pub(crate) async fn get_cipher(
+        &self,
+        cipher_key_id: CipherKeyId,
+    ) -> anyhow::Result<Option<AesCipher>> {
+        if let Some(dk) = self.get_data_key(cipher_key_id).await? {
+            let cipher = AesCipher::new(&dk.data, cipher_key_id)?;
             return Ok(cipher.into());
         };
         Ok(None)
@@ -466,7 +456,6 @@ impl<'a> Iterator for KeyRegistryIter<'a> {
             }
         };
         if let Some(c) = self.cipher {
-            // let nonce: &Nonce = Nonce::from_slice(&data_key.iv);
             match c.decrypt_with_slice(&data_key.iv, &data_key.data) {
                 Some(data) => {
                     data_key.data = data;
@@ -481,60 +470,34 @@ impl<'a> Iterator for KeyRegistryIter<'a> {
         Some(data_key)
     }
 }
+
 #[derive(Clone)]
 pub(crate) enum AesCipher {
-    #[cfg(feature = "aes-gcm")]
-    Aes128(Aes128Gcm),
-    #[cfg(feature = "aes-gcm-siv")]
-    Aes128Siv(Aes128GcmSiv),
-    #[cfg(feature = "aes-gcm")]
-    Aes256(Aes256Gcm),
-    #[cfg(feature = "aes-gcm-siv")]
-    Aes256Siv(Aes256GcmSiv),
+    Aes128(Aes128Gcm, CipherKeyId),
+    Aes256(Aes256Gcm, CipherKeyId),
 }
 
 impl Debug for AesCipher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         #[cfg(feature = "aes-gcm")]
         match self {
-            Self::Aes128(_) => f.debug_tuple("Aes128").finish(),
-            Self::Aes256(_) => f.debug_tuple("Aes256").finish(),
+            Self::Aes128(_, id) => f.debug_tuple("Aes128:").field(id).finish(),
+            Self::Aes256(_, id) => f.debug_tuple("Aes256:").field(id).finish(),
         }
         #[cfg(feature = "aes-gcm-siv")]
         match self {
-            Self::Aes128Siv(_) => f.debug_tuple("Aes128Siv").finish(),
-            Self::Aes256Siv(_) => f.debug_tuple("Aes256Siv").finish(),
+            Self::Aes128(_, id) => f.debug_tuple("Aes128Siv:").field(id).finish(),
+            Self::Aes256(_, id) => f.debug_tuple("Aes256Siv:").field(id).finish(),
         }
     }
 }
 
 impl AesCipher {
     #[inline]
-    pub(crate) fn new(key: &[u8]) -> anyhow::Result<Self> {
+    pub(crate) fn new(key: &[u8], id: CipherKeyId) -> anyhow::Result<Self> {
         let cipher = match key.len() {
-            16 => {
-                #[cfg(feature = "aes-gcm")]
-                return Ok(Self::Aes128(
-                    aes_gcm::Aes128Gcm::new_from_slice(key).unwrap(),
-                ));
-                #[cfg(feature = "aes-gcm-siv")]
-                return Ok(Self::Aes128Siv(
-                    aes_gcm_siv::Aes128GcmSiv::new_from_slice(key).unwrap(),
-                ));
-            }
-            32 => {
-                // if is_siv {
-                #[cfg(feature = "aes-gcm")]
-                return Ok(Self::Aes256(
-                    aes_gcm::Aes256Gcm::new_from_slice(key).unwrap(),
-                ));
-                // } else {
-                #[cfg(feature = "aes-gcm-siv")]
-                return Ok(Self::Aes256Siv(
-                    aes_gcm_siv::Aes256GcmSiv::new_from_slice(key).unwrap(),
-                ));
-                // }
-            }
+            16 => Self::Aes128(Aes128Gcm::new_from_slice(key).unwrap(), id),
+            32 => Self::Aes256(Aes256Gcm::new_from_slice(key).unwrap(), id),
             _ => {
                 bail!(
                     "{:?} During Create Aes Cipher",
@@ -542,19 +505,19 @@ impl AesCipher {
                 );
             }
         };
-        // Ok(cipher)
+        Ok(cipher)
+    }
+    pub(crate) fn cipher_key_id(&self) -> CipherKeyId {
+        match self {
+            AesCipher::Aes128(_, id) => *id,
+            AesCipher::Aes256(_, id) => *id,
+        }
     }
     #[inline]
     pub(crate) fn encrypt(&self, nonce: &Nonce, plaintext: &[u8]) -> Option<Vec<u8>> {
-        #[cfg(feature = "aes-gcm")]
         match self {
-            AesCipher::Aes128(ref cipher) => cipher.encrypt(nonce, plaintext).ok(),
-            AesCipher::Aes256(ref cipher) => cipher.encrypt(nonce, plaintext).ok(),
-        }
-        #[cfg(feature = "aes-gcm-siv")]
-        match self {
-            AesCipher::Aes128Siv(ref cipher) => cipher.encrypt(nonce, plaintext).ok(),
-            AesCipher::Aes256Siv(ref cipher) => cipher.encrypt(nonce, plaintext).ok(),
+            AesCipher::Aes128(ref cipher, _) => cipher.encrypt(nonce, plaintext).ok(),
+            AesCipher::Aes256(ref cipher, _) => cipher.encrypt(nonce, plaintext).ok(),
         }
     }
     #[inline]
@@ -563,15 +526,9 @@ impl AesCipher {
     }
     #[inline]
     pub(crate) fn decrypt(&self, nonce: &Nonce, ciphertext: &[u8]) -> Option<Vec<u8>> {
-        #[cfg(feature = "aes-gcm")]
         match self {
-            AesCipher::Aes128(ref cipher) => cipher.decrypt(nonce, ciphertext).ok(),
-            AesCipher::Aes256(ref cipher) => cipher.decrypt(nonce, ciphertext).ok(),
-        }
-        #[cfg(feature = "aes-gcm-siv")]
-        match self {
-            AesCipher::Aes128Siv(ref cipher) => cipher.decrypt(nonce, ciphertext).ok(),
-            AesCipher::Aes256Siv(ref cipher) => cipher.decrypt(nonce, ciphertext).ok(),
+            AesCipher::Aes128(ref cipher, _) => cipher.decrypt(nonce, ciphertext).ok(),
+            AesCipher::Aes256(ref cipher, _) => cipher.decrypt(nonce, ciphertext).ok(),
         }
     }
     #[inline]
@@ -580,22 +537,13 @@ impl AesCipher {
     }
     #[inline]
     fn generate_key(&self) -> Vec<u8> {
-        #[cfg(feature = "aes-gcm")]
         match self {
-            AesCipher::Aes128(_) => aes_gcm::Aes128Gcm::generate_key(&mut OsRng).to_vec(),
-            AesCipher::Aes256(_) => aes_gcm::Aes256Gcm::generate_key(&mut OsRng).to_vec(),
-        }
-        #[cfg(feature = "aes-gcm-siv")]
-        match self {
-            AesCipher::Aes128Siv(_) => aes_gcm_siv::Aes128GcmSiv::generate_key(&mut OsRng).to_vec(),
-            AesCipher::Aes256Siv(_) => aes_gcm_siv::Aes256GcmSiv::generate_key(&mut OsRng).to_vec(),
+            AesCipher::Aes128(_, _) => Aes128Gcm::generate_key(&mut OsRng).to_vec(),
+            AesCipher::Aes256(_, _) => Aes256Gcm::generate_key(&mut OsRng).to_vec(),
         }
     }
     #[inline]
     pub(crate) fn generate_nonce() -> Nonce {
-        #[cfg(feature = "aes-gcm")]
-        return aes_gcm::Aes128Gcm::generate_nonce(&mut OsRng);
-        #[cfg(feature = "aes-gcm-siv")]
-        aes_gcm_siv::Aes128GcmSiv::generate_nonce(&mut OsRng)
+        Aes128Gcm::generate_nonce(&mut OsRng)
     }
 }

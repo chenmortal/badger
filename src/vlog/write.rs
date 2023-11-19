@@ -35,7 +35,7 @@ impl ValueLog {
         self.validate_write(reqs)?;
 
         let mut buf = Vec::with_capacity(DEFAULT_PAGE_SIZE.to_owned());
-
+        #[cfg(feature = "metrics")]
         let sender = self.threshold.sender();
         let mut cur_logfile = self.get_latest_logfile().await?;
 
@@ -44,9 +44,9 @@ impl ValueLog {
             let entries_vptrs = req.entries_vptrs_mut();
             let mut value_sizes = Vec::with_capacity(entries_vptrs.len());
             let mut written = 0;
+            #[cfg(feature = "metrics")]
             let mut bytes_written = 0;
             for (dec_entry, vptr) in entries_vptrs {
-                buf.clear();
                 value_sizes.push(dec_entry.value().len());
                 dec_entry.try_set_value_threshold(self.threshold.value_threshold());
                 if dec_entry.value().len() < dec_entry.value_threshold() {
@@ -73,19 +73,25 @@ impl ValueLog {
                     if end_offset >= cur_logfile_w.len() {
                         cur_logfile_w.truncate(end_offset)?;
                     };
-                    cur_logfile_w.write_slice(start_offset, &buf);
+                    cur_logfile_w.write_slice(start_offset, &buf)?;
                     // cur_logfile_w.mmap[start_offset..end_offset].copy_from_slice(&buf);
                 }
                 written += 1;
-                bytes_written += buf.len();
+                #[cfg(feature = "metrics")]
+                {
+                    bytes_written += buf.len();
+                }
             }
             #[cfg(feature = "metrics")]
-            add_num_writes_vlog(written);
-            #[cfg(feature = "metrics")]
-            add_num_bytes_vlog_written(bytes_written);
+            {
+                add_num_writes_vlog(written);
+                add_num_bytes_vlog_written(bytes_written);
+                sender.send(value_sizes).await?;
+            }
+
             self.num_entries_written
                 .fetch_add(written, Ordering::SeqCst);
-            sender.send(value_sizes).await?;
+
             let w_offset = self.writable_log_offset();
             if w_offset > self.config.vlog_file_size
                 || self.num_entries_written.load(Ordering::SeqCst) > self.config.vlog_max_entries
@@ -152,6 +158,7 @@ impl ValueLog {
 }
 impl<F: DBFileId> LogFile<F> {
     pub(crate) fn encode_entry(&self, buf: &mut Vec<u8>, entry: &Entry, offset: usize) -> usize {
+        buf.clear();
         let header = VlogEntryHeader::new(&entry);
         let mut hash_writer = HashWriter {
             writer: buf,

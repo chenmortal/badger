@@ -3,7 +3,7 @@ use std::{
     fs::{remove_file, OpenOptions},
     path::PathBuf,
     sync::{
-        atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
     time::{Duration, SystemTime},
@@ -11,6 +11,7 @@ use std::{
 
 use anyhow::anyhow;
 use anyhow::bail;
+use bytes::Bytes;
 use log::{debug, error, info};
 use rand::Rng;
 use tokio::{select, sync::Semaphore};
@@ -25,8 +26,9 @@ use crate::util::metrics::{add_num_compaction_tables, sub_num_compaction_tables}
 use crate::{
     default::DEFAULT_DIR,
     key_registry::KeyRegistry,
+    kv::TxnTs,
     level::compaction::LevelCompactStatus,
-    manifest::Manifest,
+    manifest::{Manifest, ManifestInfo},
     pb::ChecksumError,
     table::{
         iter::{ConcatIter, TableIter},
@@ -45,8 +47,9 @@ use crate::{
 };
 #[derive(Debug)]
 pub(crate) struct LevelsController {
+    manifest: Manifest,
     next_file_id: AtomicU32,
-    level_0_stalls_ms: AtomicI64,
+    level_0_stalls_ms: AtomicU64,
     levels: Vec<LevelHandler>,
     compact_status: CompactStatus,
     memtable_size: usize,
@@ -131,12 +134,16 @@ impl LevelsControllerConfig {
     pub fn set_dir(&mut self, dir: PathBuf) {
         self.dir = dir;
     }
+
+    pub fn num_level_zero_tables_stall(&self) -> usize {
+        self.num_level_zero_tables_stall
+    }
 }
 impl LevelsControllerConfig {
     pub(crate) async fn build(
         &self,
         table_config: TableConfig,
-        manifest: &Arc<parking_lot::Mutex<Manifest>>,
+        manifest: Manifest,
         key_registry: KeyRegistry,
         block_cache: &Option<BlockCache>,
         index_cache: &IndexCache,
@@ -153,7 +160,7 @@ impl LevelsControllerConfig {
         let (max_file_id, level_tables) = self
             .open_tables_by_manifest(
                 table_config.clone(),
-                manifest,
+                &manifest,
                 key_registry,
                 block_cache,
                 index_cache,
@@ -179,6 +186,7 @@ impl LevelsControllerConfig {
             max_levels: self.max_levels,
             level_config: self.clone(),
             table_config,
+            manifest,
         };
 
         levels_control.validate().await?;
@@ -218,7 +226,7 @@ impl LevelsControllerConfig {
     async fn open_tables_by_manifest(
         &self,
         default_table_config: TableConfig,
-        manifest: &Arc<parking_lot::Mutex<Manifest>>,
+        manifest: &Manifest,
         key_registry: KeyRegistry,
         block_cache: &Option<BlockCache>,
         index_cache: &IndexCache,
@@ -880,24 +888,26 @@ impl LevelsController {
         self.next_file_id.fetch_add(1, Ordering::AcqRel).into()
     }
 
-    pub(crate) fn levels(&self) -> &Vec<LevelHandler> {
-        &self.levels
+    pub(crate) fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+
+    pub(crate) fn levels(&self) -> &[LevelHandler] {
+        self.levels.as_ref()
+    }
+
+    pub(crate) fn level_config(&self) -> &LevelsControllerConfig {
+        &self.level_config
+    }
+
+    pub(crate) fn level_0_stalls_ms(&self) -> &AtomicU64 {
+        &self.level_0_stalls_ms
     }
 }
 
-// #[inline]
-// async fn close_all_tables(tables: &Arc<Mutex<BTreeMap<u8, Vec<Table>>>>) {
-//     let tables_m = tables.lock().await;
-//     for (_, table_slice) in tables_m.iter() {
-//         for table in table_slice {
-//             let _ = table.sync_mmap();
-//         }
-//     }
-//     drop(tables_m);
-// }
 pub(crate) fn revert_to_manifest(
     dir: &PathBuf,
-    manifest: &Manifest,
+    manifest: &ManifestInfo,
     sst_id_set: HashSet<SSTableId>,
 ) -> anyhow::Result<()> {
     //check all files in manifest exist;
@@ -919,4 +929,59 @@ pub(crate) fn revert_to_manifest(
         }
     }
     Ok(())
+}
+pub(crate) struct TableInfo {
+    table_id: SSTableId,
+    level: usize,
+    left: Bytes,
+    right: Bytes,
+    key_count: u32,
+    on_disk_size: u32,
+    stale_data_size: u32,
+    index_len: usize,
+    bloom_filter_len: usize,
+    uncompressed_size: u32,
+    max_version: TxnTs,
+}
+
+impl TableInfo {
+    pub(crate) fn max_version(&self) -> TxnTs {
+        self.max_version
+    }
+}
+impl LevelsController {
+    pub(crate) async fn get_table_info(&self) -> anyhow::Result<Vec<TableInfo>> {
+        let mut results = Vec::with_capacity(self.levels.len() * 20);
+        for level in self.levels.iter() {
+            let handler = level.read().await;
+            for table in handler.tables.iter() {
+                let info = TableInfo {
+                    table_id: table.table_id(),
+                    level: level.level(),
+                    left: table.smallest().clone(),
+                    right: table.biggest().clone(),
+                    key_count: table.key_count(),
+                    on_disk_size: table.on_disk_size(),
+                    #[cfg(not(feature = "async_cache"))]
+                    stale_data_size: table.get_stale_data_size()?,
+                    #[cfg(feature = "async_cache")]
+                    stale_data_size: table.get_stale_data_size().await?,
+                    index_len: table.index_len(),
+                    bloom_filter_len: table.bloom_filter_len(),
+                    uncompressed_size: table.uncompressed_size(),
+                    max_version: table.max_version(),
+                };
+                results.push(info);
+            }
+            drop(handler);
+        }
+        results.sort_unstable_by(|a, b| {
+            match a.level.cmp(&b.level) {
+                std::cmp::Ordering::Equal => {}
+                ord => return ord,
+            }
+            a.table_id.cmp(&b.table_id)
+        });
+        Ok(results)
+    }
 }

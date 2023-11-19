@@ -3,8 +3,8 @@ use integer_encoding::VarInt;
 use std::{
     fmt::Display,
     mem,
-    ops::{Deref, Sub},
-    time::{SystemTime, SystemTimeError},
+    ops::{Add, AddAssign, Deref, Sub},
+    time::{Duration, SystemTime, SystemTimeError},
 };
 
 use crate::vlog::header::VlogEntryHeader;
@@ -163,16 +163,27 @@ impl Entry {
 pub struct TxnTs(u64);
 impl TxnTs {
     #[inline(always)]
-    pub(crate) fn sub_one(&self) -> Self {
-        Self(self.0 - 1)
-    }
-    #[inline(always)]
-    pub(crate) fn add_one_mut(&mut self) {
-        self.0 += 1;
-    }
-    #[inline(always)]
     pub(crate) fn to_u64(&self) -> u64 {
         self.0
+    }
+}
+impl Add<u64> for TxnTs {
+    type Output = Self;
+
+    fn add(self, rhs: u64) -> Self::Output {
+        (self.0 + rhs).into()
+    }
+}
+impl Sub<u64> for TxnTs {
+    type Output = Self;
+
+    fn sub(self, rhs: u64) -> Self::Output {
+        (self.0 - rhs).into()
+    }
+}
+impl AddAssign<u64> for TxnTs {
+    fn add_assign(&mut self, rhs: u64) {
+        self.0 += rhs;
     }
 }
 impl Display for TxnTs {
@@ -196,6 +207,13 @@ impl From<u64> for PhyTs {
 impl Into<u64> for PhyTs {
     fn into(self) -> u64 {
         self.0
+    }
+}
+impl Into<SystemTime> for PhyTs {
+    fn into(self) -> SystemTime {
+        SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(self.0))
+            .unwrap()
     }
 }
 impl PhyTs {

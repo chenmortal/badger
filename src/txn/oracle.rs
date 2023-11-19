@@ -1,14 +1,19 @@
-use std::{collections::HashSet, ops::Deref};
+use std::{
+    collections::{HashSet, VecDeque},
+    ops::Deref,
+    sync::Arc,
+};
 
 use anyhow::{bail, Ok};
 use parking_lot::{Mutex, MutexGuard};
+use tokio::sync::RwLock;
 
-use crate::{errors::DBError, kv::TxnTs, util::closer::Closer};
-
-use super::{
-    water_mark::{Mark, WaterMark},
-    Txn, TxnConfig,
+use crate::{
+    errors::DBError, kv::TxnTs, level::levels::LevelsController, memtable::MemTable,
+    util::closer::Closer,
 };
+
+use super::{water_mark::WaterMark, Txn, TxnConfig};
 #[derive(Debug)]
 pub(crate) struct Oracle {
     inner: Mutex<OracleInner>,
@@ -27,7 +32,7 @@ impl Deref for Oracle {
 }
 impl Default for Oracle {
     fn default() -> Self {
-        Oracle::new(TxnConfig::default())
+        Oracle::new(TxnConfig::default(), 0.into())
     }
 }
 #[derive(Debug, Default)]
@@ -43,12 +48,14 @@ struct CommittedTxn {
     conflict_keys: HashSet<u64>,
 }
 impl Oracle {
-    pub(crate) fn new(config: TxnConfig) -> Self {
+    pub(crate) fn new(config: TxnConfig, max_version: TxnTs) -> Self {
         let closer = Closer::new(2);
+        let mut inner = OracleInner::default();
+        inner.next_txn_ts = max_version + 1;
         Self {
-            inner: Mutex::new(OracleInner::default()),
-            read_mark: WaterMark::new("badger.PendingReads", closer.clone()),
-            txn_mark: WaterMark::new("badger.TxnTimestamp", closer.clone()),
+            inner: Mutex::new(inner),
+            read_mark: WaterMark::new("badger.PendingReads", closer.clone(), max_version),
+            txn_mark: WaterMark::new("badger.TxnTimestamp", closer.clone(), max_version),
             send_write_req: Mutex::new(()),
             closer,
             config,
@@ -72,7 +79,7 @@ impl Oracle {
             panic!("ReadTimestamp should not be retrieved for managed DB");
         }
         let inner_lock = self.inner.lock();
-        let read_ts = inner_lock.next_txn_ts.sub_one();
+        let read_ts = inner_lock.next_txn_ts - 1;
         self.read_mark.begin(read_ts).await?;
         drop(inner_lock);
         self.txn_mark.wait_for_mark(read_ts).await?;
@@ -105,7 +112,7 @@ impl Oracle {
             self.cleanup_committed_txns(&mut inner_lock);
 
             let txn_ts = inner_lock.next_txn_ts;
-            inner_lock.next_txn_ts.add_one_mut();
+            inner_lock.next_txn_ts += 1;
             self.txn_mark.begin(txn_ts).await?;
             txn_ts
         } else {
@@ -158,4 +165,19 @@ impl Oracle {
     pub(crate) fn read_mark(&self) -> &WaterMark {
         &self.read_mark
     }
+}
+pub(crate) async fn max_txn_ts(
+    immut_memtable: &RwLock<VecDeque<Arc<MemTable>>>,
+    controller: &LevelsController,
+) -> anyhow::Result<TxnTs> {
+    let mut max_version = TxnTs::default();
+    let mem_r = immut_memtable.read().await;
+    for mem in mem_r.iter() {
+        max_version = max_version.max(mem.max_version);
+    }
+    drop(mem_r);
+    for info in controller.get_table_info().await? {
+        max_version = max_version.max(info.max_version());
+    }
+    Ok(max_version)
 }

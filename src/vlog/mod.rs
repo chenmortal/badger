@@ -29,6 +29,7 @@ pub(crate) mod header;
 pub(crate) mod read;
 pub(crate) mod threshold;
 pub(crate) mod write;
+mod histogram;
 // size of vlog header.
 // +----------------+------------------+
 // | keyID(8 bytes) |  baseIV(12 bytes)|
@@ -144,6 +145,7 @@ impl ValueLog {
             self.create_vlog_file()
                 .await
                 .map_err(|e| anyhow!("Error while creating log file in vlog.open for {}", e))?;
+            return Ok(());
         }
 
         let last_logfile = self.get_latest_logfile().await?;
@@ -227,17 +229,7 @@ impl ValueLog {
         drop(fid_logfile_w);
         Ok(new_logfile)
     }
-    #[inline]
-    pub(crate) async fn get_logfile(&self, fid: VlogId) -> Option<Arc<RwLock<LogFile<VlogId>>>> {
-        let p = self.fid_logfile.read().await;
-        let r = if let Some(s) = p.get(&fid) {
-            Some(s.clone())
-        } else {
-            None
-        };
-        drop(p);
-        r
-    }
+
     #[inline]
     pub(crate) async fn get_latest_logfile(&self) -> anyhow::Result<Arc<RwLock<LogFile<VlogId>>>> {
         let p = self.fid_logfile.read().await;

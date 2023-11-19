@@ -1,7 +1,6 @@
 use crate::util::mmap::MmapFile;
 use bytes::Buf;
 use log::info;
-// use core::slice::SlicePattern;
 use std::{fs::OpenOptions, sync::Arc, path::PathBuf};
 use tokio::sync::Mutex;
 const DISCARD_FILE_NAME: &str = "DISCARD";
@@ -61,12 +60,7 @@ impl DiscardStatsInner {
         // p.sort();
         p.get_u64()
     }
-    // #[inline]
-    // pub(crate) fn zero_out(&mut self) {
-    //     let next_offset = self.next_empty_slot * 16;
 
-    //     self.mmap_f[next_offset..next_offset + 16].fill(0);
-    // }
     #[inline]
     pub(crate) fn sort(&mut self) {
         let slice = &mut self.mmap_f.as_mut()[..self.next_empty_slot * 8 * 2];
