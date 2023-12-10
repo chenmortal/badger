@@ -47,7 +47,7 @@ pub struct DBInner {
     pub(crate) block_cache: Option<BlockCache>,
     pub(crate) index_cache: IndexCache,
     pub(crate) level_controller: LevelsController,
-    pub(crate) oracle: Arc<Oracle>,
+    pub(crate) oracle: Oracle,
     pub(crate) send_write_req: Sender<WriteReq>,
     pub(crate) flush_memtable: Sender<Arc<MemTable>>,
     pub(crate) recv_memtable: Mutex<Receiver<Arc<MemTable>>>,
@@ -97,7 +97,8 @@ impl DB {
         let oracle = Oracle::new(opt.txn, max_version);
 
         let threshold = VlogThreshold::new(opt.vlog_threshold);
-
+        let mut closer = Closer::new(1);
+        level_controller.clone().spawn_compact(&mut closer, &oracle).await;
         let mut vlog = ValueLog::new(threshold, key_registry.clone(), opt.vlog.clone())?;
         vlog.open().await?;
         let closer = Closer::new(1);
@@ -111,7 +112,7 @@ impl DB {
             block_cache,
             index_cache,
             level_controller,
-            oracle: oracle.into(),
+            oracle,
             send_write_req,
             flush_memtable,
             vlog,

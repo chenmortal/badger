@@ -1,3 +1,4 @@
+#[allow(unused)]
 use std::mem::replace;
 use std::time::Duration;
 
@@ -63,7 +64,7 @@ fn stupid(data: &Vec<u8>, block_size: usize, compress: CompressType) {
         .iter()
         .map(|x| compress.compress(x))
         .collect::<Vec<_>>();
-    let k: usize = p.iter().map(|x| x.len()).sum();
+    let _k: usize = p.iter().map(|x| x.len()).sum();
 }
 async fn async_with_channel(data: &Vec<u8>, block_size: usize, compress: CompressType) {
     // let mut data_vec = Vec::new();
@@ -92,7 +93,7 @@ async fn async_with_channel(data: &Vec<u8>, block_size: usize, compress: Compres
         let _ = ele.await;
     }
     drop(send_back);
-    let s = collect.await.unwrap();
+    let _s = collect.await.unwrap();
 }
 async fn handle_compress(
     recv: Receiver<Vec<u8>>,
@@ -260,7 +261,7 @@ fn bench_zstd3(c: &mut Criterion) {
 // criterion_group!(benches, bench_fibs);
 // criterion_group!(benches, bench_snap);
 // criterion_group!(benches, bench_none);
-criterion_group!(benches, bench_zstd3);
+criterion_group!(benches, bench_zstd3, bench_zstd1, bench_none, bench_snap);
 criterion_main!(benches);
 // #[inline]
 // fn fibonacci(n: u64) -> u64 {

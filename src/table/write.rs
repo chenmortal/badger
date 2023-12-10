@@ -17,18 +17,18 @@ use super::{TableConfig, vec_u32_to_bytes, try_encrypt, Table};
 #[derive(Debug, Default)]
 pub(super) struct BlockBuilder {
     data: Vec<u8>,
-    basekey: Vec<u8>,
+    base_keyts: Vec<u8>,
     entry_offsets: Vec<u32>,
 }
 impl BlockBuilder {
     pub(super) fn new(block_size: usize) -> Self {
         Self {
             data: Vec::with_capacity(block_size + BLOCK_PADDING),
-            basekey: Default::default(),
+            base_keyts: Default::default(),
             entry_offsets: Default::default(),
         }
     }
-
+    
     pub(super) fn data(&self) -> &[u8] {
         self.data.as_ref()
     }
@@ -56,7 +56,7 @@ const BLOCK_PADDING: usize = 256;
 impl BlockBuilder {
     fn diff_base_key(&self,new_key:&[u8])->usize{
         let mut i=0;
-        let base_key:&[u8]=self.basekey.as_ref();
+        let base_key:&[u8]=self.base_keyts.as_ref();
         while i < base_key.len().min(new_key.len()) {
             if base_key[i]!=new_key[i]{
                 break;
@@ -84,8 +84,8 @@ impl BlockBuilder {
     }
 
     pub(super) fn push_entry(&mut self,key_ts: &KeyTsBorrow,value: &ValueMeta){
-        let diff_key=if self.basekey.len()==0 {
-            self.basekey=key_ts.to_vec();
+        let diff_key=if self.base_keyts.len()==0 {
+            self.base_keyts=key_ts.to_vec();
             key_ts
         }else{
             &key_ts[self.diff_base_key(&key_ts)..]
@@ -141,7 +141,7 @@ impl TableBuilder {
         self.cur_block.finish_block(self.config.checksum_algo);
         self.uncompressed_size+=self.cur_block.data.len() as u32;
 
-        self.len_offsets+=(self.cur_block.basekey.len() as f32/ 4.0).ceil() as u32 * 4 + 40;
+        self.len_offsets+=(self.cur_block.base_keyts.len() as f32/ 4.0).ceil() as u32 * 4 + 40;
         let mut finished_block = replace(&mut self.cur_block, BlockBuilder::new(self.config.block_size));
         let cipher = self.cipher.clone();
         let compression = self.config.compression;
@@ -206,7 +206,7 @@ impl TableBuilder {
         let mut block_offset=Vec::new();
         for block in block_list {
             let args = fb::BlockOffsetArgs{
-                            key: builder.create_vector(block.basekey.as_ref()).into(),
+                            key_ts: builder.create_vector(block.base_keyts.as_ref()).into(),
                             offset: data_size,
                             len: block.data.len() as u32,
                         };

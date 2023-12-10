@@ -19,7 +19,7 @@ use tokio::{
 
 use crate::{kv::TxnTs, util::closer::Closer};
 
-use super::{oracle::Oracle, Txn};
+use super::{oracle::OracleInner, Txn};
 
 #[derive(Debug, Clone)]
 pub(crate) struct WaterMark(Arc<WaterMarkInner>);
@@ -217,7 +217,7 @@ impl WaterMarkInner {
         self.done_until.load(Ordering::SeqCst).into()
     }
 }
-impl Oracle {
+impl OracleInner {
     #[inline]
     pub(crate) async fn done_commit(&self, commit_ts: TxnTs) -> anyhow::Result<()> {
         if !self.config().managed_txns {

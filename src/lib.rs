@@ -2,11 +2,12 @@
     ptr_internals,
     ptr_sub_ptr,
     slice_as_chunks,
-    unchecked_math,
-    async_closure
+    step_trait,
+    unchecked_math
 )]
 #[macro_use]
 extern crate lazy_static;
+pub mod config;
 pub mod db;
 pub(crate) mod default;
 pub mod errors;
@@ -19,7 +20,6 @@ mod kv;
 mod level;
 mod manifest;
 mod memtable;
-pub mod config;
 mod pb;
 mod read;
 mod table;

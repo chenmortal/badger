@@ -21,7 +21,6 @@ use crate::fb::fb::TableIndex;
 use crate::iter::{DoubleEndedSinkIterator, KvDoubleEndedSinkIter};
 use crate::key_registry::NONCE_SIZE;
 use crate::key_registry::{AesCipher, Nonce};
-use crate::kv::KeyTsBorrow;
 use crate::kv::{KeyTs, TxnTs};
 use crate::pb::badgerpb4::{self, Checksum};
 use crate::util::bloom::BloomBorrow;
@@ -183,10 +182,10 @@ impl TableConfig {
         table_index: &TableIndexBuf,
         mmap_f: &MmapFile,
         cipher: &Option<AesCipher>,
-    ) -> anyhow::Result<(Bytes, Bytes)> {
+    ) -> anyhow::Result<(KeyTs, KeyTs)> {
         //get smallest
         let first_block_offset = table_index.offsets().get(0).unwrap();
-        let first_block_base_key = first_block_offset.key();
+        let first_block_base_key = first_block_offset.key_ts();
         let smallest = first_block_base_key.to_owned();
 
         //get biggest
@@ -211,7 +210,7 @@ impl TableConfig {
         let block: Block = block.into();
         let mut block_iter: SinkBlockIter = block.iter();
         assert!(block_iter.next_back()?);
-        let biggest = block_iter.key_back().unwrap().to_vec().into();
+        let biggest = KeyTs::from(block_iter.key_back().unwrap().as_ref());
         Ok((smallest, biggest))
     }
     fn init_index(
@@ -262,8 +261,8 @@ pub(crate) struct TableInner {
     table_id: SSTableId,
     mmap_f: MmapFile,
     table_size: usize,
-    smallest: Bytes,
-    biggest: Bytes,
+    smallest: KeyTs,
+    biggest: KeyTs,
     cheap_index: CheapTableIndex,
     block_cache: Option<BlockCache>,
     index_cache: IndexCache,
@@ -285,6 +284,11 @@ impl Deref for Table {
 impl From<TableInner> for Table {
     fn from(value: TableInner) -> Self {
         Self(Arc::new(value))
+    }
+}
+impl AsRef<Table> for Table {
+    fn as_ref(&self) -> &Table {
+        self
     }
 }
 impl Drop for TableInner {
@@ -341,7 +345,7 @@ impl TableInner {
         self.created_at
     }
 
-    pub(crate) fn smallest(&self) -> &Bytes {
+    pub(crate) fn smallest(&self) -> &KeyTs {
         &self.smallest
     }
 
@@ -357,7 +361,7 @@ impl TableInner {
         &self.config
     }
 
-    pub(crate) fn biggest(&self) -> &Bytes {
+    pub(crate) fn biggest(&self) -> &KeyTs {
         &self.biggest
     }
 
@@ -459,7 +463,7 @@ impl TableInner {
         Ok(may_contain)
     }
     #[cfg(not(feature = "async_cache"))]
-    pub(crate) fn may_contain_key(&self, key: KeyTsBorrow) -> anyhow::Result<bool> {
+    pub(crate) fn may_contain_key(&self, key: &KeyTs) -> anyhow::Result<bool> {
         if self.cheap_index.bloom_filter_len == 0 {
             return Ok(true);
         }
@@ -690,14 +694,14 @@ pub(crate) struct TableIndexBuf {
 }
 #[derive(Debug, Clone)]
 pub(crate) struct BlockOffsetBuf {
-    key: Bytes,
+    key_ts: KeyTs,
     offset: u32,
     len: u32,
 }
 
 impl BlockOffsetBuf {
-    pub(crate) fn key(&self) -> &Bytes {
-        &self.key
+    pub(crate) fn key_ts(&self) -> &KeyTs {
+        &self.key_ts
     }
 
     pub(crate) fn offset(&self) -> u32 {
@@ -718,14 +722,15 @@ impl TableIndexBuf {
         let offsets = offsets
             .iter()
             .map(|offset| {
-                assert!(offset.key().is_some());
+                assert!(offset.key_ts().is_some());
                 BlockOffsetBuf {
-                    key: offset.key().unwrap().bytes().to_vec().into(),
+                    key_ts: KeyTs::from(offset.key_ts().unwrap().bytes()),
                     offset: offset.offset().clone(),
                     len: offset.len().clone(),
                 }
             })
             .collect::<Vec<_>>();
+
         let bloom_filter = table_index
             .bloom_filter()
             .and_then(|x| Bytes::from(x.bytes().to_vec()).into());

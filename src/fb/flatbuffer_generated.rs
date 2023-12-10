@@ -233,7 +233,7 @@ impl<'a> flatbuffers::Follow<'a> for BlockOffset<'a> {
 }
 
 impl<'a> BlockOffset<'a> {
-  pub const VT_KEY: flatbuffers::VOffsetT = 4;
+  pub const VT_KEY_TS: flatbuffers::VOffsetT = 4;
   pub const VT_OFFSET: flatbuffers::VOffsetT = 6;
   pub const VT_LEN: flatbuffers::VOffsetT = 8;
 
@@ -249,17 +249,17 @@ impl<'a> BlockOffset<'a> {
     let mut builder = BlockOffsetBuilder::new(_fbb);
     builder.add_len(args.len);
     builder.add_offset(args.offset);
-    if let Some(x) = args.key { builder.add_key(x); }
+    if let Some(x) = args.key_ts { builder.add_key_ts(x); }
     builder.finish()
   }
 
 
   #[inline]
-  pub fn key(&self) -> Option<flatbuffers::Vector<'a, u8>> {
+  pub fn key_ts(&self) -> Option<flatbuffers::Vector<'a, u8>> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, u8>>>(BlockOffset::VT_KEY, None)}
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, u8>>>(BlockOffset::VT_KEY_TS, None)}
   }
   #[inline]
   pub fn offset(&self) -> u32 {
@@ -284,7 +284,7 @@ impl flatbuffers::Verifiable for BlockOffset<'_> {
   ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
     use self::flatbuffers::Verifiable;
     v.visit_table(pos)?
-     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u8>>>("key", Self::VT_KEY, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u8>>>("key_ts", Self::VT_KEY_TS, false)?
      .visit_field::<u32>("offset", Self::VT_OFFSET, false)?
      .visit_field::<u32>("len", Self::VT_LEN, false)?
      .finish();
@@ -292,7 +292,7 @@ impl flatbuffers::Verifiable for BlockOffset<'_> {
   }
 }
 pub struct BlockOffsetArgs<'a> {
-    pub key: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
+    pub key_ts: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
     pub offset: u32,
     pub len: u32,
 }
@@ -300,7 +300,7 @@ impl<'a> Default for BlockOffsetArgs<'a> {
   #[inline]
   fn default() -> Self {
     BlockOffsetArgs {
-      key: None,
+      key_ts: None,
       offset: 0,
       len: 0,
     }
@@ -313,8 +313,8 @@ pub struct BlockOffsetBuilder<'a: 'b, 'b> {
 }
 impl<'a: 'b, 'b> BlockOffsetBuilder<'a, 'b> {
   #[inline]
-  pub fn add_key(&mut self, key: flatbuffers::WIPOffset<flatbuffers::Vector<'b , u8>>) {
-    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(BlockOffset::VT_KEY, key);
+  pub fn add_key_ts(&mut self, key_ts: flatbuffers::WIPOffset<flatbuffers::Vector<'b , u8>>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(BlockOffset::VT_KEY_TS, key_ts);
   }
   #[inline]
   pub fn add_offset(&mut self, offset: u32) {
@@ -342,7 +342,7 @@ impl<'a: 'b, 'b> BlockOffsetBuilder<'a, 'b> {
 impl core::fmt::Debug for BlockOffset<'_> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     let mut ds = f.debug_struct("BlockOffset");
-      ds.field("key", &self.key());
+      ds.field("key_ts", &self.key_ts());
       ds.field("offset", &self.offset());
       ds.field("len", &self.len());
       ds.finish()

@@ -162,24 +162,24 @@ impl<F: DBFileId> LogFile<F> {
             None
         }
     }
-    #[inline]
-    fn zero_next_entry(&mut self) {
-        // if let Some(s) = &mut self.mmap.right() {
-        //     s.write([0 as u8; MAX_HEADER_SIZE].as_slice());
-        //     s.seek(io::SeekFrom::Current(0 - MAX_HEADER_SIZE as i64));
-        // }
-        // let k=try_right!(self.mmap);
-        // let start = self.write_at;
-        // let mut end = self.write_at + MAX_HEADER_SIZE;
-        // let len = self.mmap.len();
-        // if start >= len {
-        //     return;
-        // }
-        // if end >= len {
-        //     end = len;
-        // }
-        // self.mmap[start..end].fill(0);
-    }
+    // #[inline]
+    // fn zero_next_entry(&mut self) {
+    //     // if let Some(s) = &mut self.mmap.right() {
+    //     //     s.write([0 as u8; MAX_HEADER_SIZE].as_slice());
+    //     //     s.seek(io::SeekFrom::Current(0 - MAX_HEADER_SIZE as i64));
+    //     // }
+    //     // let k=try_right!(self.mmap);
+    //     // let start = self.write_at;
+    //     // let mut end = self.write_at + MAX_HEADER_SIZE;
+    //     // let len = self.mmap.len();
+    //     // if start >= len {
+    //     //     return;
+    //     // }
+    //     // if end >= len {
+    //     //     end = len;
+    //     // }
+    //     // self.mmap[start..end].fill(0);
+    // }
     #[inline]
     pub(crate) fn get_size(&self) -> usize {
         self.size.load(Ordering::SeqCst)

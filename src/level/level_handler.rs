@@ -5,9 +5,10 @@ use std::{cmp::Ordering, io};
 use anyhow::anyhow;
 use tokio::sync::RwLock;
 
+use crate::kv::{KeyTs, KeyTsBorrow};
 use crate::{table::Table, util::compare_key};
 
-use super::compaction::KeyRange;
+use super::levels::Level;
 #[derive(Debug, Clone)]
 pub(crate) struct LevelHandler(Arc<LevelHandlerInner>);
 impl Deref for LevelHandler {
@@ -20,12 +21,22 @@ impl Deref for LevelHandler {
 #[derive(Debug)]
 pub(crate) struct LevelHandlerInner {
     handler_tables: RwLock<LevelHandlerTables>,
-    level: usize,
+    level: Level,
 }
 
 impl LevelHandlerInner {
-    pub(crate) fn level(&self) -> usize {
+    pub(crate) fn level(&self) -> Level {
         self.level
+    }
+
+    pub(crate) fn handler_tables(&self) -> &RwLock<LevelHandlerTables> {
+        &self.handler_tables
+    }
+    pub(crate) async fn tables_len(&self) -> usize {
+        let tables_r = self.read().await;
+        let len = tables_r.tables.len();
+        drop(tables_r);
+        len
     }
 }
 impl Deref for LevelHandlerInner {
@@ -42,17 +53,14 @@ pub(crate) struct LevelHandlerTables {
     pub(crate) total_stale_size: u32,
 }
 impl LevelHandler {
-    pub(crate) fn new(level: usize) -> Self {
+    pub(crate) fn new(level: Level) -> Self {
         let inner = LevelHandlerInner {
             handler_tables: RwLock::new(LevelHandlerTables::default()),
             level,
         };
         Self(Arc::new(inner))
     }
-    #[inline]
-    pub(crate) fn get_level(&self) -> usize {
-        self.0.level
-    }
+
     #[inline]
     pub(crate) async fn get_tables_len(&self) -> usize {
         let tables_r = self.read().await;
@@ -60,10 +68,7 @@ impl LevelHandler {
         drop(tables_r);
         len
     }
-    #[inline]
-    pub(crate) fn get_str_level(&self) -> String {
-        format!("level:{}", self.level)
-    }
+
     #[inline]
     pub(crate) async fn get_total_size(&self) -> usize {
         let inner_r = self.0.handler_tables.read().await;
@@ -86,20 +91,20 @@ impl LevelHandler {
         inner_w.total_size = total_size;
         inner_w.total_stale_size = total_stale_size;
 
-        if self.0.level == 0 {
+        if self.0.level == 0.into() {
             inner_w
                 .tables
                 .sort_by(|a, b| a.table_id().cmp(&b.table_id()));
         } else {
             inner_w
                 .tables
-                .sort_by(|a, b| compare_key(a.smallest(), b.smallest()));
+                .sort_by(|a, b| a.smallest().cmp(b.smallest()));
         }
         drop(inner_w);
     }
     pub(crate) async fn validate(&self) -> anyhow::Result<()> {
         let inner_r = self.0.handler_tables.read().await;
-        if self.0.level == 0 {
+        if self.level == 0.into() {
             return Ok(());
         }
         let num_tables = inner_r.tables.len();
@@ -108,7 +113,7 @@ impl LevelHandler {
             let now = &inner_r.tables[j];
             let pre_biggest = pre.biggest();
 
-            if compare_key(&pre_biggest, now.smallest()).is_ge() {
+            if pre_biggest.cmp(now.smallest()).is_ge() {
                 let e = anyhow!(
                     "Inter: Biggest(j-1)[{:?}] 
 {:?}
@@ -127,7 +132,7 @@ vs Smallest(j)[{:?}]:
             };
 
             let now_biggest = now.biggest();
-            if compare_key(now.smallest(), &now_biggest).is_gt() {
+            if now.smallest().cmp(now_biggest).is_gt() {
                 let e = anyhow!(
                     "Intra:
 {:?}
@@ -163,27 +168,27 @@ vs
             None => Ok(()),
         }
     }
-    pub(crate) async fn overlapping_tables(&self, key_range: &KeyRange) -> (usize, usize) {
-        let left = key_range.get_left();
-        let right = key_range.get_right();
-        if left.len() == 0 || right.len() == 0 {
-            return (0, 0);
-        };
+    // pub(crate) async fn overlapping_tables(&self, key_range: &KeyRange) -> (usize, usize) {
+    //     let left = key_range.get_left();
+    //     let right = key_range.get_right();
+    //     if left.len() == 0 || right.len() == 0 {
+    //         return (0, 0);
+    //     };
 
-        let self_r = self.0.handler_tables.read().await;
-        let tables = &self_r.tables;
-        let left_index = match binary_search_biggest(tables, left).await {
-            Ok(index) => index,  // val[index].biggest == value
-            Err(index) => index, // val[index].biggest > value
-        };
-        let right_index =
-            match tables.binary_search_by(|table| compare_key(table.smallest(), right)) {
-                Ok(index) => index + 1, //for i in left..right ; not include right so this need add 1;
-                Err(index) => index,
-            };
-        drop(self_r);
-        (left_index, right_index)
-    }
+    //     let self_r = self.0.handler_tables.read().await;
+    //     let tables = &self_r.tables;
+    //     let left_index = match binary_search_biggest(tables, left).await {
+    //         Ok(index) => index,  // val[index].biggest == value
+    //         Err(index) => index, // val[index].biggest > value
+    //     };
+    //     let right_index =
+    //         match tables.binary_search_by(|table| table.smallest().partial_cmp(&KeyTsBorrow::from(right)).unwrap()) {
+    //             Ok(index) => index + 1, //for i in left..right ; not include right so this need add 1;
+    //             Err(index) => index,
+    //         };
+    //     drop(self_r);
+    //     (left_index, right_index)
+    // }
 }
 
 //fix from std binary_search_by
@@ -200,6 +205,7 @@ async fn binary_search_biggest(tables: &Vec<Table>, value: &[u8]) -> Result<usiz
     // l=2 r=3 s=1 mid=2 l
     // l=3 r=1
     // return 3
+    let value = KeyTs::from(value);
     let mut size = tables.len();
     let mut left = 0;
     let mut right = size;
@@ -211,9 +217,9 @@ async fn binary_search_biggest(tables: &Vec<Table>, value: &[u8]) -> Result<usiz
         // coupled with the `left + size <= self.len()` invariant means
         // we have `left + size/2 < self.len()`, and this is in-bounds.
         let mid_r = unsafe { tables.get_unchecked(mid) }.biggest();
-        let mid_slice: &[u8] = mid_r.as_ref();
-        let cmp = compare_key(mid_slice, value);
-
+        // let mid_slice: &[u8] = mid_r;
+        // let cmp = compare_key(mid_slice, value);
+        let cmp = mid_r.cmp(&value);
         // The reason why we use if/else control flow rather than match
         // is because match reorders comparison operations, which is perf sensitive.
         // This is x86 asm for u8: https://rust.godbolt.org/z/8Y8Pra.

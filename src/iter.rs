@@ -3,11 +3,6 @@ use bytes::Buf;
 use crate::kv::{KeyTsBorrow, ValueMeta};
 
 // here use async fn look at https://blog.rust-lang.org/inside-rust/2022/11/17/async-fn-in-trait-nightly.html
-pub(crate) trait Iter {
-    async fn rewind(&mut self) -> Result<(), anyhow::Error>;
-    fn next(&self) {}
-    fn get_key(&self) -> Option<&[u8]>;
-}
 pub(crate) struct SinkIterRev<T> {
     iter: T,
 }
@@ -103,7 +98,7 @@ pub(crate) trait AsyncSinkIterator: SinkIter {
         SinkIterRev { iter: self }
     }
 }
-pub(crate) trait SinkIterator: SinkIter {
+pub(crate) trait SinkIterator {
     fn next(&mut self) -> Result<bool, anyhow::Error>;
     fn rev(self) -> SinkIterRev<Self>
     where
@@ -112,7 +107,7 @@ pub(crate) trait SinkIterator: SinkIter {
         SinkIterRev { iter: self }
     }
 }
-pub(crate) trait DoubleEndedSinkIterator: SinkIterator + DoubleEndedSinkIter {
+pub(crate) trait DoubleEndedSinkIterator: SinkIterator {
     fn next_back(&mut self) -> Result<bool, anyhow::Error>;
 }
 pub(crate) trait AsyncDoubleEndedSinkIterator:
@@ -120,14 +115,14 @@ pub(crate) trait AsyncDoubleEndedSinkIterator:
 {
     async fn next_back(&mut self) -> Result<(), anyhow::Error>;
 }
-pub(crate) trait KvSinkIter<V>: SinkIter
+pub(crate) trait KvSinkIter<V>
 where
     V: Into<ValueMeta>,
 {
     fn key(&self) -> Option<KeyTsBorrow<'_>>;
     fn value(&self) -> Option<V>;
 }
-pub(crate) trait KvDoubleEndedSinkIter<V>: DoubleEndedSinkIter
+pub(crate) trait KvDoubleEndedSinkIter<V>
 where
     V: Into<ValueMeta>,
 {
