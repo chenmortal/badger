@@ -1,6 +1,7 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use integer_encoding::VarInt;
 use std::{
+    cmp::Ordering,
     fmt::Display,
     mem,
     ops::{Add, AddAssign, Deref, Sub},
@@ -241,6 +242,23 @@ impl PartialOrd for KeyTs {
         other.txn_ts.partial_cmp(&self.txn_ts)
     }
 }
+impl PartialEq<KeyTsBorrow<'_>> for KeyTs {
+    fn eq(&self, other: &KeyTsBorrow<'_>) -> bool {
+        self.key == other.key() && self.txn_ts() == other.txn_ts()
+    }
+}
+impl PartialOrd<KeyTsBorrow<'_>> for KeyTs {
+    fn partial_cmp(&self, other: &KeyTsBorrow<'_>) -> Option<std::cmp::Ordering> {
+        match self.key().partial_cmp(other.key()) {
+            Some(Ordering::Equal) => {}
+            ord => {
+                return ord;
+            }
+        };
+        other.txn_ts().partial_cmp(&self.txn_ts())
+    }
+}
+
 impl Ord for KeyTs {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match self.key.cmp(&other.key) {
@@ -264,6 +282,14 @@ impl From<&[u8]> for KeyTs {
                 key: value[..len - 8].to_vec().into(),
                 txn_ts: p.get_u64().into(),
             }
+        }
+    }
+}
+impl From<KeyTsBorrow<'_>> for KeyTs {
+    fn from(value: KeyTsBorrow<'_>) -> Self {
+        Self {
+            key: value.key().to_vec().into(),
+            txn_ts: value.txn_ts(),
         }
     }
 }
@@ -298,9 +324,13 @@ impl KeyTs {
     pub(crate) fn len(&self) -> usize {
         self.key.len() + std::mem::size_of::<u64>()
     }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) struct KeyTsBorrow<'a>(&'a [u8]);
 impl<'a> KeyTsBorrow<'a> {
     pub(crate) fn key(&self) -> &[u8] {
@@ -536,6 +566,8 @@ mod tests {
         let a = KeyTs::new("a".into(), 1.into());
         let b = KeyTs::new("b".into(), 0.into());
         let c = KeyTs::new("a".into(), 2.into());
+        let default = KeyTs::default();
+        assert!(a > default);
         assert_eq!(a.cmp(&b), Ordering::Less);
         assert_eq!(a.cmp(&c), Ordering::Greater);
         let a = &a.serialize();

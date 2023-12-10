@@ -1,16 +1,12 @@
+#[allow(unused)]
 use std::mem::replace;
-use std::time::Duration;
 
-use async_channel::Receiver;
 use criterion::criterion_group;
 use criterion::criterion_main;
 use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::Throughput;
-use rayon::prelude::IntoParallelRefIterator;
-use rayon::prelude::ParallelIterator;
-use rayon::ThreadPool;
-use tokio_rayon::AsyncThreadPool;
+
 pub(crate) fn generate_data(size: usize) -> Vec<u8> {
     let mut buf = vec![0u8; size];
     getrandom::getrandom(&mut buf).unwrap();

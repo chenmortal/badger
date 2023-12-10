@@ -9,34 +9,43 @@ use parking_lot::{Mutex, MutexGuard};
 use tokio::sync::RwLock;
 
 use crate::{
-    errors::DBError, kv::TxnTs, level::levels::LevelsController, memtable::MemTable,
+    errors::DBError, kv::TxnTs, level::levels::LevelsControllerInner, memtable::MemTable,
     util::closer::Closer,
 };
 
 use super::{water_mark::WaterMark, Txn, TxnConfig};
+#[derive(Debug, Clone)]
+pub(crate) struct Oracle(Arc<OracleInner>);
+impl Deref for Oracle {
+    type Target = OracleInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 #[derive(Debug)]
-pub(crate) struct Oracle {
-    inner: Mutex<OracleInner>,
+pub(crate) struct OracleInner {
+    inner: Mutex<OracleCore>,
     closer: Closer,
     read_mark: WaterMark,
     txn_mark: WaterMark,
     config: TxnConfig,
     pub(super) send_write_req: Mutex<()>,
 }
-impl Deref for Oracle {
-    type Target = Mutex<OracleInner>;
+impl Deref for OracleInner {
+    type Target = Mutex<OracleCore>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
-impl Default for Oracle {
+impl Default for OracleInner {
     fn default() -> Self {
-        Oracle::new(TxnConfig::default(), 0.into())
+        OracleInner::new(TxnConfig::default(), 0.into())
     }
 }
 #[derive(Debug, Default)]
-pub(crate) struct OracleInner {
+pub(crate) struct OracleCore {
     next_txn_ts: TxnTs, //when open db, next_txn_ts will be set to max_version;
     discard_ts: TxnTs,
     last_cleanup_ts: TxnTs,
@@ -49,8 +58,13 @@ struct CommittedTxn {
 }
 impl Oracle {
     pub(crate) fn new(config: TxnConfig, max_version: TxnTs) -> Self {
+        Self(OracleInner::new(config, max_version).into())
+    }
+}
+impl OracleInner {
+    fn new(config: TxnConfig, max_version: TxnTs) -> Self {
         let closer = Closer::new(2);
-        let mut inner = OracleInner::default();
+        let mut inner = OracleCore::default();
         inner.next_txn_ts = max_version + 1;
         Self {
             inner: Mutex::new(inner),
@@ -63,7 +77,7 @@ impl Oracle {
     }
 
     #[inline]
-    pub(crate) async fn discard_at_or_below(&self) -> TxnTs {
+    pub(crate)  fn discard_at_or_below(&self) -> TxnTs {
         if self.config.managed_txns {
             let lock = self.inner.lock();
             let ts = lock.discard_ts;
@@ -131,7 +145,7 @@ impl Oracle {
         Ok(commit_ts)
     }
 
-    fn cleanup_committed_txns(&self, guard: &mut MutexGuard<OracleInner>) {
+    fn cleanup_committed_txns(&self, guard: &mut MutexGuard<OracleCore>) {
         if !self.config.detect_conflicts {
             return;
         }
@@ -168,7 +182,7 @@ impl Oracle {
 }
 pub(crate) async fn max_txn_ts(
     immut_memtable: &RwLock<VecDeque<Arc<MemTable>>>,
-    controller: &LevelsController,
+    controller: &LevelsControllerInner,
 ) -> anyhow::Result<TxnTs> {
     let mut max_version = TxnTs::default();
     let mem_r = immut_memtable.read().await;

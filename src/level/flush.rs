@@ -15,7 +15,7 @@ use crate::{
     util::DBFileId,
 };
 
-use super::{level_handler::LevelHandler, levels::LevelsController};
+use super::{level_handler::LevelHandler, levels::LevelsControllerInner};
 
 impl DB {
     #[deny(unused)]
@@ -44,7 +44,7 @@ impl DB {
     async fn handle_memtable_flush(
         &self,
         memtable: Arc<MemTable>,
-        drop_prefixed: Vec<&[u8]>,
+        _drop_prefixed: Vec<&[u8]>,
     ) -> anyhow::Result<()> {
         let cipher = self.key_registry.latest_cipher().await?;
         let table_opt = self.opt.table.clone();
@@ -68,7 +68,7 @@ impl DB {
         Ok(())
     }
 }
-impl LevelsController {
+impl LevelsControllerInner {
     async fn push_level0_table(&self, table: Table) -> anyhow::Result<()> {
         self.manifest().push_changes(vec![ManifestChange::new(
             table.table_id(),
@@ -88,7 +88,7 @@ impl LevelsController {
             table: &Table,
             level0_tables_stall: usize,
         ) -> bool {
-            assert!(handler.level() == 0);
+            assert!(handler.level() == 0.into());
             let mut handler_w = handler.write().await;
             if handler_w.tables.len() >= level0_tables_stall {
                 drop(handler_w);

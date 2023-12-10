@@ -31,6 +31,8 @@ use std::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::kv::KeyTs;
+
 pub(crate) trait DBFileId: From<u32> + Into<u32> + Debug + Copy {
     const SUFFIX: &'static str;
 
@@ -223,11 +225,12 @@ pub(crate) fn compare_key(a: &[u8], b: &[u8]) -> Ordering {
     a[a.len() - 8..].cmp(&b[b.len() - 8..])
 }
 #[inline(always)]
-pub(crate) fn parse_key(key: &[u8]) -> Option<&[u8]> {
-    if key.len() <= 8 {
-        return None;
-    }
-    key[..key.len() - 8].into()
+pub(crate) fn parse_key(key: &KeyTs) -> Option<&[u8]> {
+    key.key().as_ref().into()
+    // if key.len() <= 8 {
+    //     return None;
+    // }
+    // key[..key.len() - 8].into()
 }
 #[inline(always)]
 pub(crate) fn key_with_ts(key: Option<&[u8]>, ts: u64) -> Vec<u8> {

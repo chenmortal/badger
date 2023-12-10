@@ -27,7 +27,7 @@ table TableIndex {
 }
 
 table BlockOffset {
-  key:[ubyte];
+  key_ts:[ubyte];
   offset:uint;
   len:uint;
 }

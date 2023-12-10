@@ -9,6 +9,8 @@ use std::{
 };
 use tokio::{select, sync::Semaphore};
 
+use crate::level::levels::Level;
+
 lazy_static! {
     static ref LSM_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
     static ref VLOG_SIZE: RwLock<HashMap<PathBuf, u64>> = RwLock::new(HashMap::new());
@@ -25,9 +27,9 @@ lazy_static! {
     static ref NUM_BYTES_WRITTEN_TO_L0: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_BLOOM_USE: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_BLOOM_NOT_EXIST: AtomicUsize = AtomicUsize::new(0);
-    static ref NUM_BLOOM_NOT_EXIST_LEVEL: Mutex<BTreeMap<usize, usize>> =
+    static ref NUM_BLOOM_NOT_EXIST_LEVEL: Mutex<BTreeMap<Level, usize>> =
         Mutex::new(BTreeMap::new());
-    static ref NUM_LSM_GETS: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
+    static ref NUM_LSM_GETS: Mutex<BTreeMap<Level, usize>> = Mutex::new(BTreeMap::new());
 }
 
 #[inline]
@@ -98,7 +100,7 @@ pub(crate) fn add_num_bloom_not_exist(val: usize) {
 }
 
 #[inline]
-pub(crate) fn add_num_bloom_not_exist_level(level: usize, val: usize) {
+pub(crate) fn add_num_bloom_not_exist_level(level: Level, val: usize) {
     let mut level_w = NUM_BLOOM_NOT_EXIST_LEVEL.lock();
     if let Some(v) = level_w.get_mut(&level) {
         *v += val;
@@ -109,7 +111,7 @@ pub(crate) fn add_num_bloom_not_exist_level(level: usize, val: usize) {
 }
 
 #[inline]
-pub(crate) fn add_num_lsm_gets(level: usize, val: usize) {
+pub(crate) fn add_num_lsm_gets(level: Level, val: usize) {
     let mut lsm = NUM_LSM_GETS.lock();
     if let Some(v) = lsm.get_mut(&level) {
         *v += val;

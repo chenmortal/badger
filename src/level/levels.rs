@@ -1,88 +1,146 @@
 use std::{
     collections::HashSet,
+    fmt::Display,
     fs::{remove_file, OpenOptions},
+    iter::Step,
+    ops::{Add, AddAssign, Deref, Sub},
     path::PathBuf,
     sync::{
         atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use anyhow::anyhow;
 use anyhow::bail;
-use bytes::Bytes;
 use log::{debug, error, info};
-use rand::Rng;
-use tokio::{select, sync::Semaphore};
+use tokio::select;
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    compaction::{CompactStatus, KeyRange},
-    level_handler::LevelHandler,
-};
-#[cfg(feature = "metrics")]
-use crate::util::metrics::{add_num_compaction_tables, sub_num_compaction_tables};
+use super::{compaction::CompactStatus, level_handler::LevelHandler};
+
 use crate::{
     default::DEFAULT_DIR,
     key_registry::KeyRegistry,
-    kv::TxnTs,
+    kv::{KeyTs, TxnTs},
     level::compaction::LevelCompactStatus,
     manifest::{Manifest, ManifestInfo},
     pb::ChecksumError,
-    table::{
-        iter::{ConcatIter, TableIter},
-        merge::MergeIter,
-        Table, TableConfig,
-    },
-    txn::oracle::Oracle,
-    util::closer::Closer,
+    table::{Table, TableConfig},
+    util::Throttle,
     util::{
         cache::{BlockCache, IndexCache},
         mmap::MmapFile,
         DBFileId,
     },
-    util::{compare_key, key_with_ts, parse_key, Throttle},
     util::{sys::sync_dir, SSTableId},
 };
+#[derive(Debug, Clone)]
+pub(crate) struct LevelsController(Arc<LevelsControllerInner>);
+impl Deref for LevelsController {
+    type Target = LevelsControllerInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 #[derive(Debug)]
-pub(crate) struct LevelsController {
+pub(crate) struct LevelsControllerInner {
     manifest: Manifest,
     next_file_id: AtomicU32,
     level_0_stalls_ms: AtomicU64,
     levels: Vec<LevelHandler>,
     compact_status: CompactStatus,
     memtable_size: usize,
-    max_levels: usize,
+    max_levels: u8,
     level_config: LevelsControllerConfig,
     table_config: TableConfig,
 }
-struct Targets {
-    base_level: usize,
-    target_size: Vec<usize>,
-    file_size: Vec<usize>,
+pub(crate) const LEVEL0: Level = Level(0);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct Level(u8);
+impl From<u8> for Level {
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
 }
-struct CompactionPriority {
-    level: usize,
-    score: f64,
-    adjusted: f64,
-    drop_prefixes: Vec<Vec<u8>>,
-    targets: Targets,
+impl Into<usize> for Level {
+    fn into(self) -> usize {
+        self.0 as usize
+    }
 }
-pub(super) struct CompactDef {
-    compactor_id: usize,
-    // targets: Targets,
-    priority: CompactionPriority,
-    pub(super) this_level: LevelHandler,
-    pub(super) next_level: LevelHandler,
-    pub(super) top: Vec<Table>,
-    pub(super) bottom: Vec<Table>,
-    pub(super) this_range: KeyRange,
-    pub(super) next_range: KeyRange,
-    splits: Vec<KeyRange>,
-    this_size: usize,
-    // drop_prefixes: Vec<Vec<u8>>,
+impl Level {
+    pub(crate) fn to_usize(&self) -> usize {
+        self.0 as usize
+    }
 }
+impl Add<u8> for Level {
+    type Output = Self;
+
+    fn add(self, rhs: u8) -> Self::Output {
+        Self(self.0 + rhs)
+    }
+}
+impl Sub<u8> for Level {
+    type Output = Self;
+
+    fn sub(self, rhs: u8) -> Self::Output {
+        Self(self.0 - rhs)
+    }
+}
+impl AddAssign<u8> for Level {
+    fn add_assign(&mut self, rhs: u8) {
+        self.0 += rhs
+    }
+}
+impl Step for Level {
+    fn steps_between(start: &Self, end: &Self) -> Option<usize> {
+        end.0.checked_sub(start.0).and_then(|x| Some(x as usize))
+    }
+
+    fn forward_checked(start: Self, count: usize) -> Option<Self> {
+        if count < u8::MAX as usize {
+            start
+                .0
+                .checked_add(count as u8)
+                .and_then(|x| Some(Level(x)))
+        } else {
+            None
+        }
+    }
+
+    fn backward_checked(start: Self, count: usize) -> Option<Self> {
+        if count < u8::MAX as usize {
+            start
+                .0
+                .checked_sub(count as u8)
+                .and_then(|x| Some(Level(x)))
+        } else {
+            None
+        }
+    }
+}
+#[test]
+fn test_level_step() {
+    let start = 0;
+    let end = 5;
+    let start_l: Level = start.into();
+    let end_l: Level = end.into();
+    let mut step = start;
+    for l in start_l..end_l {
+        assert_eq!(l, Level(step));
+        step += 1;
+    }
+    assert_eq!(step, end);
+}
+
+impl Display for Level {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("Level {}", self.0))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LevelsControllerConfig {
     dir: PathBuf,
@@ -90,7 +148,7 @@ pub struct LevelsControllerConfig {
     memtable_size: usize,
     num_level_zero_tables_stall: usize,
     num_level_zero_tables: usize,
-    max_levels: usize,
+    max_level: Level,
     base_level_size: usize,
     level_size_multiplier: usize,
     table_size_multiplier: usize,
@@ -106,7 +164,7 @@ impl Default for LevelsControllerConfig {
             memtable_size: 64 << 20,
             num_level_zero_tables_stall: 15,
             num_level_zero_tables: 5,
-            max_levels: 7,
+            max_level: Level(6),
             base_level_size: 10 << 20,
             level_size_multiplier: 10,
             table_size_multiplier: 2,
@@ -138,6 +196,30 @@ impl LevelsControllerConfig {
     pub fn num_level_zero_tables_stall(&self) -> usize {
         self.num_level_zero_tables_stall
     }
+
+    pub fn num_compactors(&self) -> usize {
+        self.num_compactors
+    }
+
+    pub fn lmax_compaction(&self) -> bool {
+        self.lmax_compaction
+    }
+
+    pub fn base_level_size(&self) -> usize {
+        self.base_level_size
+    }
+
+    pub fn level_size_multiplier(&self) -> usize {
+        self.level_size_multiplier
+    }
+
+    pub fn memtable_size(&self) -> usize {
+        self.memtable_size
+    }
+
+    pub fn table_size_multiplier(&self) -> usize {
+        self.table_size_multiplier
+    }
 }
 impl LevelsControllerConfig {
     pub(crate) async fn build(
@@ -154,7 +236,7 @@ impl LevelsControllerConfig {
         let mut compact_status_w = compact_status.write();
         compact_status_w
             .levels_mut()
-            .resize_with(self.max_levels, LevelCompactStatus::default);
+            .resize_with(self.max_level.0 as usize, LevelCompactStatus::default);
         drop(compact_status_w);
 
         let (max_file_id, level_tables) = self
@@ -169,7 +251,7 @@ impl LevelsControllerConfig {
         let next_file_id = AtomicU32::new(max_file_id + 1);
 
         let mut levels = Vec::with_capacity(level_tables.len());
-        let mut level = 0;
+        let mut level = 0.into();
         for tables in level_tables {
             let handler = LevelHandler::new(level);
             level += 1;
@@ -177,13 +259,13 @@ impl LevelsControllerConfig {
             levels.push(handler);
         }
 
-        let levels_control = LevelsController {
+        let levels_control = LevelsControllerInner {
             next_file_id,
             level_0_stalls_ms: Default::default(),
             levels,
             compact_status,
             memtable_size: self.memtable_size,
-            max_levels: self.max_levels,
+            max_levels: self.max_level.0,
             level_config: self.clone(),
             table_config,
             manifest,
@@ -192,7 +274,7 @@ impl LevelsControllerConfig {
         levels_control.validate().await?;
         sync_dir(&self.dir)?;
 
-        Ok(levels_control)
+        Ok(LevelsController(levels_control.into()))
     }
     fn watch_num_opened(num_opened: Arc<AtomicUsize>, tables_len: usize) -> CancellationToken {
         let start = tokio::time::Instant::now();
@@ -247,7 +329,7 @@ impl LevelsControllerConfig {
         let mut max_file_id: u32 = 0;
         let mut throttle = Throttle::new(3);
         let mut open_table_tasks = Vec::new();
-        open_table_tasks.resize_with(self.max_levels, Vec::new);
+        open_table_tasks.resize_with(self.max_level.0 as usize, Vec::new);
         for (file_id, table_manifest) in manifest.tables.iter() {
             let num_opened_clone = num_opened.clone();
             let path = file_id.join_dir(&self.dir);
@@ -293,9 +375,9 @@ impl LevelsControllerConfig {
                 num_opened_clone.fetch_add(1, Ordering::Relaxed);
                 table.and_then(|x| x)
             });
-            let task_level = table_manifest.level as usize;
-            if task_level < self.max_levels {
-                open_table_tasks[task_level].push(task);
+            let task_level = table_manifest.level;
+            if task_level < self.max_level.0 {
+                open_table_tasks[task_level as usize].push(task);
             } else {
                 open_table_tasks.last_mut().unwrap().push(task);
             }
@@ -319,7 +401,7 @@ impl LevelsControllerConfig {
         Ok((max_file_id, level_tables))
     }
 }
-impl LevelsController {
+impl LevelsControllerInner {
     async fn validate(&self) -> anyhow::Result<()> {
         for level_handler in self.levels.iter() {
             level_handler
@@ -331,559 +413,257 @@ impl LevelsController {
     }
 
     #[inline]
-    fn last_level(&self) -> &LevelHandler {
+    pub(crate) fn last_level_handler(&self) -> &LevelHandler {
         debug_assert!(self.levels.len() > 0);
         self.levels.last().unwrap()
     }
-    pub(crate) async fn start_compact(
-        level_controller: Arc<Self>,
-        closer: &mut Closer,
-        sem: Arc<Semaphore>,
-        oracle: &Arc<Oracle>,
-    ) {
-        let num = level_controller.level_config.num_compactors;
-        for task_id in 0..num {
-            let closer_c = closer.clone();
-            let oracle_clone = oracle.clone();
-            let level_controller_clone = level_controller.clone();
-            tokio::spawn(async move {
-                level_controller_clone
-                    .run_compact(task_id, closer_c, &oracle_clone)
-                    .await;
-            });
-        }
+
+    #[inline]
+    pub(crate) fn max_level(&self) -> Level {
+        self.level_config().max_level
     }
 
-    pub(crate) async fn run_compact(
-        &self,
-        task_id: usize,
-        closer: Closer,
-        // sem: Arc<Semaphore>,
-        // opt: Arc<Options>,
-        oracle: &Arc<Oracle>,
-    ) {
-        let sleep =
-            tokio::time::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..1000)));
-        select! {
-            _=sleep=>{},
-            _=closer.captured()=>{return ;}
-        }
-        let mut count = 0;
-        let mut ticker = tokio::time::interval(Duration::from_millis(50));
+    // pub(crate) async fn start_compact(
+    //     level_controller: Arc<Self>,
+    //     closer: &mut Closer,
+    //     sem: Arc<Semaphore>,
+    //     oracle: &Arc<OracleInner>,
+    // ) {
+    //     let num = level_controller.level_config.num_compactors;
+    //     for task_id in 0..num {
+    //         let closer_c = closer.clone();
+    //         let oracle_clone = oracle.clone();
+    //         let level_controller_clone = level_controller.clone();
+    //         tokio::spawn(async move {
+    //             level_controller_clone
+    //                 .run_compact(task_id, closer_c, &oracle_clone)
+    //                 .await;
+    //         });
+    //     }
+    // }
 
-        // let level = self.last_level().get_level().await;
-        // let targets = self.level_targets(&opt).await;
-        // ticker.tick()
-        // fn run (priotirty:CompactionPriority){
+    // pub(crate) async fn run_compact(
+    //     &self,
+    //     task_id: usize,
+    //     closer: Closer,
+    //     // sem: Arc<Semaphore>,
+    //     // opt: Arc<Options>,
+    //     oracle: &Arc<OracleInner>,
+    // ) {
+    //     let sleep =
+    //         tokio::time::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..1000)));
+    //     select! {
+    //         _=sleep=>{},
+    //         _=closer.captured()=>{return ;}
+    //     }
+    //     let mut count = 0;
+    //     let mut ticker = tokio::time::interval(Duration::from_millis(50));
 
-        // }
-        // let run= |priority:CompactionPriority|{
+    //     // let level = self.last_level().get_level().await;
+    //     // let targets = self.level_targets(&opt).await;
+    //     // ticker.tick()
+    //     // fn run (priotirty:CompactionPriority){
 
-        // };
-        let priority = CompactionPriority {
-            level: self.last_level().get_level(),
-            score: 0.0,
-            adjusted: 0.0,
-            drop_prefixes: Vec::new(),
-            targets: self.level_targets().await,
-        };
-        self.do_compact(task_id, priority, oracle).await;
-        loop {
-            select! {
-                _=ticker.tick()=>{
-                    count+=1;
-                    // if Options::lmax_compaction  && task_id==2 && count >=200{
+    //     // }
+    //     // let run= |priority:CompactionPriority|{
 
-                    // }
-                }
-                _=closer.captured()=>{return ;}
-            }
-        }
-    }
+    //     // };
+    //     let priority = CompactionPriority {
+    //         level: self.last_level_handler().level().into(),
+    //         score: 0.0,
+    //         adjusted: 0.0,
+    //         drop_prefixes: Vec::new(),
+    //         targets: self.targets().await,
+    //     };
+    //     self.do_compact(task_id, priority, oracle).await;
+    //     loop {
+    //         select! {
+    //             _=ticker.tick()=>{
+    //                 count+=1;
+    //                 // if Options::lmax_compaction  && task_id==2 && count >=200{
 
-    async fn run_compact_def(
-        &self,
-        task_id: usize,
-        level: usize,
-        compact_def: &mut CompactDef,
-    ) -> anyhow::Result<()> {
-        if compact_def.priority.targets.file_size.len() == 0 {
-            bail!("Filesizes cannot be zero. Targets are not set");
-        }
-        let time_start = SystemTime::now();
+    //                 // }
+    //             }
+    //             _=closer.captured()=>{return ;}
+    //         }
+    //     }
+    // }
 
-        // let this_level = compact_def.this_level.clone();
-        // let next_level = compact_def.next_level.clone();
+    // async fn run_compact_def(
+    //     &self,
+    //     task_id: usize,
+    //     level: usize,
+    //     compact_def: &mut CompactDef,
+    // ) -> anyhow::Result<()> {
+    //     if compact_def.priority.targets.file_size.len() == 0 {
+    //         bail!("Filesizes cannot be zero. Targets are not set");
+    //     }
+    //     let time_start = SystemTime::now();
 
-        debug_assert!(compact_def.splits.len() == 0);
+    //     // let this_level = compact_def.this_level.clone();
+    //     // let next_level = compact_def.next_level.clone();
 
-        if compact_def.this_level.get_level() != compact_def.next_level.get_level() {
-            self.add_splits(compact_def).await;
-        }
+    //     debug_assert!(compact_def.splits.len() == 0);
 
-        if compact_def.splits.len() == 0 {
-            compact_def.splits.push(KeyRange::default());
-        }
+    //     if compact_def.this_level.level() != compact_def.next_level.level() {
+    //         self.add_splits(compact_def).await;
+    //     }
 
-        let num_tables = compact_def.top.len() + compact_def.bottom.len();
-        #[cfg(feature = "metrics")]
-        add_num_compaction_tables(num_tables);
-        let result = self.compact_build_tables(level, compact_def).await;
-        #[cfg(feature = "metrics")]
-        sub_num_compaction_tables(num_tables);
-        result?;
-        Ok(())
-    }
+    //     if compact_def.splits.len() == 0 {
+    //         compact_def.splits.push(KeyRange::default());
+    //     }
 
-    async fn do_compact(
-        &self,
-        task_id: usize,
-        mut priority: CompactionPriority,
-        oracle: &Arc<Oracle>,
-    ) -> anyhow::Result<()> {
-        let priority_level = priority.level;
-        debug_assert!(priority_level < self.max_levels);
-        if priority.targets.base_level == 0 {
-            priority.targets = self.level_targets().await;
-        }
-        let this_level = self.levels[priority_level].clone();
-        let next_level = if priority_level == 0 {
-            self.levels[priority.targets.base_level].clone()
-        } else {
-            this_level.clone()
-        };
+    //     let num_tables = compact_def.top.len() + compact_def.bottom.len();
+    //     #[cfg(feature = "metrics")]
+    //     add_num_compaction_tables(num_tables);
+    //     let result = self.compact_build_tables(level, compact_def).await;
+    //     #[cfg(feature = "metrics")]
+    //     sub_num_compaction_tables(num_tables);
+    //     result?;
+    //     Ok(())
+    // }
 
-        let mut compact_def = CompactDef {
-            compactor_id: task_id,
-            this_level,
-            next_level,
-            top: Vec::new(),
-            bottom: Vec::new(),
-            this_range: KeyRange::default(),
-            next_range: KeyRange::default(),
-            splits: Vec::new(),
-            this_size: 0,
-            priority,
-        };
-        if priority_level == 0 {
-            if !self.fill_tables_level0(&mut compact_def).await {
-                bail!("Unable to fill tables")
-            };
-        } else {
-            if priority_level != self.max_levels - 1 {
-                compact_def.next_level = self.levels[priority_level + 1].clone();
-            }
-            if !self.fill_tables(&mut compact_def, oracle).await {
-                bail!("Unable to fill tables")
-            };
-        }
-        Ok(())
-    }
-    async fn level_targets(&self) -> Targets {
-        let levels_len = self.levels.len();
-        let mut targets = Targets {
-            base_level: 0,
-            target_size: vec![0; levels_len],
-            file_size: vec![0; levels_len],
-        };
-        let mut level_size = self.last_level().get_total_size().await;
-        let base_level_size = self.level_config.base_level_size;
-        for i in (1..levels_len).rev() {
-            targets.target_size[i] = level_size.max(base_level_size);
-            if targets.base_level == 0 && level_size <= base_level_size {
-                targets.base_level = i;
-            }
-            level_size /= self.level_config.level_size_multiplier;
-        }
+    // async fn do_compact(
+    //     &self,
+    //     task_id: usize,
+    //     mut priority: CompactionPriority,
+    //     oracle: &Arc<OracleInner>,
+    // ) -> anyhow::Result<()> {
+    //     let priority_level = priority.level;
+    //     debug_assert!(priority_level < self.max_levels as usize);
+    //     if priority.targets.base_level == 0 {
+    //         priority.targets = self.targets().await;
+    //     }
+    //     let this_level = self.levels[priority_level].clone();
+    //     let next_level = if priority_level == 0 {
+    //         self.levels[priority.targets.base_level].clone()
+    //     } else {
+    //         this_level.clone()
+    //     };
 
-        // let mut table_size = Options::base_table_size();
-        let mut table_size = self.table_config.table_size();
-        for i in 0..levels_len {
-            targets.file_size[i] = if i == 0 {
-                self.memtable_size
-            } else if i <= targets.base_level {
-                table_size
-            } else {
-                table_size *= self.level_config.table_size_multiplier;
-                table_size
-            }
-        }
+    //     let mut compact_def = CompactDef {
+    //         compactor_id: task_id,
+    //         this_level,
+    //         next_level,
+    //         top: Vec::new(),
+    //         bottom: Vec::new(),
+    //         this_range: KeyRange::default(),
+    //         next_range: KeyRange::default(),
+    //         splits: Vec::new(),
+    //         this_size: 0,
+    //         priority,
+    //     };
+    //     if priority_level == 0 {
+    //         if !self.fill_tables_level0(&mut compact_def).await {
+    //             bail!("Unable to fill tables")
+    //         };
+    //     } else {
+    //         if priority_level != self.max_levels as usize - 1 {
+    //             compact_def.next_level = self.levels[priority_level + 1].clone();
+    //         }
+    //         if !self.fill_tables(&mut compact_def, oracle).await {
+    //             bail!("Unable to fill tables")
+    //         };
+    //     }
+    //     Ok(())
+    // }
 
-        for i in targets.base_level + 1..levels_len - 1 {
-            if self.levels[i].get_total_size().await > 0 {
-                break;
-            }
-            targets.base_level = i;
-        }
+    // async fn add_splits(&self, compact_def: &mut CompactDef) {
+    //     compact_def.splits.clear();
+    //     let mut width = (compact_def.bottom.len() as f64 / 5.0).ceil() as usize;
+    //     width = width.max(3);
+    //     let mut skr = compact_def.this_range.clone();
+    //     skr.extend_borrow(&compact_def.next_range);
 
-        let base_level = targets.base_level;
-        let levels = &self.levels;
+    //     for i in 0..compact_def.bottom.len() {
+    //         if i == compact_def.bottom.len() - 1 {
+    //             skr.right.clear();
+    //             compact_def.splits.push(skr.clone());
+    //             return;
+    //         }
+    //         if i % width == width - 1 {
+    //             let biggest = compact_def.bottom[i].biggest();
+    //             skr.right = key_with_ts(parse_key(&biggest), 0);
+    //             compact_def.splits.push(skr.clone());
+    //             skr.left = skr.right.clone();
+    //         }
+    //     }
+    // }
+    // async fn compact_build_tables(
+    //     &self,
+    //     level: usize,
+    //     compact_def: &mut CompactDef,
+    // ) -> anyhow::Result<()> {
+    //     let mut valid = Vec::new();
+    //     't: for table in compact_def.bottom.iter() {
+    //         for prefix in compact_def.priority.drop_prefixes.iter() {
+    //             if table.smallest().key().starts_with(&prefix) {
+    //                 let biggest = table.biggest();
+    //                 if biggest.key().starts_with(&prefix) {
+    //                     continue 't;
+    //                 }
+    //             };
+    //         }
+    //         valid.push(table.clone());
+    //     }
 
-        if base_level < levels.len() - 1
-            && levels[base_level].get_total_size().await == 0
-            && levels[base_level + 1].get_total_size().await < targets.target_size[base_level + 1]
-        {
-            targets.base_level += 1;
-        }
-        targets
-    }
-    async fn try_fill_max_level_tables(
-        &self,
-        compact_def: &mut CompactDef,
-        oracle: &Arc<Oracle>,
-    ) -> Option<bool> {
-        let this_r = compact_def.this_level.read().await;
-        let next_r = compact_def.next_level.read().await;
-        let tables = this_r.tables.clone();
-        if tables.len() == 0 {
-            return false.into();
-        }
-        if compact_def.this_level.get_level() != self.max_levels - 1 {
-            return None;
-        }
-        let mut sorted_tables = tables.clone();
-        if sorted_tables.len() != 0 {
-            sorted_tables.sort_unstable_by(|a, b| b.stale_data_size().cmp(&a.stale_data_size()));
-        }
+    //     let mut out = Vec::new();
+    //     if level == 0 {
+    //         compact_def
+    //             .top
+    //             .iter()
+    //             .rev()
+    //             .for_each(|t| out.push(t.clone()));
+    //     } else if compact_def.top.len() > 0 {
+    //         out.push(compact_def.top[0].clone());
+    //     };
 
-        if sorted_tables.len() > 0 && sorted_tables[0].stale_data_size() == 0 {
-            return false.into();
-        }
-        compact_def.bottom.clear();
+    //     let mut throttle = Throttle::new(3);
+    //     for key_range in compact_def.splits.iter() {
+    //         match throttle.acquire().await {
+    //             Ok(permit) => {
+    //                 let out_concat = ConcatIter::new(out.clone(), false, false);
+    //                 let valid_concat = ConcatIter::new(valid.clone(), false, false);
+    //                 let merget_iter = MergeIter::new(vec![out_concat, valid_concat], false);
+    //                 tokio::spawn(async move {
+    //                     permit.done_with_error(None).await;
+    //                 });
+    //             }
+    //             Err(e) => {
+    //                 error!("cannot start subcompaction: {}", e);
+    //                 bail!(e)
+    //             }
+    //         };
+    //     }
+    //     Ok(())
+    // }
+    // async fn sub_compact(
+    //     &self,
+    //     merget_iter: MergeIter<TableIter>,
+    //     key_range: KeyRange,
+    //     compact_def: &mut CompactDef,
+    //     oracle: &Arc<OracleInner>,
+    // ) {
+    //     let mut all_tables = Vec::with_capacity(compact_def.top.len() + compact_def.bottom.len());
+    //     all_tables.extend_from_slice(&compact_def.top);
+    //     all_tables.extend_from_slice(&compact_def.bottom);
 
-        let now = SystemTime::now();
+    //     let has_overlap = self
+    //         .check_overlap(&all_tables, compact_def.next_level.level() + 1)
+    //         .await;
 
-        for table in sorted_tables {
-            if table.max_version() > oracle.discard_at_or_below().await {
-                continue;
-            }
-
-            if now.duration_since(table.created_at()).unwrap() < Duration::from_secs(60 * 60) {
-                continue;
-            }
-
-            if table.stale_data_size() < 10 << 20 {
-                continue;
-            }
-
-            compact_def.this_size = table.size();
-            compact_def.this_range = KeyRange::from_table(&table);
-            compact_def.next_range = compact_def.this_range.clone();
-            let this_level = compact_def.this_level.get_level();
-            if self
-                .compact_status
-                .is_overlaps_with(this_level, &compact_def.this_range)
-            {
-                continue;
-            };
-            let table_size = table.size();
-            compact_def.top = vec![table.clone()];
-            let need_file_size = compact_def.priority.targets.file_size[this_level];
-            if table_size >= need_file_size {
-                break;
-            }
-
-            // collect_bottom_tables
-            let mut total_size = table_size;
-            let mut j =
-                match tables.binary_search_by(|a| compare_key(a.smallest(), table.smallest())) {
-                    Ok(s) => s,
-                    Err(s) => s,
-                };
-            debug_assert!(tables[j].table_id() == table.table_id());
-            j += 1;
-            while j < tables.len() {
-                let new_t = &tables[j];
-                total_size += new_t.size();
-                if total_size >= need_file_size {
-                    break;
-                }
-                compact_def.bottom.push(new_t.clone());
-                compact_def.next_range.extend(KeyRange::from_table(new_t));
-                j += 1;
-            }
-            //
-
-            if !self.compact_status.compare_and_add(compact_def) {
-                compact_def.bottom.clear();
-                compact_def.next_range = KeyRange::default();
-                continue;
-            };
-            return true.into();
-        }
-        if compact_def.top.len() == 0 {
-            return false.into();
-        }
-
-        let r = self.compact_status.compare_and_add(compact_def);
-        drop(this_r);
-        drop(next_r);
-        return r.into();
-    }
-    async fn fill_tables(&self, compact_def: &mut CompactDef, oracle: &Arc<Oracle>) -> bool {
-        //if compact_def.this_level.level is not last return None;
-        if let Some(s) = self.try_fill_max_level_tables(compact_def, oracle).await {
-            return s;
-        }
-
-        let this_level_r = compact_def.this_level.read().await;
-        let next_level_r = compact_def.next_level.read().await;
-        let mut tables = this_level_r.tables.clone();
-        tables.sort_unstable_by(|a, b| a.max_version().cmp(&b.max_version()));
-
-        for table in tables {
-            compact_def.this_size = table.size();
-            compact_def.this_range = KeyRange::from_table(&table);
-
-            if self
-                .compact_status
-                .is_overlaps_with(compact_def.this_level.get_level(), &compact_def.this_range)
-            {
-                continue;
-            };
-            compact_def.top = vec![table.clone()];
-
-            let (left_index, right_index) = compact_def
-                .next_level
-                .overlapping_tables(&compact_def.this_range)
-                .await;
-            compact_def.bottom = next_level_r.tables[left_index..right_index].to_vec();
-
-            if compact_def.bottom.len() == 0 {
-                compact_def.next_range = compact_def.this_range.clone();
-                if !self.compact_status.compare_and_add(&compact_def) {
-                    continue;
-                };
-                return true;
-            }
-
-            compact_def.next_range = KeyRange::from_tables(&compact_def.bottom).unwrap(); //bottom.len !=0 so can unwrap()
-
-            if self
-                .compact_status
-                .is_overlaps_with(compact_def.next_level.get_level(), &compact_def.next_range)
-            {
-                continue;
-            };
-
-            if !self.compact_status.compare_and_add(compact_def) {
-                continue;
-            };
-            return true;
-        }
-        false
-    }
-    async fn fill_tables_level0(&self, compact_def: &mut CompactDef) -> bool {
-        if self.fill_tables_level0_to_levelbase(compact_def).await {
-            true
-        } else {
-            self.fill_tables_level0_to_level0(compact_def).await
-        }
-    }
-    async fn fill_tables_level0_to_levelbase(&self, compact_def: &mut CompactDef) -> bool {
-        if compact_def.next_level.get_level() == 0 {
-            panic!("Base level can't be zero");
-        }
-
-        if compact_def.priority.adjusted > 0.0 && compact_def.priority.adjusted < 1.0 {
-            return false;
-        }
-
-        let this_level_r = compact_def.this_level.read().await;
-        let next_level_r = compact_def.next_level.read().await;
-
-        if this_level_r.tables.len() == 0 {
-            return false;
-        };
-        let mut top = Vec::new();
-        if compact_def.priority.drop_prefixes.len() == 0 {
-            let mut key_range = KeyRange::default();
-            for table in this_level_r.tables.iter() {
-                let k = KeyRange::from_table(table);
-                if key_range.is_overlaps_with(&k) {
-                    top.push(table.clone());
-                    key_range.extend(k);
-                } else {
-                    break;
-                };
-            }
-        } else {
-            top = this_level_r.tables.clone();
-        }
-
-        compact_def.this_range = KeyRange::from_tables(&top).unwrap();
-        compact_def.top = top;
-
-        let (left_index, right_index) = compact_def
-            .next_level
-            .overlapping_tables(&compact_def.this_range)
-            .await;
-
-        compact_def.bottom = next_level_r.tables[left_index..right_index].to_vec();
-
-        compact_def.next_range = if compact_def.bottom.len() == 0 {
-            compact_def.this_range.clone()
-        } else {
-            KeyRange::from_tables(&compact_def.bottom).unwrap() //len!=0 so can unwrap()
-        };
-
-        let r = self.compact_status.compare_and_add(compact_def);
-        drop(this_level_r);
-        drop(next_level_r);
-        return r;
-    }
-
-    async fn fill_tables_level0_to_level0(&self, compact_def: &mut CompactDef) -> bool {
-        if compact_def.compactor_id != 0 {
-            return false;
-        }
-
-        compact_def.next_level = self.levels[0].clone();
-        compact_def.next_range = KeyRange::default();
-        compact_def.bottom.clear();
-
-        debug_assert!(compact_def.this_level.get_level() == 0);
-        debug_assert!(compact_def.next_level.get_level() == 0);
-
-        let targets = &mut compact_def.priority.targets;
-
-        let this_level_handler_r = compact_def.this_level.read().await;
-        let mut compact_status_w = self.compact_status.write();
-        let mut out = Vec::new();
-        let now = SystemTime::now();
-
-        for table in this_level_handler_r.tables.iter() {
-            if table.size() >= targets.file_size[0] {
-                continue;
-            }
-
-            if now.duration_since(table.created_at()).unwrap() < Duration::from_secs(10) {
-                continue;
-            };
-
-            if compact_status_w.tables().contains(&table.table_id()) {
-                continue;
-            }
-            out.push(table.clone());
-        }
-        drop(this_level_handler_r);
-        if out.len() < 4 {
-            return false;
-        }
-
-        compact_def.this_range = KeyRange::default_with_inf();
-        compact_def.top = out;
-
-        let this_level_compact_status =
-            &mut compact_status_w.levels_mut()[compact_def.this_level.get_level()];
-        this_level_compact_status
-            .0
-            .ranges
-            .push(KeyRange::default_with_inf());
-
-        for table in compact_def.top.iter() {
-            compact_status_w.tables_mut().insert(table.table_id());
-        }
-        targets.file_size[0] = u32::MAX as usize;
-        drop(compact_status_w);
-        true
-    }
-    async fn add_splits(&self, compact_def: &mut CompactDef) {
-        compact_def.splits.clear();
-        let mut width = (compact_def.bottom.len() as f64 / 5.0).ceil() as usize;
-        width = width.max(3);
-        let mut skr = compact_def.this_range.clone();
-        skr.extend_borrow(&compact_def.next_range);
-
-        for i in 0..compact_def.bottom.len() {
-            if i == compact_def.bottom.len() - 1 {
-                skr.right.clear();
-                compact_def.splits.push(skr.clone());
-                return;
-            }
-            if i % width == width - 1 {
-                let biggest = compact_def.bottom[i].biggest();
-                skr.right = key_with_ts(parse_key(&biggest), 0);
-                compact_def.splits.push(skr.clone());
-                skr.left = skr.right.clone();
-            }
-        }
-    }
-    async fn compact_build_tables(
-        &self,
-        level: usize,
-        compact_def: &mut CompactDef,
-    ) -> anyhow::Result<()> {
-        let mut valid = Vec::new();
-        't: for table in compact_def.bottom.iter() {
-            for prefix in compact_def.priority.drop_prefixes.iter() {
-                if table.smallest().starts_with(&prefix) {
-                    let biggest = table.biggest();
-                    if biggest.starts_with(&prefix) {
-                        continue 't;
-                    }
-                };
-            }
-            valid.push(table.clone());
-        }
-
-        let mut out = Vec::new();
-        if level == 0 {
-            compact_def
-                .top
-                .iter()
-                .rev()
-                .for_each(|t| out.push(t.clone()));
-        } else if compact_def.top.len() > 0 {
-            out.push(compact_def.top[0].clone());
-        };
-
-        let mut throttle = Throttle::new(3);
-        for key_range in compact_def.splits.iter() {
-            match throttle.acquire().await {
-                Ok(permit) => {
-                    let out_concat = ConcatIter::new(out.clone(), false, false);
-                    let valid_concat = ConcatIter::new(valid.clone(), false, false);
-                    let merget_iter = MergeIter::new(vec![out_concat, valid_concat], false);
-                    tokio::spawn(async move {
-                        permit.done_with_error(None).await;
-                    });
-                }
-                Err(e) => {
-                    error!("cannot start subcompaction: {}", e);
-                    bail!(e)
-                }
-            };
-        }
-        Ok(())
-    }
-    async fn sub_compact(
-        &self,
-        merget_iter: MergeIter<TableIter>,
-        key_range: KeyRange,
-        compact_def: &mut CompactDef,
-        oracle: &Arc<Oracle>,
-    ) {
-        let mut all_tables = Vec::with_capacity(compact_def.top.len() + compact_def.bottom.len());
-        all_tables.extend_from_slice(&compact_def.top);
-        all_tables.extend_from_slice(&compact_def.bottom);
-
-        let has_overlap = self
-            .check_overlap(&all_tables, compact_def.next_level.get_level() + 1)
-            .await;
-
-        let discard_ts = oracle.discard_at_or_below().await;
-    }
-    async fn check_overlap(&self, tables: &Vec<Table>, level: usize) -> bool {
-        let key_range = KeyRange::from_tables(&tables).unwrap();
-        for i in level..self.levels.len() {
-            let (left, right) = self.levels[i].overlapping_tables(&key_range).await;
-            if right - left > 0 {
-                return true;
-            }
-        }
-        return false;
-    }
+    //     let discard_ts = oracle.discard_at_or_below().await;
+    // }
+    // async fn check_overlap(&self, tables: &Vec<Table>, level: Level) -> bool {
+    //     let key_range = KeyRange::from_tables(&tables).unwrap();
+    //     for i in level.into()..self.levels.len() {
+    //         let (left, right) = self.levels[i].overlapping_tables(&key_range).await;
+    //         if right - left > 0 {
+    //             return true;
+    //         }
+    //     }
+    //     return false;
+    // }
     pub(crate) fn get_reserve_file_id(&self) -> SSTableId {
         self.next_file_id.fetch_add(1, Ordering::AcqRel).into()
     }
@@ -896,12 +676,24 @@ impl LevelsController {
         self.levels.as_ref()
     }
 
+    pub(crate) fn level_handler(&self, level: Level) -> &LevelHandler {
+        &self.levels[level.to_usize()]
+    }
+
     pub(crate) fn level_config(&self) -> &LevelsControllerConfig {
         &self.level_config
     }
 
     pub(crate) fn level_0_stalls_ms(&self) -> &AtomicU64 {
         &self.level_0_stalls_ms
+    }
+
+    pub(crate) fn table_config(&self) -> &TableConfig {
+        &self.table_config
+    }
+
+    pub(crate) fn compact_status(&self) -> &CompactStatus {
+        &self.compact_status
     }
 }
 
@@ -932,9 +724,9 @@ pub(crate) fn revert_to_manifest(
 }
 pub(crate) struct TableInfo {
     table_id: SSTableId,
-    level: usize,
-    left: Bytes,
-    right: Bytes,
+    level: Level,
+    left: KeyTs,
+    right: KeyTs,
     key_count: u32,
     on_disk_size: u32,
     stale_data_size: u32,
@@ -949,7 +741,7 @@ impl TableInfo {
         self.max_version
     }
 }
-impl LevelsController {
+impl LevelsControllerInner {
     pub(crate) async fn get_table_info(&self) -> anyhow::Result<Vec<TableInfo>> {
         let mut results = Vec::with_capacity(self.levels.len() * 20);
         for level in self.levels.iter() {

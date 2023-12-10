@@ -6,56 +6,56 @@ use crate::{
     kv::{KeyTsBorrow, ValueMeta},
 };
 
-use super::{Block, EntryHeader, TableInner, HEADER_SIZE};
-pub(crate) struct SinkTableIter<'a> {
-    inner: &'a TableInner,
+use super::{Block, EntryHeader, TableInner, HEADER_SIZE, Table};
+pub(crate) struct SinkTableIter {
+    inner: Table,
     use_cache: bool,
     block_iter: Option<SinkBlockIter>,
     back_block_iter: Option<SinkBlockIter>,
 }
-impl TableInner {
-    pub(crate) fn iter(&self, use_cache: bool) -> SinkTableIter<'_> {
+impl Table {
+    pub(crate) fn iter(&self, use_cache: bool) -> SinkTableIter {
         SinkTableIter {
-            inner: self,
+            inner: self.clone(),
             use_cache,
             block_iter: None,
             back_block_iter: None,
         }
     }
 }
-impl<'a> SinkIter for SinkTableIter<'a> {
+impl SinkIter for SinkTableIter {
     type Item = SinkBlockIter;
 
     fn item(&self) -> Option<&Self::Item> {
         self.block_iter.as_ref()
     }
 }
-impl<'a> DoubleEndedSinkIter for SinkTableIter<'a> {
+impl DoubleEndedSinkIter for SinkTableIter {
     fn item_back(&self) -> Option<&<Self as SinkIter>::Item> {
         self.back_block_iter.as_ref()
     }
 }
-impl<'a> SinkTableIter<'a> {
+impl SinkTableIter {
     fn double_ended_eq(&self) -> bool {
         if let Some(iter) = self.block_iter.as_ref() {
             if let Some(back_iter) = self.back_block_iter.as_ref() {
                 if iter.key() == back_iter.key_back() && iter.value() == back_iter.value_back() {
-                    return false;
+                    return true;
                 }
             }
         }
-        return true;
+        return false;
     }
 }
-impl<'a> SinkIterator for SinkTableIter<'a> {
+impl SinkIterator for SinkTableIter {
     fn next(&mut self) -> Result<bool, anyhow::Error> {
-        if !self.double_ended_eq() {
+        if self.double_ended_eq() {
             return Ok(false);
         }
         let new_block_index = match self.block_iter.as_mut() {
             Some(iter) => {
                 if iter.next()? {
-                    return Ok(self.double_ended_eq());
+                    return Ok(!self.double_ended_eq());
                 }
                 let block_index: usize = iter.inner.block_index.into();
                 if block_index == self.inner.block_offsets_len() - 1 {
@@ -73,21 +73,21 @@ impl<'a> SinkIterator for SinkTableIter<'a> {
         let next_block = self.inner.get_block(new_block_index, self.use_cache)?;
         self.block_iter = next_block.iter().into();
         if self.block_iter.as_mut().unwrap().next()? {
-            return Ok(self.double_ended_eq());
+            return Ok(!self.double_ended_eq());
         } else {
             return Ok(false);
         };
     }
 }
-impl<'a> DoubleEndedSinkIterator for SinkTableIter<'a> {
+impl DoubleEndedSinkIterator for SinkTableIter {
     fn next_back(&mut self) -> Result<bool, anyhow::Error> {
-        if !self.double_ended_eq() {
+        if self.double_ended_eq() {
             return Ok(false);
         }
         let new_block_index = match self.back_block_iter.as_mut() {
             Some(back_iter) => {
                 if back_iter.next_back()? {
-                    return Ok(self.double_ended_eq());
+                    return Ok(!self.double_ended_eq());
                 }
                 let block_index: usize = back_iter.inner.block_index.into();
                 if block_index == 0 {
@@ -105,13 +105,13 @@ impl<'a> DoubleEndedSinkIterator for SinkTableIter<'a> {
         let block = self.inner.get_block(new_block_index, self.use_cache)?;
         self.back_block_iter = block.iter().into();
         if self.back_block_iter.as_mut().unwrap().next_back()? {
-            return Ok(self.double_ended_eq());
+            return Ok(!self.double_ended_eq());
         } else {
             return Ok(false);
         };
     }
 }
-impl<'a> KvSinkIter<ValueMeta> for SinkTableIter<'a> {
+impl KvSinkIter<ValueMeta> for SinkTableIter {
     fn key(&self) -> Option<KeyTsBorrow<'_>> {
         if let Some(iter) = self.block_iter.as_ref() {
             return iter.key();
@@ -126,7 +126,7 @@ impl<'a> KvSinkIter<ValueMeta> for SinkTableIter<'a> {
         None
     }
 }
-impl<'a> KvDoubleEndedSinkIter<ValueMeta> for SinkTableIter<'a> {
+impl KvDoubleEndedSinkIter<ValueMeta> for SinkTableIter {
     fn key_back(&self) -> Option<KeyTsBorrow<'_>> {
         if let Some(back_iter) = self.back_block_iter.as_ref() {
             return back_iter.key_back();
@@ -141,12 +141,12 @@ impl<'a> KvDoubleEndedSinkIter<ValueMeta> for SinkTableIter<'a> {
         None
     }
 }
-impl<'a> KvSeekIter for SinkTableIter<'a> {
+impl KvSeekIter for SinkTableIter {
     fn seek(&mut self, k: KeyTsBorrow<'_>) -> anyhow::Result<bool> {
         let index_buf = self.inner.get_index()?;
         let search = index_buf
             .offsets()
-            .binary_search_by(|b| b.key().as_ref().cmp(k.as_ref()));
+            .binary_search_by(|b| b.key_ts().partial_cmp(&k).unwrap());
         let index = match search {
             Ok(index) => index,
             Err(index) => {
