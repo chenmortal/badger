@@ -376,7 +376,9 @@ impl SinkMergeIter {
             }
         }
     }
-
+    pub(crate) fn valid(&self) -> bool {
+        self.smaller().valid
+    }
     fn smaller(&self) -> &SinkMergeNode {
         if self.left_small {
             &self.left

@@ -98,7 +98,17 @@ impl DB {
 
         let threshold = VlogThreshold::new(opt.vlog_threshold);
         let mut closer = Closer::new(1);
-        level_controller.clone().spawn_compact(&mut closer, &oracle).await;
+        level_controller
+            .clone()
+            .spawn_compact(
+                &mut closer,
+                opt.table.clone(),
+                key_registry.clone(),
+                index_cache.clone(),
+                block_cache.clone(),
+                oracle.clone(),
+            )
+            .await;
         let mut vlog = ValueLog::new(threshold, key_registry.clone(), opt.vlog.clone())?;
         vlog.open().await?;
         let closer = Closer::new(1);

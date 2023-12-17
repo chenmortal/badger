@@ -6,11 +6,16 @@ use std::{
 };
 
 use crate::{
+    key_registry::KeyRegistry,
     kv::KeyTs,
     level::{levels::LEVEL0, plan::CompactPlan},
-    table::Table,
+    table::{Table, TableConfig},
     txn::oracle::Oracle,
-    util::{closer::Closer, SSTableId},
+    util::{
+        cache::{BlockCache, IndexCache},
+        closer::Closer,
+        SSTableId,
+    },
 };
 use bytes::Bytes;
 use parking_lot::RwLock;
@@ -69,18 +74,35 @@ impl CompactTargets {
 }
 
 impl LevelsController {
-    pub(crate) async fn spawn_compact(self, closer: &mut Closer, oracle: &Oracle) {
+    pub(crate) async fn spawn_compact(
+        self,
+        closer: &mut Closer,
+        config: TableConfig,
+        key_registry: KeyRegistry,
+        index_cache: IndexCache,
+        block_cache: Option<BlockCache>,
+        oracle: Oracle,
+    ) {
         for task_id in 0..self.level_config().num_compactors() {
-            tokio::spawn(
-                self.clone()
-                    .pre_compact(task_id, closer.clone(), oracle.clone()),
-            );
+            tokio::spawn(self.clone().pre_compact(
+                task_id,
+                closer.clone(),
+                config.clone(),
+                key_registry.clone(),
+                index_cache.clone(),
+                block_cache.clone(),
+                oracle.clone(),
+            ));
         }
     }
     pub(crate) async fn pre_compact(
         self,
         compact_task_id: usize,
         closer: Closer,
+        config: TableConfig,
+        key_registry: KeyRegistry,
+        index_cache: IndexCache,
+        block_cache: Option<BlockCache>,
         oracle: Oracle,
     ) -> anyhow::Result<()> {
         let sleep =
@@ -101,7 +123,16 @@ impl LevelsController {
             drop_prefixes: vec![],
             targets: self.level_targets().await,
         };
-        self.compact(compact_task_id, priority, oracle).await?;
+        self.compact(
+            compact_task_id,
+            priority,
+            config,
+            key_registry,
+            index_cache,
+            block_cache,
+            oracle,
+        )
+        .await?;
         loop {
             select! {
                 _=ticker.tick()=>{
@@ -118,6 +149,10 @@ impl LevelsController {
         &self,
         compact_task_id: usize,
         mut priority: CompactPriority,
+        config: TableConfig,
+        key_registry: KeyRegistry,
+        index_cache: IndexCache,
+        block_cache: Option<BlockCache>,
         oracle: Oracle,
     ) -> anyhow::Result<()> {
         let priority_level = priority.level;
@@ -140,7 +175,16 @@ impl LevelsController {
             next_level_handler,
         );
         plan.fix(self, &oracle).await?;
-        self.run_compact(priority_level, &mut plan, &oracle).await?;
+        self.run_compact(
+            priority_level,
+            &mut plan,
+            config,
+            &key_registry,
+            index_cache,
+            block_cache,
+            &oracle,
+        )
+        .await?;
         Ok(())
     }
 }
@@ -318,6 +362,9 @@ impl KeyTsRange {
     pub(crate) fn right(&self) -> &KeyTs {
         &self.right
     }
+    pub(crate) fn left(&self) -> &KeyTs {
+        &self.left
+    }
 }
 
 impl LevelHandlerTables {
@@ -427,201 +474,3 @@ impl LevelCompactStatus {
         return false;
     }
 }
-
-// #[derive(Debug, Default, Clone)]
-// pub(crate) struct KeyRange {
-//     pub(super) left: Vec<u8>,
-//     pub(super) right: Vec<u8>,
-//     inf: bool,
-//     size: i64,
-// }
-
-// impl CompactStatus {
-// pub(super) fn compare_and_add(&self, compact_def: &CompactDef) -> bool {
-//     let mut status_w = self.0.write();
-
-//     let this_level: usize = compact_def.this_level.level().into();
-//     let next_level: usize = compact_def.next_level.level().into();
-
-//     debug_assert!(this_level < status_w.levels.len());
-
-//     if status_w.levels[this_level].is_overlaps_with(&compact_def.this_range) {
-//         return false;
-//     };
-
-//     if status_w.levels[next_level].is_overlaps_with(&compact_def.next_range) {
-//         return false;
-//     };
-
-//     status_w.levels[this_level]
-//         .0
-//         .ranges
-//         .push(compact_def.this_range.clone());
-
-//     status_w.levels[next_level]
-//         .0
-//         .ranges
-//         .push(compact_def.next_range.clone());
-
-//     for table in compact_def.top.iter() {
-//         status_w.tables.insert(table.table_id());
-//     }
-//     for table in compact_def.bottom.iter() {
-//         status_w.tables.insert(table.table_id());
-//     }
-//     drop(status_w);
-//     true
-// }
-// pub(super) fn is_overlaps_with(&self, level: Level, target: &KeyRange) -> bool {
-//     let inner_r = self.0.read();
-//     let l: usize = level.into();
-//     let r = inner_r.levels[l].is_overlaps_with(target);
-//     drop(inner_r);
-//     r
-// }
-// }
-// impl LevelCompactStatus {
-//     fn is_overlaps_with(&self, target: &KeyRange) -> bool {
-//         for key_range in self.0.ranges.iter() {
-//             if key_range.is_overlaps_with(target) {
-//                 return true;
-//             };
-//         }
-//         return false;
-//     }
-// }
-// impl KeyRange {
-//     pub(crate) fn from_tables(tables: &[Table]) -> Option<KeyRange> {
-//         if tables.len() == 0 {
-//             return None;
-//         }
-//         let mut smallest = tables[0].smallest();
-//         let mut biggest = tables[0].biggest();
-//         for i in 1..tables.len() {
-//             if tables[i].smallest().cmp(smallest).is_lt() {
-//                 smallest = tables[i].smallest();
-//             };
-//             let biggest_i_r = tables[i].biggest();
-//             if biggest_i_r.cmp(biggest).is_gt() {
-//                 biggest = biggest_i_r;
-//             }
-//         }
-//         Self {
-//             left: key_with_ts(parse_key(smallest), u64::MAX),
-//             right: key_with_ts(parse_key(&biggest), 0),
-//             inf: false,
-//             size: 0,
-//         }
-//         .into()
-//     }
-//     pub(crate) fn from_table(table: &Table) -> Self {
-//         let smallest = table.smallest();
-//         let left = key_with_ts(parse_key(smallest), u64::MAX);
-//         let biggest = table.biggest();
-//         let right = key_with_ts(parse_key(&biggest), 0);
-//         Self {
-//             left,
-//             right,
-//             inf: false,
-//             size: 0,
-//         }
-//     }
-
-//     #[inline]
-//     pub(crate) fn is_empty(&self) -> bool {
-//         self.left.len() == 0 && self.right.len() == 0 && !self.inf
-//     }
-//     #[inline]
-//     fn to_string(&self) -> String {
-//         format!(
-//             "[left={:?}, right={:?}, inf={}]",
-//             self.left, self.right, self.inf
-//         )
-//     }
-//     #[inline]
-//     pub(crate) fn extend_borrow(&mut self, key_range: &KeyRange) {
-//         if key_range.is_empty() {
-//             return;
-//         }
-//         if self.is_empty() {
-//             *self = key_range.clone();
-//         }
-//         if self.left.len() == 0 || compare_key(&key_range.left, &self.left).is_lt() {
-//             self.left = key_range.left.clone();
-//         }
-//         if self.right.len() == 0 || compare_key(&key_range.right, &self.right).is_gt() {
-//             self.right = key_range.right.clone();
-//         }
-//         if key_range.inf {
-//             self.inf = true
-//         }
-//     }
-//     #[inline]
-//     pub(crate) fn extend(&mut self, key_range: KeyRange) {
-//         if key_range.is_empty() {
-//             return;
-//         }
-//         if self.is_empty() {
-//             *self = key_range;
-//             return;
-//         }
-//         if self.left.len() == 0 || compare_key(&key_range.left, &self.left).is_lt() {
-//             self.left = key_range.left;
-//         }
-//         if self.right.len() == 0 || compare_key(&key_range.right, &self.right).is_gt() {
-//             self.right = key_range.right;
-//         }
-//         if key_range.inf {
-//             self.inf = true
-//         }
-//     }
-
-//     //is overlapped by target
-//     #[inline]
-//     pub(crate) fn is_overlaps_with(&self, target: &KeyRange) -> bool {
-//         //empty is always overlapped by target
-//         if self.is_empty() {
-//             return true;
-//         }
-
-//         //self is not empty, so is not overlapped by empty
-//         if target.is_empty() {
-//             return false;
-//         }
-
-//         if self.inf || target.inf {
-//             return true;
-//         }
-
-//         if compare_key(&self.left, &target.right).is_gt()  //  [..target.right] [self.left..]
-//             || compare_key(&self.right, &target.left).is_lt()
-//         // [..self.right] [target.left..]
-//         {
-//             return false;
-//         }
-
-//         return true;
-//     }
-
-//     #[inline]
-//     pub(crate) fn get_left(&self) -> &[u8] {
-//         self.left.as_ref()
-//     }
-
-//     #[inline]
-//     pub(crate) fn get_right(&self) -> &[u8] {
-//         self.right.as_ref()
-//     }
-//     #[inline]
-//     pub(crate) fn default_with_inf() -> Self {
-//         let mut k = Self::default();
-//         k.inf = true;
-//         k
-//     }
-// }
-
-// impl PartialEq for KeyRange {
-//     fn eq(&self, other: &Self) -> bool {
-//         self.left == other.left && self.right == other.right && self.inf == other.inf
-//     }
-// }
