@@ -1,5 +1,4 @@
 pub(crate) mod iter;
-pub(crate) mod merge;
 pub(crate) mod read;
 #[cfg(test)]
 mod test;

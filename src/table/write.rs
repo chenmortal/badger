@@ -39,8 +39,8 @@ impl BlockBuilder {
 pub(crate) struct TableBuilder {
     cur_block: BlockBuilder,
     compressed_size: Arc<AtomicU32>,
+    uncompressed_size: AtomicU32,
     cipher:Option<AesCipher>,
-    uncompressed_size: u32,
     len_offsets: u32,
     key_hashes: Vec<u32>,
     max_version: TxnTs,
@@ -121,6 +121,7 @@ impl TableBuilder {
         table_builder
     }
 
+    #[inline]
     fn push_internal(&mut self, key_ts: &KeyTsBorrow, value: &ValueMeta,vptr_len:Option<u32>, is_stale: bool) {
         if self.cur_block.should_finish_block(&key_ts, &value,self.config.block_size,self.cipher.is_some()) {
             if is_stale{
@@ -134,12 +135,21 @@ impl TableBuilder {
         self.on_disk_size+=vptr_len.unwrap_or(0);
     }
 
+    pub(crate) fn reacded_capacity(&self)->bool{
+        let mut sum_block_sizes = self.compressed_size.load(Ordering::Acquire);;
+        if self.config.compression==CompressionType::None && self.cipher.is_none(){
+            sum_block_sizes=self.uncompressed_size.load(Ordering::Acquire);
+        }
+        let blocks_size=sum_block_sizes+(self.cur_block.entry_offsets.len()*4) as u32 + 4+8+4;
+        let estimate_size=blocks_size+4+self.len_offsets;
+        estimate_size as usize > self.config.table_capacity
+    }
     fn finish_cur_block(&mut self){
         if self.cur_block.entry_offsets.len()==0 {
             return;
         }
         self.cur_block.finish_block(self.config.checksum_algo);
-        self.uncompressed_size+=self.cur_block.data.len() as u32;
+        self.uncompressed_size.fetch_add(self.cur_block.data.len() as u32, Ordering::AcqRel);
 
         self.len_offsets+=(self.cur_block.base_keyts.len() as f32/ 4.0).ceil() as u32 * 4 + 40;
         let mut finished_block = replace(&mut self.cur_block, BlockBuilder::new(self.config.block_size));
@@ -170,8 +180,13 @@ impl TableBuilder {
                 }));
     }
 
-    fn push(&mut self,key_ts: &KeyTsBorrow,value: &ValueMeta,vptr_len:Option<u32>){
+    pub(crate) fn push(&mut self,key_ts: &KeyTsBorrow,value: &ValueMeta,vptr_len:Option<u32>){
         self.push_internal(key_ts, value, vptr_len, false);
+    }
+
+    pub(crate) fn push_stale(&mut self,key_ts: &KeyTsBorrow,value: &ValueMeta,vptr_len:Option<u32>){
+        self.stale_data_size+=key_ts.len() as u32+ value.value().len() as u32+4;
+        self.push_internal(key_ts, value, vptr_len, true);
     }
 
     pub(crate) fn is_empty(&self)->bool{
@@ -220,7 +235,7 @@ impl TableBuilder {
                     bloom_filter: bloom.and_then(|x|builder.create_vector(x).into()),
                     max_version: self.max_version.to_u64(),
                     key_count: self.key_hashes.len() as u32,
-                    uncompressed_size: self.uncompressed_size,
+                    uncompressed_size: self.uncompressed_size.load(Ordering::Acquire),
                     on_disk_size:self.on_disk_size,
                     stale_data_size: self.stale_data_size,
                 };
@@ -253,7 +268,6 @@ impl TableBuilder {
         assert_eq!(written,buf.len());
         Ok(buf)
     }
-
 
     pub(crate) fn build_l0_table<I,  V>(
         mut iter: I,

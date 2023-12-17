@@ -1,5 +1,6 @@
 use std::time::{Duration, SystemTime};
 
+use bytes::Bytes;
 use tokio::sync::RwLockReadGuard;
 
 use crate::{kv::KeyTs, table::Table, txn::oracle::Oracle};
@@ -25,6 +26,7 @@ pub(super) struct CompactPlan {
     bottom: Vec<Table>,
     next_range: KeyTsRange,
     this_size: usize,
+    drop_prefixes: Vec<Bytes>,
     splits: Vec<KeyTsRange>,
 }
 impl CompactPlan {
@@ -45,6 +47,7 @@ impl CompactPlan {
             this_range: KeyTsRange::default(),
             next_range: KeyTsRange::default(),
             splits: vec![],
+            drop_prefixes: vec![],
         }
     }
     pub(super) async fn fix(
@@ -315,6 +318,9 @@ impl CompactPlan {
             }
         }
     }
+    pub(super) fn compact_task_id(&self) -> usize {
+        self.compact_task_id
+    }
     pub(super) fn priority(&self) -> &CompactPriority {
         &self.priority
     }
@@ -341,6 +347,9 @@ impl CompactPlan {
 
     pub(super) fn bottom(&self) -> &[Table] {
         self.bottom.as_ref()
+    }
+    pub(super) fn drop_prefixes(&self) -> &[Bytes] {
+        self.drop_prefixes.as_ref()
     }
     pub(super) fn top_bottom(&self) -> Vec<Table> {
         let mut ret = Vec::with_capacity(self.top.len() + self.bottom.len());

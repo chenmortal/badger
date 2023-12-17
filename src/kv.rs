@@ -330,25 +330,29 @@ impl KeyTs {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub(crate) struct KeyTsBorrow<'a>(&'a [u8]);
 impl<'a> KeyTsBorrow<'a> {
     pub(crate) fn key(&self) -> &[u8] {
-        if self.len() > 8 {
+        if self.len() >= 8 {
             &self[..self.len() - 8]
         } else {
             &self[..]
         }
     }
     pub(crate) fn txn_ts(&self) -> TxnTs {
-        if self.len() > 8 {
+        if self.len() >= 8 {
             let mut p = &self[self.len() - 8..];
             p.get_u64().into()
         } else {
             TxnTs::default()
         }
     }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.key().is_empty()
+    }
 }
+
 impl Deref for KeyTsBorrow<'_> {
     type Target = [u8];
 
@@ -373,6 +377,22 @@ impl PartialOrd for KeyTsBorrow<'_> {
 impl Ord for KeyTsBorrow<'_> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         KeyTsBorrow::cmp(&self, &other)
+    }
+}
+impl PartialEq<KeyTs> for KeyTsBorrow<'_> {
+    fn eq(&self, other: &KeyTs) -> bool {
+        self.key() == other.key() && self.txn_ts() == other.txn_ts()
+    }
+}
+impl PartialOrd<KeyTs> for KeyTsBorrow<'_> {
+    fn partial_cmp(&self, other: &KeyTs) -> Option<Ordering> {
+        match self.key().partial_cmp(other.key()) {
+            Some(Ordering::Equal) => {}
+            ord => {
+                return ord;
+            }
+        }
+        other.txn_ts().partial_cmp(&self.txn_ts())
     }
 }
 impl KeyTsBorrow<'_> {
@@ -542,6 +562,10 @@ impl ValuePointer {
     pub(crate) fn len(&self) -> u32 {
         self.len
     }
+
+    pub(crate) fn fid(&self) -> u32 {
+        self.fid
+    }
 }
 
 #[cfg(test)]
@@ -580,6 +604,21 @@ mod tests {
         assert_eq!(a.cmp(&c), Ordering::Greater);
     }
     #[test]
+    fn test_partial_ord() {
+        let p = b"abc";
+        let m = KeyTsBorrow(p);
+        let mut n = KeyTs::default();
+        n.set_key(Bytes::from("abc"));
+        n.set_txn_ts(1.into());
+
+        dbg!(n.partial_cmp(&m));
+        let a = vec![];
+        let b = KeyTsBorrow(&a);
+        dbg!(b.is_empty());
+        let c = KeyTs::default().serialize();
+        assert!(KeyTsBorrow(&c).is_empty());
+    }
+    #[test]
     fn test_serialize() {
         let mut v = ValueMeta::default();
         v.value = String::from("abc").as_bytes().to_vec().into();
@@ -593,6 +632,9 @@ mod tests {
         let mut v = ValueMeta::default();
         v.value = Bytes::from("");
         dbg!(v.serialized_size());
+
+        let k = KeyTs::new(Bytes::default(), 0.into());
+        dbg!(k.key().len());
         // let mut v = ValueMeta::default().serialized_size();
 
         // dbg!(v);

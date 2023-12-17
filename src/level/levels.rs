@@ -155,6 +155,7 @@ pub struct LevelsControllerConfig {
     num_compactors: usize,
     compactl0_on_close: bool,
     lmax_compaction: bool,
+    num_versions_to_keep: usize,
 }
 impl Default for LevelsControllerConfig {
     fn default() -> Self {
@@ -171,6 +172,7 @@ impl Default for LevelsControllerConfig {
             num_compactors: 4,
             compactl0_on_close: false,
             lmax_compaction: false,
+            num_versions_to_keep: 1,
         }
     }
 }
@@ -219,6 +221,10 @@ impl LevelsControllerConfig {
 
     pub fn table_size_multiplier(&self) -> usize {
         self.table_size_multiplier
+    }
+
+    pub fn num_versions_to_keep(&self) -> usize {
+        self.num_versions_to_keep
     }
 }
 impl LevelsControllerConfig {
