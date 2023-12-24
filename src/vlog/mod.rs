@@ -26,10 +26,10 @@ use self::{discard::DiscardStats, threshold::VlogThreshold};
 
 pub(crate) mod discard;
 pub(crate) mod header;
+mod histogram;
 pub(crate) mod read;
 pub(crate) mod threshold;
 pub(crate) mod write;
-mod histogram;
 // size of vlog header.
 // +----------------+------------------+
 // | keyID(8 bytes) |  baseIV(12 bytes)|
@@ -116,6 +116,7 @@ impl ValueLog {
     pub(crate) fn new(
         threshold: VlogThreshold,
         key_registry: KeyRegistry,
+        discard_stats: DiscardStats,
         config: ValueLogConfig,
     ) -> anyhow::Result<Self> {
         Ok(Self {
@@ -125,7 +126,7 @@ impl ValueLog {
             num_active_iter: Default::default(),
             writable_log_offset: Default::default(),
             num_entries_written: Default::default(),
-            discard_stats: discard::DiscardStats::new(&config.value_dir)?,
+            discard_stats,
             threshold,
             key_registry,
             config,

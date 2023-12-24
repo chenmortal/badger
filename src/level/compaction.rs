@@ -16,6 +16,7 @@ use crate::{
         closer::Closer,
         SSTableId,
     },
+    vlog::discard::DiscardStats,
 };
 use bytes::Bytes;
 use parking_lot::RwLock;
@@ -81,6 +82,7 @@ impl LevelsController {
         key_registry: KeyRegistry,
         index_cache: IndexCache,
         block_cache: Option<BlockCache>,
+        discard_stats: DiscardStats,
         oracle: Oracle,
     ) {
         for task_id in 0..self.level_config().num_compactors() {
@@ -91,6 +93,7 @@ impl LevelsController {
                 key_registry.clone(),
                 index_cache.clone(),
                 block_cache.clone(),
+                discard_stats.clone(),
                 oracle.clone(),
             ));
         }
@@ -103,6 +106,7 @@ impl LevelsController {
         key_registry: KeyRegistry,
         index_cache: IndexCache,
         block_cache: Option<BlockCache>,
+        discard_stats: DiscardStats,
         oracle: Oracle,
     ) -> anyhow::Result<()> {
         let sleep =
@@ -130,6 +134,7 @@ impl LevelsController {
             key_registry,
             index_cache,
             block_cache,
+            discard_stats,
             oracle,
         )
         .await?;
@@ -153,6 +158,7 @@ impl LevelsController {
         key_registry: KeyRegistry,
         index_cache: IndexCache,
         block_cache: Option<BlockCache>,
+        discard_stats: DiscardStats,
         oracle: Oracle,
     ) -> anyhow::Result<()> {
         let priority_level = priority.level;
@@ -182,6 +188,7 @@ impl LevelsController {
             &key_registry,
             index_cache,
             block_cache,
+            discard_stats,
             &oracle,
         )
         .await?;
