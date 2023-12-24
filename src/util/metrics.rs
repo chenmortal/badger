@@ -29,6 +29,8 @@ lazy_static! {
     static ref NUM_BLOOM_NOT_EXIST: AtomicUsize = AtomicUsize::new(0);
     static ref NUM_BLOOM_NOT_EXIST_LEVEL: Mutex<BTreeMap<Level, usize>> =
         Mutex::new(BTreeMap::new());
+    static ref NUM_BYTES_COMPACTION_WRITTEN: Mutex<BTreeMap<Level, usize>> =
+        Mutex::new(BTreeMap::new());
     static ref NUM_LSM_GETS: Mutex<BTreeMap<Level, usize>> = Mutex::new(BTreeMap::new());
 }
 
@@ -67,6 +69,20 @@ pub(crate) fn add_num_bytes_vlog_written(size: usize) {
 #[inline]
 pub(crate) fn add_num_compaction_tables(val: usize) {
     NUM_COMPACTION_TABLES.fetch_add(val, std::sync::atomic::Ordering::Relaxed);
+}
+#[inline]
+pub(crate) fn sub_num_compaction_tables(val: usize) {
+    NUM_COMPACTION_TABLES.fetch_sub(val, std::sync::atomic::Ordering::SeqCst);
+}
+#[inline]
+pub(crate) fn add_num_bytes_compaction_written(level: Level,val: usize){
+    let mut written = NUM_BYTES_COMPACTION_WRITTEN.lock();;
+    if let Some(v) = written.get_mut(&level) {
+        *v+=val;
+    }else {
+        written.insert(level, val);
+    };
+    drop(written);
 }
 #[inline]
 pub(crate) fn add_num_puts(size: usize) {
@@ -119,10 +135,6 @@ pub(crate) fn add_num_lsm_gets(level: Level, val: usize) {
         lsm.insert(level, val);
     }
     drop(lsm)
-}
-#[inline]
-pub(crate) fn sub_num_compaction_tables(val: usize) {
-    NUM_COMPACTION_TABLES.fetch_sub(val, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[inline]

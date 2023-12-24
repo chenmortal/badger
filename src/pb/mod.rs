@@ -1,24 +1,34 @@
 use std::fmt::Display;
 
-use crate::{config::CompressionType, key_registry::CipherKeyId, util::SSTableId};
+use crate::{config::CompressionType, key_registry::CipherKeyId, util::SSTableId, level::levels::Level};
 
 use self::badgerpb4::{manifest_change::Operation, Checksum, EncryptionAlgo, ManifestChange};
 use crate::pb::badgerpb4::checksum::Algorithm;
 pub mod badgerpb4;
 impl ManifestChange {
-    pub fn new(
+    pub fn new_create(
         table_id: SSTableId,
-        level: u32,
+        level: Level,
         cipher_key_id: CipherKeyId,
         compression: CompressionType,
     ) -> Self {
         Self {
             id: table_id.into(),
             op: Operation::Create as i32,
-            level,
+            level:level.into(),
             key_id: cipher_key_id.into(),
             encryption_algo: EncryptionAlgo::Aes as i32,
             compression: compression.into(),
+        }
+    }
+    pub fn new_delete(table_id: SSTableId) -> Self {
+        Self {
+            id: table_id.into(),
+            op: Operation::Delete as i32,
+            level: Default::default(),
+            key_id: Default::default(),
+            encryption_algo: Default::default(),
+            compression: Default::default(),
         }
     }
     pub(crate) fn table_id(&self) -> SSTableId {

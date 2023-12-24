@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::HashSet,
     ops::{Deref, DerefMut, Range},
     sync::Arc,
@@ -8,7 +9,11 @@ use std::{
 use crate::{
     key_registry::KeyRegistry,
     kv::KeyTs,
-    level::{levels::LEVEL0, plan::CompactPlan},
+    level::{
+        levels::LEVEL0,
+        plan::{CompactPlan, ErrFillTables},
+    },
+    manifest::Manifest,
     table::{Table, TableConfig},
     txn::oracle::Oracle,
     util::{
@@ -16,8 +21,10 @@ use crate::{
         closer::Closer,
         SSTableId,
     },
+    vlog::discard::DiscardStats,
 };
 use bytes::Bytes;
+use log::{debug, warn};
 use parking_lot::RwLock;
 use rand::Rng;
 use tokio::select;
@@ -73,25 +80,48 @@ impl CompactTargets {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CompactContext {
+    pub(crate) key_registry: KeyRegistry,
+    pub(crate) index_cache: IndexCache,
+    pub(crate) block_cache: Option<BlockCache>,
+    pub(crate) discard_stats: DiscardStats,
+    pub(crate) oracle: Oracle,
+    pub(crate) manifest: Manifest,
+}
+
+impl CompactContext {
+    pub(crate) fn new(
+        key_registry: KeyRegistry,
+        index_cache: IndexCache,
+        block_cache: Option<BlockCache>,
+        discard_stats: DiscardStats,
+        oracle: Oracle,
+        manifest: Manifest,
+    ) -> Self {
+        Self {
+            key_registry,
+            index_cache,
+            block_cache,
+            discard_stats,
+            oracle,
+            manifest,
+        }
+    }
+}
 impl LevelsController {
     pub(crate) async fn spawn_compact(
         self,
         closer: &mut Closer,
         config: TableConfig,
-        key_registry: KeyRegistry,
-        index_cache: IndexCache,
-        block_cache: Option<BlockCache>,
-        oracle: Oracle,
+        context: CompactContext,
     ) {
         for task_id in 0..self.level_config().num_compactors() {
             tokio::spawn(self.clone().pre_compact(
                 task_id,
                 closer.clone(),
                 config.clone(),
-                key_registry.clone(),
-                index_cache.clone(),
-                block_cache.clone(),
-                oracle.clone(),
+                context.clone(),
             ));
         }
     }
@@ -100,10 +130,7 @@ impl LevelsController {
         compact_task_id: usize,
         closer: Closer,
         config: TableConfig,
-        key_registry: KeyRegistry,
-        index_cache: IndexCache,
-        block_cache: Option<BlockCache>,
-        oracle: Oracle,
+        context: CompactContext,
     ) -> anyhow::Result<()> {
         let sleep =
             tokio::time::sleep(Duration::from_millis(rand::thread_rng().gen_range(0..1000)));
@@ -112,36 +139,127 @@ impl LevelsController {
             _=closer.captured()=>{return Ok(());}
         }
 
+        let move_l0_to_front = |mut prios: Vec<CompactPriority>| {
+            if let Some(index) = prios.iter().position(|p| p.level == LEVEL0) {
+                if index > 0 {
+                    let mut out = Vec::with_capacity(prios.len());
+                    let front = prios.remove(index);
+                    out.push(front);
+                    prios.drain(..).for_each(|p| out.push(p));
+                    prios = out;
+                }
+            };
+            prios
+        };
+
         let mut count = 0;
         let mut ticker = tokio::time::interval(Duration::from_millis(50));
-        // self.last_level().level();
-        self.last_level_handler().level();
-        let priority = CompactPriority {
-            level: self.last_level_handler().level(),
-            score: 0.,
-            adjusted: 0.,
-            drop_prefixes: vec![],
-            targets: self.level_targets().await,
-        };
-        self.compact(
-            compact_task_id,
-            priority,
-            config,
-            key_registry,
-            index_cache,
-            block_cache,
-            oracle,
-        )
-        .await?;
         loop {
             select! {
                 _=ticker.tick()=>{
                     count+=1;
+
                     if self.level_config().lmax_compaction() && compact_task_id==2 && count >= 200{
+                        let priority = CompactPriority {
+                            level: self.last_level_handler().level(),
+                            score: 0.,
+                            adjusted: 0.,
+                            drop_prefixes: vec![],
+                            targets: self.level_targets().await,
+                        };
+                        self.start_compact(compact_task_id, priority, config.clone(), context.clone()).await;
                         count=0;
+
+                    }else {
+                        let mut prios=self.pick_compact_levels().await;
+                        if compact_task_id == 0 {
+                            prios=move_l0_to_front(prios);
+                        }
+                        for priority in prios {
+                            if priority.adjusted  <1.{
+                                break;
+                            }
+                            if self.start_compact(compact_task_id, priority, config.clone(), context.clone()).await{
+                                break;
+                            }
+                        }
                     };
                 }
                 _=closer.captured()=>{return Ok(());}
+            }
+        }
+    }
+    async fn pick_compact_levels(&self) -> Vec<CompactPriority> {
+        let mut prios = Vec::new();
+        let targets = self.level_targets().await;
+        let mut push_priority = |level: Level, score: f64| {
+            prios.push(CompactPriority {
+                level,
+                score,
+                adjusted: score,
+                drop_prefixes: vec![],
+                targets: targets.clone(),
+            });
+        };
+
+        push_priority(
+            LEVEL0,
+            self.level_handler(LEVEL0).get_tables_len().await as f64
+                / self.level_config().num_level_zero_tables() as f64,
+        );
+
+        for index in 1..self.levels().len() {
+            let level: Level = index.into();
+            let sz = self.levels()[index].get_total_size().await
+                - self.compact_status().del_size(level) as usize;
+            push_priority(level, sz as f64 / targets.target_size[index] as f64);
+        }
+
+        assert_eq!(prios.len(), self.levels().len());
+
+        let mut pre_level = 0;
+        for level in targets.base_level.to_usize()..self.levels().len() {
+            if prios[pre_level].adjusted >= 1. {
+                const MIN_SCORE: f64 = 0.01;
+                if prios[level].score >= MIN_SCORE {
+                    prios[pre_level].adjusted /= prios[level].adjusted;
+                } else {
+                    prios[pre_level].adjusted /= MIN_SCORE;
+                }
+            }
+            pre_level = level;
+        }
+
+        let mut prios = prios
+            .drain(..prios.len() - 1)
+            .filter(|p| p.score >= 1.)
+            .collect::<Vec<_>>();
+
+        prios.sort_unstable_by(|a, b| {
+            b.adjusted
+                .partial_cmp(&a.adjusted)
+                .unwrap_or(Ordering::Greater)
+        });
+
+        prios
+    }
+    async fn start_compact(
+        &self,
+        compact_task_id: usize,
+        priority: CompactPriority,
+        config: TableConfig,
+        context: CompactContext,
+    ) -> bool {
+        match self
+            .compact(compact_task_id, priority, config, context)
+            .await
+        {
+            Ok(_) => true,
+            Err(e) => {
+                if e.downcast_ref::<ErrFillTables>().is_none() {
+                    warn!("While running doCompact: {}", e);
+                };
+                false
             }
         }
     }
@@ -150,10 +268,7 @@ impl LevelsController {
         compact_task_id: usize,
         mut priority: CompactPriority,
         config: TableConfig,
-        key_registry: KeyRegistry,
-        index_cache: IndexCache,
-        block_cache: Option<BlockCache>,
-        oracle: Oracle,
+        context: CompactContext,
     ) -> anyhow::Result<()> {
         let priority_level = priority.level;
         debug_assert!(priority.level < self.max_level());
@@ -174,17 +289,24 @@ impl LevelsController {
             this_level_handler,
             next_level_handler,
         );
-        plan.fix(self, &oracle).await?;
-        self.run_compact(
-            priority_level,
-            &mut plan,
-            config,
-            &key_registry,
-            index_cache,
-            block_cache,
-            &oracle,
-        )
-        .await?;
+        plan.fix(self, &context.oracle).await?;
+
+        if let Err(e) = self
+            .run_compact(compact_task_id, priority_level, &mut plan, config, context)
+            .await
+        {
+            warn!(
+                "[Compactor: {}] LOG Compact FAILED with error: {}: {:?}",
+                compact_task_id, e, plan
+            );
+            return Err(e);
+        };
+
+        debug!(
+            "[Compactor: {}] Compaction for {:?} Done",
+            compact_task_id,
+            plan.this_level_handler().level()
+        );
         Ok(())
     }
 }
@@ -195,7 +317,7 @@ impl LevelsControllerInner {
         assert!(levels_len < u8::MAX as usize);
         let levels_bound: Level = (levels_len as u8).into();
         let mut targets = CompactTargets {
-            base_level: 0.into(),
+            base_level: LEVEL0,
             target_size: vec![0; levels_len],
             file_size: vec![0; levels_len],
         };
@@ -203,7 +325,7 @@ impl LevelsControllerInner {
         let base_level_size = self.level_config().base_level_size();
         for i in (1..levels_len).rev() {
             targets.target_size[i] = level_size.max(base_level_size);
-            if targets.base_level == 0.into() && level_size <= base_level_size {
+            if targets.base_level == LEVEL0 && level_size <= base_level_size {
                 targets.base_level = (i as u8).into();
             }
             level_size /= self.level_config().level_size_multiplier();
@@ -435,6 +557,12 @@ impl CompactStatus {
     pub(crate) fn is_overlaps_with(&self, level: Level, target: &KeyTsRange) -> bool {
         let inner = self.read();
         let result = inner.levels[level.to_usize()].is_overlaps_with(target);
+        drop(inner);
+        result
+    }
+    pub(crate) fn del_size(&self, level: Level) -> i64 {
+        let inner = self.read();
+        let result = inner.levels[level.to_usize()].del_size;
         drop(inner);
         result
     }

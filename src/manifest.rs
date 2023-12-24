@@ -17,7 +17,7 @@ use crate::{
     default::DEFAULT_DIR,
     errors::err_file,
     pb::badgerpb4::{manifest_change, ManifestChange, ManifestChangeSet},
-    util::{sys::sync_dir, SSTableId}, key_registry::CipherKeyId,
+    util::{sys::sync_dir, SSTableId}, key_registry::CipherKeyId, level::levels::Level,
 };
 const MANIFEST_FILE_NAME: &str = "MANIFEST";
 const MANIFEST_REWRITE_FILE_NAME: &str = "MANIFEST-REWRITE";
@@ -64,7 +64,7 @@ struct LevelManifest {
 }
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct TableManifest {
-    pub(crate) level: u8,
+    pub(crate) level: Level,
     pub(crate) keyid: CipherKeyId,
     pub(crate) compression: CompressionType,
 }
@@ -273,9 +273,9 @@ impl ManifestInfo {
     fn as_changes(&self) -> Vec<ManifestChange> {
         let mut changes = Vec::<ManifestChange>::with_capacity(self.tables.len());
         for (id, table_manifest) in self.tables.iter() {
-            changes.push(ManifestChange::new(
+            changes.push(ManifestChange::new_create(
                 *id,
-                table_manifest.level as u32,
+                table_manifest.level.into(),
                 table_manifest.keyid,
                 table_manifest.compression,
             ));
@@ -298,7 +298,7 @@ impl ManifestInfo {
                 self.tables.insert(
                     change.table_id(),
                     TableManifest {
-                        level: change.level as u8,
+                        level: change.level.into(),
                         keyid: change.key_id.into(),
                         compression: CompressionType::from(change.compression),
                     },

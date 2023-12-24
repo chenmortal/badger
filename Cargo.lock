@@ -3,6 +3,49 @@
 version = 3
 
 [[package]]
+name = "Mors"
+version = "0.1.0"
+dependencies = [
+ "aead",
+ "aes-gcm",
+ "aes-gcm-siv",
+ "ahash",
+ "anyhow",
+ "async-channel 2.0.0",
+ "bitflags 2.4.0",
+ "bytes",
+ "crc32fast",
+ "criterion",
+ "either",
+ "flatbuffers",
+ "getrandom",
+ "integer-encoding",
+ "lazy_static",
+ "libc",
+ "log",
+ "memmap2",
+ "moka",
+ "num_cpus",
+ "parking_lot",
+ "prost",
+ "prost-build",
+ "rand",
+ "rayon",
+ "scopeguard",
+ "smallvec",
+ "snap",
+ "stretto",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-rayon",
+ "tokio-util",
+ "tracing",
+ "xxhash-rust",
+ "zstd",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -201,49 +244,6 @@ dependencies = [
  "miniz_oxide",
  "object",
  "rustc-demangle",
-]
-
-[[package]]
-name = "badger"
-version = "0.1.0"
-dependencies = [
- "aead",
- "aes-gcm",
- "aes-gcm-siv",
- "ahash",
- "anyhow",
- "async-channel 2.0.0",
- "bitflags 2.4.0",
- "bytes",
- "crc32fast",
- "criterion",
- "either",
- "flatbuffers",
- "getrandom",
- "integer-encoding",
- "lazy_static",
- "libc",
- "log",
- "memmap2",
- "moka",
- "num_cpus",
- "parking_lot",
- "prost",
- "prost-build",
- "rand",
- "rayon",
- "scopeguard",
- "smallvec",
- "snap",
- "stretto",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-rayon",
- "tokio-util",
- "tracing",
- "xxhash-rust",
- "zstd",
 ]
 
 [[package]]

@@ -20,15 +20,10 @@ use tokio::sync::mpsc::Sender;
 
 use std::cmp::Ordering;
 use std::fmt::Debug;
+use std::fmt::Display;
 use std::future::Future;
 use std::path::Path;
-use std::{
-    collections::HashSet,
-    fs::read_dir,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, SystemTime},
-};
+use std::{collections::HashSet, fs::read_dir, path::PathBuf, sync::Arc};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::kv::KeyTs;
@@ -129,7 +124,13 @@ impl DBFileId for VlogId {
 }
 
 #[test]
-fn test_id() {}
+fn test_id() {
+    dbg!(SSTableId(0));
+    println!("{:>5}",1);
+    println!("{:>5}",11);
+    println!("{:>5}",111);
+    println!("{:>5}",1111);
+}
 
 pub(crate) struct Throttle {
     semaphore: Arc<Semaphore>,
@@ -214,7 +215,36 @@ impl Throttle {
         }
     }
 }
-
+pub(crate) fn search<F>(n: usize, f: F) -> Result<usize, usize>
+where
+    F: Fn(usize) -> Ordering,
+{
+    let mut left = 0;
+    let mut right = n;
+    while left < right {
+        let mid = (left + right) >> 1;
+        let ord = f(mid);
+        if ord == Ordering::Greater {
+            right = mid;
+        } else if ord == Ordering::Less {
+            left = mid + 1;
+        } else {
+            return Ok(mid);
+        }
+    }
+    return Err(left);
+}
+#[test]
+fn test_search() {
+    assert_eq!(search(5, |n| { n.cmp(&2) }), Ok(2));
+    assert_eq!(search(10, |n| { n.cmp(&11) }), Err(10));
+    assert_eq!(search(5, |n| { (n as isize).cmp(&-1) }), Err(0));
+    let v = vec![1, 3, 5];
+    assert_eq!(search(3, |n| { v[n].cmp(&2) }), Err(1));
+    assert_eq!(search(3, |n| { v[n].cmp(&3) }), Ok(1));
+    assert_eq!(search(3, |n| { v[n].cmp(&5) }), Ok(2));
+    assert_eq!(search(3, |n| { v[n].cmp(&6) }), Err(3));
+}
 #[inline(always)]
 pub(crate) fn compare_key(a: &[u8], b: &[u8]) -> Ordering {
     match a[..a.len() - 8].cmp(&b[..b.len() - 8]) {

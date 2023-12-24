@@ -1,6 +1,7 @@
 use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
+use thiserror::Error;
 use tokio::sync::RwLockReadGuard;
 
 use crate::{kv::KeyTs, table::Table, txn::oracle::Oracle};
@@ -15,7 +16,7 @@ struct CompactPlanLockLevel<'a> {
     this_level: RwLockReadGuard<'a, LevelHandlerTables>,
     next_level: RwLockReadGuard<'a, LevelHandlerTables>,
 }
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct CompactPlan {
     compact_task_id: usize,
     priority: CompactPriority,
@@ -29,6 +30,15 @@ pub(super) struct CompactPlan {
     drop_prefixes: Vec<Bytes>,
     splits: Vec<KeyTsRange>,
 }
+#[derive(Debug, Error)]
+pub(crate) enum ErrFillTables {
+    #[error("Unable to fill tables for Level0")]
+    Level0,
+    #[error("Unable to fill tables except Level0")]
+    Other,
+}
+
+
 impl CompactPlan {
     pub(super) fn new(
         compact_task_id: usize,
@@ -57,7 +67,7 @@ impl CompactPlan {
     ) -> anyhow::Result<()> {
         if self.priority.level() == LEVEL0 {
             if !self.fill_tables_level0(controller).await {
-                bail!("Unable to fill tables")
+                bail!(ErrFillTables::Level0)
             };
         } else {
             if self.priority.level() != controller.max_level() - 1 {
@@ -65,7 +75,7 @@ impl CompactPlan {
                     controller.level_handler(self.priority.level() + 1).clone();
             }
             if !self.fill_tables(controller, oracle).await {
-                bail!("Unable to fill tables")
+                bail!(ErrFillTables::Other)
             };
         }
         Ok(())
@@ -356,6 +366,14 @@ impl CompactPlan {
         ret.extend_from_slice(self.top());
         ret.extend_from_slice(self.bottom());
         ret
+    }
+
+    pub(super) fn this_range(&self) -> &KeyTsRange {
+        &self.this_range
+    }
+
+    pub(super) fn next_range(&self) -> &KeyTsRange {
+        &self.next_range
     }
 }
 impl CompactStatus {
