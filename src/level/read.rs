@@ -1,5 +1,5 @@
 
-use super::{level_handler::LevelHandler, levels::LevelsControllerInner};
+use super::{level_handler::LevelHandler, levels::{LevelsControllerInner, LEVEL0}};
 #[cfg(feature = "metrics")]
 use crate::util::metrics::{add_num_bloom_not_exist_level, add_num_lsm_gets};
 use crate::{
@@ -97,7 +97,7 @@ impl LevelHandler {
     }
     pub(crate) async fn get_table_for_key(&self, key_ts: &KeyTs) -> Option<Vec<Table>> {
         let table_handlers = self.read().await;
-        if self.level() == 0.into() {
+        if self.level() == LEVEL0 {
             table_handlers
                 .tables
                 .iter()

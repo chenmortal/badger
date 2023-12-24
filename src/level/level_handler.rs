@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::{cmp::Ordering, io};
@@ -6,9 +7,10 @@ use anyhow::anyhow;
 use tokio::sync::RwLock;
 
 use crate::kv::{KeyTs, KeyTsBorrow};
+use crate::util::SSTableId;
 use crate::{table::Table, util::compare_key};
 
-use super::levels::Level;
+use super::levels::{Level, LEVEL0};
 #[derive(Debug, Clone)]
 pub(crate) struct LevelHandler(Arc<LevelHandlerInner>);
 impl Deref for LevelHandler {
@@ -52,6 +54,27 @@ pub(crate) struct LevelHandlerTables {
     pub(crate) total_size: usize,
     pub(crate) total_stale_size: u32,
 }
+impl LevelHandlerTables {
+    pub(crate) fn init(&mut self, level: Level, tables: Vec<Table>) {
+        self.tables = tables;
+        let mut total_size = 0;
+        let mut total_stale_size = 0;
+
+        self.tables.iter().for_each(|t| {
+            total_size += t.size();
+            total_stale_size = t.stale_data_size();
+        });
+
+        self.total_size = total_size;
+        self.total_stale_size = total_stale_size;
+
+        if level == LEVEL0 {
+            self.tables.sort_by(|a, b| a.table_id().cmp(&b.table_id()));
+        } else {
+            self.tables.sort_by(|a, b| a.smallest().cmp(b.smallest()));
+        }
+    }
+}
 impl LevelHandler {
     pub(crate) fn new(level: Level) -> Self {
         let inner = LevelHandlerInner {
@@ -78,33 +101,51 @@ impl LevelHandler {
     }
     pub(crate) async fn init_tables(&self, tables: Vec<Table>) {
         let mut inner_w = self.0.handler_tables.write().await;
-
-        inner_w.tables = tables;
-        let mut total_size = 0;
-        let mut total_stale_size = 0;
-
-        inner_w.tables.iter().for_each(|t| {
-            total_size += t.size();
-            total_stale_size = t.stale_data_size();
-        });
-
-        inner_w.total_size = total_size;
-        inner_w.total_stale_size = total_stale_size;
-
-        if self.0.level == 0.into() {
-            inner_w
-                .tables
-                .sort_by(|a, b| a.table_id().cmp(&b.table_id()));
-        } else {
-            inner_w
-                .tables
-                .sort_by(|a, b| a.smallest().cmp(b.smallest()));
-        }
+        inner_w.init(self.level(), tables);
         drop(inner_w);
+    }
+    pub(crate) async fn replace(&self, old: &[Table], new: &[Table]) {
+        let mut inner_w = self.write().await;
+        let to_del = old
+            .iter()
+            .map(|x| x.table_id())
+            .collect::<HashSet<SSTableId>>();
+        let mut new_tables = Vec::with_capacity(inner_w.tables.len() - to_del.len() + new.len());
+
+        inner_w
+            .tables
+            .drain(..)
+            .filter(|t| !to_del.contains(&t.table_id()))
+            .for_each(|t| new_tables.push(t));
+        new.iter().for_each(|t| new_tables.push(t.clone()));
+        inner_w.init(self.level(), new_tables);
+        drop(inner_w)
+    }
+    pub(crate) async fn delete(&self, del: &[Table]) {
+        let mut inner_w = self.write().await;
+        let to_del = del
+            .iter()
+            .map(|t| t.table_id())
+            .collect::<HashSet<SSTableId>>();
+        let mut new_tables = Vec::with_capacity(inner_w.tables.len() - to_del.len());
+        let mut sub_total_size = 0;
+        let mut sub_total_stale_size = 0;
+        for table in inner_w.tables.drain(..) {
+            if to_del.contains(&table.table_id()) {
+                sub_total_size += table.size();
+                sub_total_stale_size += table.stale_data_size();
+            } else {
+                new_tables.push(table);
+            };
+        }
+        inner_w.tables = new_tables;
+        inner_w.total_size -= sub_total_size;
+        inner_w.total_stale_size -= sub_total_stale_size;
+        drop(inner_w)
     }
     pub(crate) async fn validate(&self) -> anyhow::Result<()> {
         let inner_r = self.0.handler_tables.read().await;
-        if self.level == 0.into() {
+        if self.level == LEVEL0 {
             return Ok(());
         }
         let num_tables = inner_r.tables.len();

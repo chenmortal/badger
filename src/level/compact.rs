@@ -1,6 +1,7 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::SystemTime};
+use std::{collections::HashMap, sync::Arc, time::SystemTime};
 
 use super::{
+    compaction::CompactContext,
     levels::{Level, LevelsController, LEVEL0},
     plan::CompactPlan,
 };
@@ -8,42 +9,35 @@ use super::{
 use crate::util::metrics::{add_num_compaction_tables, sub_num_compaction_tables};
 use crate::{
     iter::{KvSeekIter, KvSinkIter, SinkIterator},
-    key_registry::KeyRegistry,
     kv::{KeyTs, KeyTsBorrow, Meta, TxnTs, ValueMeta, ValuePointer},
     level::compaction::KeyTsRange,
+    pb::badgerpb4::ManifestChange,
     table::{
         iter::{SinkMergeIter, SinkMergeNodeIter, SinkTableConcatIter},
         write::TableBuilder,
         Table, TableConfig,
     },
-    txn::oracle::Oracle,
-    util::{
-        cache::{BlockCache, IndexCache},
-        DBFileId, Throttle,
-    },
-    vlog::discard::DiscardStats,
+    util::{metrics::add_num_bytes_compaction_written, sys::sync_dir, DBFileId},
 };
 use anyhow::bail;
+use log::{debug, info};
+use scopeguard::defer;
+use tokio::task::JoinHandle;
 
-use log::{debug, error};
-use tokio::sync::mpsc::Sender;
 impl LevelsController {
     pub(super) async fn run_compact(
         &self,
+        compact_task_id: usize,
         level: Level,
         plan: &mut CompactPlan,
         config: TableConfig,
-        key_registry: &KeyRegistry,
-        index_cache: IndexCache,
-        block_cache: Option<BlockCache>,
-        discard_stats: DiscardStats,
-        oracle: &Oracle,
+        context: CompactContext,
     ) -> anyhow::Result<()> {
         if plan.priority().targets().file_size().len() == 0 {
             bail!("Filesizes cannot be zero. Targets are not set");
         };
 
-        let _time_start = SystemTime::now();
+        let time_start = SystemTime::now();
 
         let this_level = plan.this_level_handler();
         let next_level = plan.next_level_handler();
@@ -58,24 +52,93 @@ impl LevelsController {
             plan.splits_mut().push(KeyTsRange::default());
         }
 
-        let num_tables = plan.top().len() + plan.bottom().len();
+        let new_tables = self
+            .compact_build_tables(level, plan, config, context.clone())
+            .await?;
+
+        let mut changes =
+            Vec::with_capacity(new_tables.len() + plan.top().len() + plan.bottom().len());
+        for table in &new_tables {
+            changes.push(ManifestChange::new_create(
+                table.table_id(),
+                plan.next_level_handler().level(),
+                table
+                    .cipher()
+                    .and_then(|x| x.cipher_key_id().into())
+                    .unwrap_or_default(),
+                table.config().compression(),
+            ));
+        }
+        for table in plan.top() {
+            changes.push(ManifestChange::new_delete(table.table_id()))
+        }
+        for table in plan.bottom() {
+            changes.push(ManifestChange::new_delete(table.table_id()));
+        }
+        context.manifest.push_changes(changes)?;
+
+        let new_tables_size = new_tables.iter().fold(0, |acc, x| acc + x.size());
+        let old_tables_size = plan.top().iter().fold(0, |acc, x| acc + x.size())
+            + plan.bottom().iter().fold(0, |acc, x| acc + x.size());
+
         #[cfg(feature = "metrics")]
-        add_num_compaction_tables(num_tables);
-        let result = self
-            .compact_build_tables(
-                level,
-                plan,
-                config,
-                key_registry,
-                index_cache,
-                block_cache,
-                discard_stats,
-                oracle,
-            )
+        add_num_bytes_compaction_written(plan.next_level_handler().level(), new_tables_size);
+
+        plan.next_level_handler()
+            .replace(plan.bottom(), &new_tables)
             .await;
-        #[cfg(feature = "metrics")]
-        sub_num_compaction_tables(num_tables);
-        result?;
+        plan.this_level_handler().delete(plan.top()).await;
+
+        let table_to_string = |tables: &[Table]| {
+            let mut v = Vec::with_capacity(tables.len());
+            tables
+                .iter()
+                .for_each(|t| v.push(format!("{:>5}", Into::<u32>::into(t.table_id()))));
+            v.join(".")
+        };
+
+        let dur = SystemTime::now().duration_since(time_start).unwrap();
+        if dur.as_secs() > 2 {
+            info!(
+                "[{compact_task_id}] LOG Compact {}->{} ({},{} -> {} tables with {} splits). 
+    [{} {}] -> [{}], took {}, deleted {} bytes",
+                plan.this_level_handler().level(),
+                plan.next_level_handler().level(),
+                plan.top().len(),
+                plan.bottom().len(),
+                new_tables.len(),
+                plan.splits().len(),
+                table_to_string(plan.top()),
+                table_to_string(plan.bottom()),
+                table_to_string(&new_tables),
+                dur.as_millis(),
+                old_tables_size - new_tables_size
+            );
+        }
+
+        if plan.this_level_handler().level() != LEVEL0
+            && new_tables.len() > self.level_config().level_size_multiplier()
+        {
+            info!(
+                "This Range (num_tables: {})
+    Left:{:?},
+    Right:{:?},            
+            ",
+                plan.top().len(),
+                plan.this_range().left(),
+                plan.this_range().right()
+            );
+            info!(
+                "Next Range (num_tables: {})
+    Left:{:?},
+    Right:{:?},            
+            ",
+                plan.bottom().len(),
+                plan.next_range().left(),
+                plan.next_range().right()
+            )
+        }
+
         Ok(())
     }
     pub(super) async fn compact_build_tables(
@@ -83,12 +146,14 @@ impl LevelsController {
         level: Level,
         plan: &mut CompactPlan,
         config: TableConfig,
-        key_registry: &KeyRegistry,
-        index_cache: IndexCache,
-        block_cache: Option<BlockCache>,
-        discard_stats: DiscardStats,
-        oracle: &Oracle,
-    ) -> anyhow::Result<()> {
+        context: CompactContext,
+    ) -> anyhow::Result<Vec<Table>> {
+        #[cfg(feature = "metrics")]
+        {
+            let num_tables = plan.top().len() + plan.bottom().len();
+            add_num_compaction_tables(num_tables);
+            defer!(sub_num_compaction_tables(num_tables));
+        }
         let mut valid = Vec::new();
         't: for table in plan.bottom().iter() {
             for prefix in plan.priority().drop_prefixes().iter() {
@@ -118,36 +183,31 @@ impl LevelsController {
             out
         };
         let plan_clone = Arc::new(plan.clone());
-        let (sender, receiver) = tokio::sync::mpsc::channel::<Table>(3);
 
-        let mut throttle = Throttle::new(3);
+        let mut compact_tasks = Vec::new();
         for kr in plan.splits() {
-            match throttle.acquire().await {
-                Ok(permit) => {
-                    let iters = new_iter();
-                    if let Some(merge_iter) = SinkMergeIter::new(iters) {
-                        tokio::spawn(permit.done_with_future(self.clone().sub_compact(
-                            merge_iter,
-                            kr.clone(),
-                            plan_clone.clone(),
-                            config.clone(),
-                            sender.clone(),
-                            key_registry.clone(),
-                            index_cache.clone(),
-                            block_cache.clone(),
-                            discard_stats.clone(),
-                            oracle.clone(),
-                        )));
-                    };
-                }
-                Err(e) => {
-                    error!("cannot start subcompaction: {}", e);
-                    bail!(e)
-                }
-            }
+            let iters = new_iter();
+            if let Some(merge_iter) = SinkMergeIter::new(iters) {
+                compact_tasks.push(tokio::spawn(self.clone().sub_compact(
+                    merge_iter,
+                    kr.clone(),
+                    plan_clone.clone(),
+                    config.clone(),
+                    context.clone(),
+                )));
+            };
         }
 
-        Ok(())
+        let mut tables = Vec::new();
+        for compact in compact_tasks {
+            for table_task in compact.await?? {
+                tables.push(table_task.await??);
+            }
+        }
+        sync_dir(self.level_config().dir())?;
+
+        tables.sort_unstable_by(|a, b| a.biggest().cmp(b.biggest()));
+        Ok(tables)
     }
     async fn sub_compact(
         self,
@@ -155,22 +215,17 @@ impl LevelsController {
         key_range: KeyTsRange,
         plan: Arc<CompactPlan>,
         config: TableConfig,
-        sender: Sender<Table>,
-        key_registry: KeyRegistry,
-        index_cache: IndexCache,
-        block_cache: Option<BlockCache>,
-        discard_stats: DiscardStats,
-        oracle: Oracle,
-    ) -> anyhow::Result<()> {
+        compact_context: CompactContext,
+    ) -> anyhow::Result<Vec<JoinHandle<anyhow::Result<Table>>>> {
         let all_tables = plan.top_bottom();
 
         let has_overlap = self
             .check_overlap(&all_tables, plan.next_level_handler().level() + 1)
             .await;
 
-        let discard_ts = oracle.discard_at_or_below();
+        let discard_ts = compact_context.oracle.discard_at_or_below();
 
-        let mut context = AddKeyContext::default();
+        let mut add_context = AddKeyContext::default();
         let left_bytes = key_range.left().serialize();
         let left_key_borrow: KeyTsBorrow = left_bytes.as_slice().into();
 
@@ -180,6 +235,7 @@ impl LevelsController {
             merge_iter.next()?;
         }
 
+        let mut table_task = Vec::new();
         while merge_iter.valid() {
             if !key_range.right().is_empty() && merge_iter.key().unwrap().ge(key_range.right()) {
                 break;
@@ -188,14 +244,17 @@ impl LevelsController {
             table_config.set_table_size(
                 plan.priority().targets().file_size()[plan.next_level_handler().level().to_usize()],
             );
-            let mut builder = TableBuilder::new(table_config, key_registry.latest_cipher().await?);
+            let mut builder = TableBuilder::new(
+                table_config,
+                compact_context.key_registry.latest_cipher().await?,
+            );
             builder
                 .add_keys(
                     &mut merge_iter,
                     &self,
                     &plan,
                     discard_ts,
-                    &mut context,
+                    &mut add_context,
                     &key_range,
                     has_overlap,
                 )
@@ -206,32 +265,25 @@ impl LevelsController {
                 continue;
             }
 
-            async fn build(
-                mut builder: TableBuilder,
-                path: PathBuf,
-                sender: Sender<Table>,
-                index_cache: IndexCache,
-                block_cache: Option<BlockCache>,
-            ) -> anyhow::Result<()> {
-                let table = builder.build(path, index_cache, block_cache).await?;
-                sender.send(table).await?;
-                Ok(())
-            }
-
-            tokio::spawn(build(
-                builder,
-                self.get_reserve_file_id()
-                    .join_dir(self.level_config().dir()),
-                sender.clone(),
-                index_cache.clone(),
-                block_cache.clone(),
-            ));
+            let path = self
+                .get_reserve_file_id()
+                .join_dir(self.level_config().dir());
+            let index_cache_clone = compact_context.index_cache.clone();
+            let block_cache_clone = compact_context.block_cache.clone();
+            table_task.push(tokio::spawn(async move {
+                builder
+                    .build(path, index_cache_clone, block_cache_clone)
+                    .await
+            }));
         }
-        for (fid, discard) in &context.discard_stats {
-            discard_stats.update(*fid as u64, *discard as i64).await?;
+        for (fid, discard) in &add_context.discard_stats {
+            compact_context
+                .discard_stats
+                .update(*fid as u64, *discard as i64)
+                .await?;
         }
-        debug!("Discard stats: {:?}", context.discard_stats);
-        Ok(())
+        debug!("Discard stats: {:?}", add_context.discard_stats);
+        Ok(table_task)
     }
     async fn check_overlap(&self, tables: &[Table], target_level: Level) -> bool {
         let key_range: KeyTsRange = tables.into();

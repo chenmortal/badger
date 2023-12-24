@@ -1,12 +1,12 @@
 [package]
-name = "badger"
+name = "Mors"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 # default = ["metrics", "moka","stretto"]
-default = ["metrics", "moka","aes-gcm"]
+default = ["metrics", "moka", "aes-gcm"]
 # default = ["moka", "aes-gcm"]
 metrics = []
 

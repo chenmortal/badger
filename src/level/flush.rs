@@ -12,7 +12,7 @@ use crate::{
     pb::badgerpb4::ManifestChange,
     table::{write::TableBuilder, Table},
     util::closer::Closer,
-    util::DBFileId,
+    util::DBFileId, level::levels::LEVEL0,
 };
 
 use super::{level_handler::LevelHandler, levels::LevelsControllerInner};
@@ -70,9 +70,9 @@ impl DB {
 }
 impl LevelsControllerInner {
     async fn push_level0_table(&self, table: Table) -> anyhow::Result<()> {
-        self.manifest().push_changes(vec![ManifestChange::new(
+        self.manifest().push_changes(vec![ManifestChange::new_create(
             table.table_id(),
-            0,
+            LEVEL0,
             table
                 .cipher()
                 .and_then(|x| x.cipher_key_id().into())
@@ -88,7 +88,7 @@ impl LevelsControllerInner {
             table: &Table,
             level0_tables_stall: usize,
         ) -> bool {
-            assert!(handler.level() == 0.into());
+            assert!(handler.level() == LEVEL0);
             let mut handler_w = handler.write().await;
             if handler_w.tables.len() >= level0_tables_stall {
                 drop(handler_w);

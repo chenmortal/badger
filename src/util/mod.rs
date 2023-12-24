@@ -20,6 +20,7 @@ use tokio::sync::mpsc::Sender;
 
 use std::cmp::Ordering;
 use std::fmt::Debug;
+use std::fmt::Display;
 use std::future::Future;
 use std::path::Path;
 use std::{collections::HashSet, fs::read_dir, path::PathBuf, sync::Arc};
@@ -123,7 +124,13 @@ impl DBFileId for VlogId {
 }
 
 #[test]
-fn test_id() {}
+fn test_id() {
+    dbg!(SSTableId(0));
+    println!("{:>5}",1);
+    println!("{:>5}",11);
+    println!("{:>5}",111);
+    println!("{:>5}",1111);
+}
 
 pub(crate) struct Throttle {
     semaphore: Arc<Semaphore>,

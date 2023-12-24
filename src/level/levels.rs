@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 
+use aead::generic_array::typenum::Le;
 use anyhow::anyhow;
 use anyhow::bail;
 use log::{debug, error, info};
@@ -58,16 +59,31 @@ pub(crate) struct LevelsControllerInner {
     table_config: TableConfig,
 }
 pub(crate) const LEVEL0: Level = Level(0);
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub(crate) struct Level(u8);
 impl From<u8> for Level {
     fn from(value: u8) -> Self {
         Self(value)
     }
 }
+impl From<u32> for Level {
+    fn from(value: u32) -> Self {
+        Self(value as u8)
+    }
+}
+impl From<usize> for Level {
+    fn from(value: usize) -> Self {
+        Self(value as u8)
+    }
+}
 impl Into<usize> for Level {
     fn into(self) -> usize {
         self.0 as usize
+    }
+}
+impl Into<u32> for Level {
+    fn into(self) -> u32 {
+        self.0 as u32
     }
 }
 impl Level {
@@ -195,6 +211,10 @@ impl LevelsControllerConfig {
         self.dir = dir;
     }
 
+    pub fn num_level_zero_tables(&self) -> usize {
+        self.num_level_zero_tables
+    }
+
     pub fn num_level_zero_tables_stall(&self) -> usize {
         self.num_level_zero_tables_stall
     }
@@ -233,8 +253,8 @@ impl LevelsControllerConfig {
         table_config: TableConfig,
         manifest: Manifest,
         key_registry: KeyRegistry,
-        block_cache: &Option<BlockCache>,
-        index_cache: &IndexCache,
+        block_cache: Option<BlockCache>,
+        index_cache: IndexCache,
     ) -> anyhow::Result<LevelsController> {
         assert!(self.num_level_zero_tables_stall > self.num_level_zero_tables);
 
@@ -257,7 +277,7 @@ impl LevelsControllerConfig {
         let next_file_id = AtomicU32::new(max_file_id + 1);
 
         let mut levels = Vec::with_capacity(level_tables.len());
-        let mut level = 0.into();
+        let mut level = LEVEL0;
         for tables in level_tables {
             let handler = LevelHandler::new(level);
             level += 1;
@@ -316,8 +336,8 @@ impl LevelsControllerConfig {
         default_table_config: TableConfig,
         manifest: &Manifest,
         key_registry: KeyRegistry,
-        block_cache: &Option<BlockCache>,
-        index_cache: &IndexCache,
+        block_cache: Option<BlockCache>,
+        index_cache: IndexCache,
     ) -> anyhow::Result<(u32, Vec<Vec<Table>>)> {
         let manifest_lock = manifest.lock();
         let manifest = &*manifest_lock;
@@ -382,8 +402,8 @@ impl LevelsControllerConfig {
                 table.and_then(|x| x)
             });
             let task_level = table_manifest.level;
-            if task_level < self.max_level.0 {
-                open_table_tasks[task_level as usize].push(task);
+            if task_level < self.max_level {
+                open_table_tasks[task_level.to_usize()].push(task);
             } else {
                 open_table_tasks.last_mut().unwrap().push(task);
             }

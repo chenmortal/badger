@@ -9,7 +9,7 @@ use crate::{
     default::KV_WRITES_ENTRIES_CHANNEL_CAPACITY,
     errors::DBError,
     key_registry::KeyRegistry,
-    level::levels::LevelsController,
+    level::{compaction::CompactContext, levels::LevelsController},
     memtable::MemTable,
     txn::oracle::{max_txn_ts, Oracle},
     util::closer::Closer,
@@ -88,8 +88,8 @@ impl DB {
                 opt.table.clone(),
                 manifest.clone(),
                 key_registry.clone(),
-                &block_cache,
-                &index_cache,
+                block_cache.clone(),
+                index_cache.clone(),
             )
             .await?;
 
@@ -99,16 +99,20 @@ impl DB {
         let threshold = VlogThreshold::new(opt.vlog_threshold);
         let discard_stats = DiscardStats::new(&opt.vlog.value_dir())?;
         let mut closer = Closer::new(1);
+
         level_controller
             .clone()
             .spawn_compact(
                 &mut closer,
                 opt.table.clone(),
-                key_registry.clone(),
-                index_cache.clone(),
-                block_cache.clone(),
-                discard_stats.clone(),
-                oracle.clone(),
+                CompactContext::new(
+                    key_registry.clone(),
+                    index_cache.clone(),
+                    block_cache.clone(),
+                    discard_stats.clone(),
+                    oracle.clone(),
+                    manifest.clone(),
+                ),
             )
             .await;
         let mut vlog = ValueLog::new(
