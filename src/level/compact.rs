@@ -21,10 +21,12 @@ use crate::{
         cache::{BlockCache, IndexCache},
         DBFileId, Throttle,
     },
+    vlog::discard::DiscardStats,
 };
 use anyhow::bail;
 
 use log::{debug, error};
+use tokio::sync::mpsc::Sender;
 impl LevelsController {
     pub(super) async fn run_compact(
         &self,
@@ -34,6 +36,7 @@ impl LevelsController {
         key_registry: &KeyRegistry,
         index_cache: IndexCache,
         block_cache: Option<BlockCache>,
+        discard_stats: DiscardStats,
         oracle: &Oracle,
     ) -> anyhow::Result<()> {
         if plan.priority().targets().file_size().len() == 0 {
@@ -66,6 +69,7 @@ impl LevelsController {
                 key_registry,
                 index_cache,
                 block_cache,
+                discard_stats,
                 oracle,
             )
             .await;
@@ -82,6 +86,7 @@ impl LevelsController {
         key_registry: &KeyRegistry,
         index_cache: IndexCache,
         block_cache: Option<BlockCache>,
+        discard_stats: DiscardStats,
         oracle: &Oracle,
     ) -> anyhow::Result<()> {
         let mut valid = Vec::new();
@@ -113,6 +118,8 @@ impl LevelsController {
             out
         };
         let plan_clone = Arc::new(plan.clone());
+        let (sender, receiver) = tokio::sync::mpsc::channel::<Table>(3);
+
         let mut throttle = Throttle::new(3);
         for kr in plan.splits() {
             match throttle.acquire().await {
@@ -124,9 +131,11 @@ impl LevelsController {
                             kr.clone(),
                             plan_clone.clone(),
                             config.clone(),
+                            sender.clone(),
                             key_registry.clone(),
                             index_cache.clone(),
                             block_cache.clone(),
+                            discard_stats.clone(),
                             oracle.clone(),
                         )));
                     };
@@ -146,9 +155,11 @@ impl LevelsController {
         key_range: KeyTsRange,
         plan: Arc<CompactPlan>,
         config: TableConfig,
+        sender: Sender<Table>,
         key_registry: KeyRegistry,
         index_cache: IndexCache,
         block_cache: Option<BlockCache>,
+        discard_stats: DiscardStats,
         oracle: Oracle,
     ) -> anyhow::Result<()> {
         let all_tables = plan.top_bottom();
@@ -169,7 +180,6 @@ impl LevelsController {
             merge_iter.next()?;
         }
 
-        let mut num_builds = 0;
         while merge_iter.valid() {
             if !key_range.right().is_empty() && merge_iter.key().unwrap().ge(key_range.right()) {
                 break;
@@ -195,14 +205,16 @@ impl LevelsController {
                 let _ = builder.finish().await?;
                 continue;
             }
-            num_builds += 1;
+
             async fn build(
                 mut builder: TableBuilder,
                 path: PathBuf,
+                sender: Sender<Table>,
                 index_cache: IndexCache,
                 block_cache: Option<BlockCache>,
             ) -> anyhow::Result<()> {
-                builder.build(path, index_cache, block_cache).await?;
+                let table = builder.build(path, index_cache, block_cache).await?;
+                sender.send(table).await?;
                 Ok(())
             }
 
@@ -210,11 +222,15 @@ impl LevelsController {
                 builder,
                 self.get_reserve_file_id()
                     .join_dir(self.level_config().dir()),
+                sender.clone(),
                 index_cache.clone(),
                 block_cache.clone(),
             ));
         }
-
+        for (fid, discard) in &context.discard_stats {
+            discard_stats.update(*fid as u64, *discard as i64).await?;
+        }
+        debug!("Discard stats: {:?}", context.discard_stats);
         Ok(())
     }
     async fn check_overlap(&self, tables: &[Table], target_level: Level) -> bool {
